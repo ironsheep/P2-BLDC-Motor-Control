@@ -48,7 +48,7 @@ What changed in each release, and the known issues of the current one, are in th
 
 Why v6.0.0 reworked the drive, what changed, and how each change was checked: [The 6.0 driver — what changed, and how we know](DRIVER-6.0-REWORK.md).
 
-**New in v6.0.0:** a program selects its configuration in `isp_bldc_motor_userconfig.spin2` with two lines at the top of its file — see [DEVELOP.md](DEVELOP.md).
+**New in v6.0.0:** a program selects its configuration in `isp_bldc_motor_userconfig.spin2` with a few lines at the top of its file, or, with PNut, in the configuration file itself — see [DEVELOP.md](DEVELOP.md#building-with-pnut).
 
 ## Table of Contents
 

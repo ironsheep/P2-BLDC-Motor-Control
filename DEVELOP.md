@@ -42,7 +42,7 @@ Lastly you'll start the objects and then add your drive code and any sensor code
 
 Edit the user configuration file, **isp\_bldc\_motor\_userconfig.spin2**, and adjust the settings to describe the configuration you will be using.
 
-The file holds **two configurations**, and your top-level program chooses one of them with two lines at the very top of its file (see [Include Project Objects](#include-project-objects-in-your-top-object-file) below):
+The file holds **two configurations**, and your top-level program chooses one of them with a few lines at the very top of its file (see [Include Project Objects](#include-project-objects-in-your-top-object-file) below):
 
 - `CFG_SINGLE_MOTOR` — one motor, driven by `isp_bldc_motor` directly
 - `CFG_DUAL_MOTOR` — a two-wheel platform, driven by `isp_steering_2wheel`
@@ -109,17 +109,44 @@ Save your changes and you are ready to start adding the driver to your code.
 
 You now need to select objects based on if you are a one-wheel or two-wheel confuration.
 
-**First, select your configuration.** Put these two lines at the very top of your top-level file, before anything else. They choose which of the two configurations in `isp_bldc_motor_userconfig.spin2` is compiled. A program without them does not compile, and the error names these lines. (`#PRAGMA EXPORTDEF` needs the PNut-TS compiler.)
+**First, select your configuration.** Put these lines at the very top of your top-level file, before anything else. They choose which of the two configurations in `isp_bldc_motor_userconfig.spin2` is compiled. With PNut-TS, a program without them does not compile, and the error names these lines.
 
 ```script
 ' a two-wheel program:
 #DEFINE CFG_DUAL_MOTOR
+#IFDEF __PNUT_TS__
 #PRAGMA EXPORTDEF CFG_DUAL_MOTOR
+#ENDIF
 
 ' -- OR -- a single-motor program:
 #DEFINE CFG_SINGLE_MOTOR
+#IFDEF __PNUT_TS__
 #PRAGMA EXPORTDEF CFG_SINGLE_MOTOR
+#ENDIF
 ```
+
+`#PRAGMA EXPORTDEF` is what carries your program's choice into the configuration file. It is a PNut-TS feature, so it sits inside `#IFDEF __PNUT_TS__`, a symbol only PNut-TS defines; that keeps the same file buildable with PNut.
+
+### Building with PNut
+
+PNut has `#DEFINE` and `#IFDEF`, but a `#DEFINE` reaches only the file it is in, and PNut has no `#PRAGMA EXPORTDEF` to carry it further. So with PNut, the configuration file cannot see your program's choice, and you make the choice there instead. Do **one** of these:
+
+- **Edit the configuration file.** Near the top of `isp_bldc_motor_userconfig.spin2`, find these lines, and remove the leading `'` from the **one** that matches your program:
+
+    ```script
+    #IFNDEF __PNUT_TS__
+    '#DEFINE CFG_SINGLE_MOTOR
+    '#DEFINE CFG_DUAL_MOTOR
+    #ENDIF
+    ```
+
+    PNut-TS skips these lines, so they can never contradict a program built with PNut-TS. The catch: with PNut, every program you build from that folder gets the same configuration, so keep single-motor and two-wheel programs in separate folders.
+
+- **Or define the symbol on PNut's command line**, and leave the files unchanged: `-D CFG_SINGLE_MOTOR` or `-D CFG_DUAL_MOTOR`.
+
+If you do neither, PNut stops with an error about an undefined symbol such as `MOTOR_TYPE`: that is the configuration file with no configuration selected.
+
+*The PNut path follows the P2 Knowledge Base's documented behaviour of PNut's preprocessor; we build and test with PNut-TS.*
 
 ### Using Two Motor Objects
 
@@ -130,7 +157,9 @@ You simply include them with something like:
 
 ```script
 #DEFINE CFG_DUAL_MOTOR
+#IFDEF __PNUT_TS__
 #PRAGMA EXPORTDEF CFG_DUAL_MOTOR
+#ENDIF
 
 OBJ { Objects Used by this Object }
 
@@ -172,7 +201,9 @@ You simply include them with something like:
 
 ```script
 #DEFINE CFG_SINGLE_MOTOR
+#IFDEF __PNUT_TS__
 #PRAGMA EXPORTDEF CFG_SINGLE_MOTOR
+#ENDIF
 
 OBJ { Objects Used by this Object }
 

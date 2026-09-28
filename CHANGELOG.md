@@ -73,9 +73,10 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 
 ### Breaking Changes
 
-- **BREAKING**: a top-level program selects its configuration in `isp_bldc_motor_userconfig.spin2` with two
-  lines at its top: `#DEFINE CFG_SINGLE_MOTOR` and `#PRAGMA EXPORTDEF CFG_SINGLE_MOTOR`, or the same with
-  `CFG_DUAL_MOTOR`. A program without them does not compile, and the error names the lines. Requires PNut-TS.
+- **BREAKING**: a top-level program selects its configuration in `isp_bldc_motor_userconfig.spin2` with
+  `#DEFINE CFG_SINGLE_MOTOR` (or `CFG_DUAL_MOTOR`) and a guarded `#PRAGMA EXPORTDEF` at its top; without
+  them PNut-TS stops with an error naming the lines. PNut users select it in the config file instead
+  ([DEVELOP.md](DEVELOP.md)).
 - **BREAKING**: command methods return `NO_ERROR` or a negative `ERR_*` code instead of aborting on bad
   arguments. Calls that ignore the result need no change; code relying on an abort to stop a cog must check
   the result.

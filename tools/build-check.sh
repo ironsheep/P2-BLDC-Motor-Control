@@ -15,6 +15,8 @@
 #   3. The config refuses a build that selects no configuration, with its
 #      message (the negative case: a silent fallback would drive a motor with
 #      another motor's settings).
+#      Every PNut-TS-only directive (#PRAGMA, #ERROR, #WARN, #INCLUDE) sits directly inside
+#      #IFDEF __PNUT_TS__, so PNut can still build the sources.
 #   4. RELEASE CERTIFICATION: both flagship demos -- demo_single_motor and
 #      demo_dual_motor -- compile. Neither ships uncertified. Every demo_* top
 #      must also compile with -d (DEBUG), which a plain compile never checks (PL-142).
@@ -209,6 +211,24 @@ if [ $NOCFG_RC -ne 0 ] && printf '%s\n' "$NOCFG_OUT" | grep -q "$NO_CFG_MESSAGE"
 else
     echo "FAIL: $CONFIG compiled with no configuration selected, or refused without '$NO_CFG_MESSAGE'"
     RC=1
+fi
+
+# 3b. PNut stays able to build the sources: every PNut-TS-only directive (#PRAGMA, #ERROR, #WARN,
+#     #INCLUDE) must sit directly inside #IFDEF __PNUT_TS__, the symbol only PNut-TS defines (DEVELOP.md,
+#     "Building with PNut"). PNut-TS itself cannot show a missing guard, so this reads the source.
+UNGUARDED=$(awk '
+    FNR == 1 { prev = "" }
+    /^[[:space:]]*#(PRAGMA|ERROR|WARN|INCLUDE)([[:space:]]|$)/ && toupper(prev) !~ /^[[:space:]]*#IFDEF[[:space:]]+__PNUT_TS__[[:space:]]*$/ {
+        print "    " FILENAME ":" FNR ": " $0
+    }
+    /[^[:space:]]/ { prev = $0 }
+' $(for top in $TOPS; do echo "$top.spin2"; done))
+if [ -n "$UNGUARDED" ]; then
+    echo "FAIL: PNut-TS-only directives outside #IFDEF __PNUT_TS__ (PNut could not build these):"
+    printf '%s\n' "$UNGUARDED"
+    RC=1
+else
+    echo "PNut-TS-only directives: every one inside #IFDEF __PNUT_TS__"
 fi
 
 # 4. release certification -- both flagship demos

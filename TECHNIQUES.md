@@ -357,7 +357,9 @@ rather than a silent default.
 **How.** `isp_bldc_motor_userconfig.spin2` carries a single-motor and a two-wheel configuration inside
 `#IFDEF CFG_SINGLE_MOTOR` / `#ELSEIFDEF CFG_DUAL_MOTOR`, ending in `#ERROR`. A top-level program
 `#DEFINE`s its symbol and `#PRAGMA EXPORTDEF`s it, which carries it into every object it includes (a plain
-`#DEFINE` reaches only its own file). `tools/build-check.sh` then compiles every library object under
+`#DEFINE` reaches only its own file). The PNut-TS-only directives, `#PRAGMA` and `#ERROR`, sit inside
+`#IFDEF __PNUT_TS__`, a symbol only PNut-TS defines, so the same files still build with PNut, where the
+selection is made in the configuration file instead. `tools/build-check.sh` then compiles every library object under
 each symbol with `-D`, compiles every program as written, checks that a build selecting neither is refused
 with its message, and builds both flagship demos with and without `-d` (DEBUG). It never edits a source
 file to do it.
