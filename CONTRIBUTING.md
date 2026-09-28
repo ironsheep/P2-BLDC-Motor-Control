@@ -1,6 +1,5 @@
 
 # P2-BLDC-Motor-Control - How to contribute code you write
-Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
 
 ![Project Maintenance][maintenance-shield]
 

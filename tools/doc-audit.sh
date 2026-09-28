@@ -173,7 +173,7 @@ fi
 # README's supported-demo table vs demos actually present
 if [ -f README.md ]; then
     claimed=$(grep -cE '^\| \[demo_[a-z_]+\.spin2\]' README.md 2>/dev/null | tr -d ' ')
-    actual=$(ls "$SRC"/demo_*.spin2 2>/dev/null | wc -l | tr -d ' ')
+    actual=$(ls "$SRC"/demo_*.spin2 2>/dev/null | grep -v '/demo_drive_names\.spin2$' | wc -l | tr -d ' ')   # the names helper is an object the demos use, not a demo
     [ "$claimed" != "0" ] && check_count "README demo table rows" "$claimed" "$actual"
 fi
 

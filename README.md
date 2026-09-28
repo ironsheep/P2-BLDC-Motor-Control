@@ -102,8 +102,7 @@ command reporting its result.
 - Two wheels: when one wheel faults, the other ramps to a stop, so the
   platform stops instead of pivoting about the faulted wheel
 - A motor that cannot reach its command holds the fastest speed it can
-  sustain instead of faulting (verified wheels-up under a lowered current
-  limit)
+  sustain instead of faulting
 - setCommandTimeout(ms): opt-in link-loss guard that stops the motors when
   drive commands stop arriving
 - getDriveVoltage() returns the configured drive voltage
@@ -240,17 +239,26 @@ Things we know about that still need attention:
   but the drive does not use it yet: getCurrent()'s watts and the speed
   table assume the configured DRIVE_VOLTAGE.
 - getCurrent() does not show regenerative current.
+- Braking by shorting the phases (emergencyCutoff(), and a stop held with
+  holdAtStop(TRUE)) is not current-limited: that current circulates through
+  the low-side MOSFETs and never passes the board's current sensor, so the
+  drive can neither see nor cap it. Ramp down before stopping where you can
+  (stopMotor() does; the stop limits do).
 - Speeds are characterized unloaded; under load the motor has less torque in
   reserve near top speed.
-- The jerk-limited ramp has not yet been run on hardware. Its built-in rates
-  (1,000 / 1,470 mm/s^2, 250 ms easing) are provisional and may be retuned,
-  and its stopping distances and times are derived from the driver's
-  arithmetic, not measured (DRIVE-OBJECTS.md, "How far the motor travels
-  while stopping").
+- The jerk-limited ramp is measured wheels up (its shape, its stops, a stop
+  from 81.7 x 10^6 in 1.1 s); its feel and currents under load are not yet
+  measured, and its built-in rates (1,000 / 1,470 mm/s^2, 250 ms easing) may
+  be retuned when they are.
 - calibrate() is not implemented.
 - The drive is tested at a 270 MHz system clock (_clkfreq = 270_000_000, as in
-  every demo). Below about 250 MHz its 1 ms control pass has not been shown to
-  keep time.
+  every demo), and v6.0.0 is supported at that clock. Below about 250 MHz its
+  1 ms control pass has not been shown to keep time; widening the supported
+  clock range is planned after v6.0.0.
+- The DocoEng 4,000 RPM motor is not validated for v6.0.0 (v6.0.0 is validated
+  on the 6.5" hub motor); its support is revalidated in a later release.
+- The serial control path (isp_steering_serial.spin2, the Python host demo) is
+  not validated on hardware for v6.0.0; it is validated in a later release.
   v5.0.2
 - Drive status reporting is not working in the base objects, so it is also
   reported badly over the serial interface.
@@ -337,8 +345,8 @@ you can reuse.
 
 | Spin2 File Name(s)                                                 | Demonstration                                                                                                                                                                                                            | Required Board                                                                                           |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| [demo_single_motor.spin2](src/demo_single_motor.spin2)             | Provides example code for controlling a single motor and position sensing of the single motor. (Uses HDMI (DVI) as display of live motor details.                                                                        | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
-| [demo_dual_motor.spin2](src/demo_dual_motor.spin2)                 | Provides example code for controlling a pair of motors and using the 2-wheel steering object.                                                                                                                            | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
+| [demo_single_motor.spin2](src/demo_single_motor.spin2)             | Provides example code for controlling a single motor: the start checks, the wiring check, then a time-limited drive forward and one in reverse. (Uses HDMI (DVI) as display of live motor details.)                     | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
+| [demo_dual_motor.spin2](src/demo_dual_motor.spin2)                 | Provides example code for controlling a pair of motors and using the 2-wheel steering object: the start checks, the wiring check, a 1 ft drive, two steered drives, then each wheel alone.                              | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
 | [demo_dual_motor_hdmi.spin2](src/demo_dual_motor_hdmi.spin2)       | Provides example code for controlling a pair of motors and using the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables during one steady drive | Any of the three P2 boards with four 12-pin header pairs (**NOT the 64019 P2 edge mini-breakout board**) |
 | [demo_dual_motor_rc.spin2](src/demo_dual_motor_rc.spin2)           | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object; prints each event and stop as it happens, and re-arming the kill switch (swD) acknowledges a protective stop | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
 | [demo_dual_motor_rc_hdmi.spin2](src/demo_dual_motor_rc_hdmi.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables | Any of the three P2 boards with four 12-pin header pairs (**NOT the 64019 P2 edge mini-breakout board**) |
@@ -375,12 +383,14 @@ The R/C demo uses the following controls:
 | -------------- | ------------------------------------------------------------------------------------------------------------------------- |
 |                | **SWITCHES**                                                                                                              |
 | SwA            | Motor Control Toggle: Up - disabled, Down - Enabled                                                                       |
-| SwB            | not used                                                                                                                  |
-| SwC            | Stop Demo - Up - running, Down - exit demo                                                                                |
-| SwD            | Emergency Cutoff: Up - disabled, Down - Immediatly stop motors!                                                           |
+| SwB            | Show State: moving it Down prints both motors' current and power                                                          |
+| SwC            | Stop Demo - Up - running, Middle - print the drive states, Down - exit demo                                               |
+| SwD            | Emergency Cutoff: Up - disabled, Down - Immediately stop motors! Moving it back Up releases the emergency stop and any protective stop (a blocked wheel) |
+|                | **KNOBS**                                                                                                                 |
+| VrA            | Acceleration: the knob's travel sets `setAcceleration()` from 200 to 3000 mm/s^2                                          |
 |                | **JOYSTICKS**                                                                                                             |
-| Left Joystick  | Steering: Left - turn to left (slow right motor), Right - turn to right (slow down left motor)                            |
-| Right Joystick | Acceleration: Up - go foward, Down - go backward (speed controlled by joystick center is stopped, at extremes is fastest) |
+| Left Joystick  | Steering: Left - turn to left (slow left motor), Right - turn to right (slow down right motor)                            |
+| Right Joystick | Speed: Up - go forward, Down - go backward (speed controlled by joystick center is stopped, at extremes is fastest)       |
 
 ## References
 

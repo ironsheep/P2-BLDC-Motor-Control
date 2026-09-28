@@ -7,7 +7,7 @@ as I work on these drivers I need to use a test platform.  This page describes w
 
 ## Videos of my Platform
 
-Video of author running the system: [Control our 2-wheel BLDC robot platform from an RPi](https://youtu.be/QF4qI9yVwWc) @ youtube
+The video of this platform driven from an RPi is on the [Serial Control page](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/SERIAL-CONTROL.md).
 
 Earlier video of the [Platform under FlySky R/C control](https://youtu.be/EeIrPzJ0THU) @ YouTube
 
@@ -60,7 +60,7 @@ And here I'm running tests of the FlySky remote control demo. (Of course, runnin
 
 *I used the* **P2 Edge Mini Breakout Board (#64019)** *for my Platform. I chose pin 58 for SBus receive*
 
-The top-level file `demo_dual_motor_rc.spin2` provided by this project defines the rx pin as 58. This was due to the two motor control boards occupying most of the remaining pins on the Mini Edge Breakout board. Feel free to choose a different pin. Just remember to adjust the constants in your code to use your pin choice.
+The SBus receive pin and how to change it: see [Wiring the FlySky Connection](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/README.md#wiring-the-flysky-connection) in the README.
 
 **P2 Wiring for SBus Receiver:**
 

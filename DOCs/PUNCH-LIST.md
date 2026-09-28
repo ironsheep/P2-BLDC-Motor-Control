@@ -22,8 +22,21 @@ Pass 7 (2026-09-26) closed: PL-66, 78, 87, 143, 147, 151, 152, 153, 155, 156, 15
 The release-candidate pass (2026-09-27, DRIVER_REV 46,
 [evaluation](analyses/bench/2026-09-27/rc/VISIT-10-RC-EVALUATION.md)) certified: **PL-14, 51, 52, 145, 146, 149, 161**
 (each marked ✅ under its heading; archived at the next sweep), and **PL-162** closed by Stephen's ruling (no more
-unplug testing; pass 7's detection stands). Open after it: 12 release items below, and one visit
+unplug testing; pass 7's detection stands). Open after it: the release items below, and one visit
 (a short wheels-up block, then the floor run the same day).
+
+**STEPHEN'S RULINGS, 2026-09-27 (release scope):**
+- **Serial is not in this release:** *"serial testing not in this initial release"*. PL-148, PL-154, PL-157 and PL-111's
+  serial half move to a later release; README's Known Issues says the serial path is not validated for v6.0.0.
+- **FlySky testing IS in this release:** *"note: flysky testing is in this release"* — the RC demo runs at the last visit.
+- **DocoEng support is a later release:** *"doco support in subsequent release"*. PL-71 and PL-27 move there; README says
+  v6.0.0 is validated on the 6.5" hub motor.
+- **PL-118 ships as a Known Issue** (ruling 1 A): README states that phase-short braking is not current-limited.
+- **Clock:** *"it ships at v6 as stated testing conditions"* (270 MHz); a post-v6 study widens the range (PL-164).
+- **Doc defects PL-7, PL-16, PL-54: fixed** (*"we fix them!"*).
+
+**Deferred to a later release (Stephen's rulings above):** PL-27, PL-71 (DocoEng), PL-148, PL-154, PL-157 and PL-111's
+serial half (serial), PL-164 (clock range).
 
 The owner's rule for 6.0.0 (Stephen, 2026-09-26): *"What we need is not an eye towards looking for things we
 can address, but an eye towards whether we have everything we need to meet the criteria for the features that
@@ -48,11 +61,8 @@ do the right thing, and then we can call them done without having to test on the
 | Entry | What it is | What closes it |
 | --- | --- | --- |
 | PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | A blocked-wheel cell that trips SR_BLOCKED (the floor run «#3576» has none today) |
-| PL-148 | The serial control path (object, protocol doc, Python demo) has never run on hardware | The serial step (the RC sheet's step 12): not run at the RC pass |
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | The floor run (cells built, SRC_REV 58-61); it now also carries HOLDSET/NOTFOL's question (RC F4) |
-| PL-154 | Serial: hold can't be set from the host example, commands can wait 1 s, non-numbers accepted | The serial step |
-| PL-157 | Serial and the Python host lag the 6.0 getters | The serial step |
-| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Built (DRIVER_REV 38); wheels-up: t0-stopreason at SRC_REV 28 (RAMP-SHAPE, -UNWIND, -REVERSE failed at the RC pass on harness defects, fixed); feel on the floor; owner Q4, Q5 |
+| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Built (DRIVER_REV 38); wheels-up: t0-stopreason at SRC_REV 28 (RAMP-SHAPE, -UNWIND, -REVERSE failed at the RC pass on harness defects, fixed); feel on the floor; owner Q5 (Q4 ruled: no API change, moved to PL-102 after 6.0) |
 
 **Awaits certification** (fix built, not yet run)
 
@@ -76,6 +86,11 @@ PL-43, PL-44, PL-46, PL-53, PL-54, PL-60, PL-63, PL-64, PL-65, PL-67, PL-68, PL-
 PL-103, PL-105, PL-108, PL-109, PL-110, PL-118, PL-119, PL-126, PL-134, PL-135, PL-136, PL-139.
 
 ### PL-7 — Six blocks of prose are maintained in two or more documents
+
+> ✅ **DONE 2026-09-27** (Stephen: *"we fix them!"*): the last three blocks resolved — the tagline now lives only in
+> README.md (the four other headers already name the project); the FlySky pin paragraph and the RPi video line each
+> have one copy, with a link from AUTHORS-Platform.md. `tools/doc-audit.sh` reports no duplicates (its demo count no
+> longer counts the `demo_drive_names` helper object as a demo).
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (duplicated documentation prose)
 
@@ -186,6 +201,8 @@ had gone on saying "an API decision"; the decision was taken the parameter-honou
 every shipped caller passes the configured voltage, so the change is behaviour-neutral for them.
 
 ### PL-16 -- `util_char_motor.spin2` drive helpers: comment says 10 s, constant is 5 s
+
+> ✅ **DONE 2026-09-27:** both comments now name `DRIVE_AT_SPEED_SECS` instead of a number.
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (characterisation utility comment)
 
@@ -771,6 +788,9 @@ cogs). `isp_bench_log` gains `unclampedNumField()`, `hexField()` and `bareField(
 
 ### PL-54 -- `src/test_dual_motor.spin2` names itself `demo_dual_motor.spin2`, and most of its body can never run
 
+> ✅ **DONE 2026-09-27:** the bare holding `repeat` is removed, so the steps after the distance-and-turn loop run and the
+> program ends with `wheels.stop()` and `* DONE`, as its body was written to (the header was fixed 2026-09-26).
+
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (test program, Stephen's call)
 
 **Found 2026-09-14** by «#3508» (`plans/MOTION-HARNESS-DESIGN.md` §7.3), and confirmed by reading the
@@ -1350,6 +1370,12 @@ do with the drive. The three options, judged on this cell's merits alone:
 
 ### PL-102 -- a user cannot learn that a motor is not meeting its command
 
+> **AFTER v6.0.0 — STEPHEN 2026-09-27:** *"no public api change"* for 6.0. This entry now also carries PL-160's owner
+> Q4 (report a ramp held by the rotor-lag gate): both are one user question, "is my motor doing what I asked?", and the
+> candidate answer is one getter (e.g. `isFollowing()` on the motor and steering objects, from state the driver already
+> computes), certified under load. 6.0 ships without it. Whether its symptom is listed as a v6.0.0 Known Issue is
+> part of Stephen's pending ruling on the DEGRADED list.
+
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (capability not in 6.0)
 
 **Raised 2026-09-22 at «#3596», and parked by Stephen's ruling.** STEPHEN: *"let's keep in test only for
@@ -1535,6 +1561,10 @@ PL-106 says a lifted rig has not yet done.
 protective stop, which waits on PL-106's construction; until then this entry stays open.
 
 ### PL-118 -- the board cannot measure a phase short's current: the shunt does not carry it
+
+> **STEPHEN RULED 2026-09-27 (1 A): ships as a Known Issue.** README's v6.0.0 Known Issues states that braking by
+> shorting the phases (emergencyCutoff(), a stop held with holdAtStop(TRUE)) is not current-limited, and to ramp down
+> before stopping where possible.
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (board limit; external sensor)
 
@@ -2195,7 +2225,8 @@ them."*).** DRIVER_REV 46: `setRampingValues()` / `getRampingValues()` are gone;
 The four driver parameters stay readable to a harness as the TESTING USE `testGetRampLimits()`. The steering setters
 now set the right wheel only once the left accepted (a rejected call changes neither wheel, by construction). README
 lists the removal as BREAKING. Q2 (the built-in rates): Stephen asked whether the defaults make sense; the answer given
-was keep them and confirm on the floor (the floor sheet's PL-160 feel line). Q4 and Q5 remain.
+was keep them and confirm on the floor (the floor sheet's PL-160 feel line). Q4 RULED 2026-09-27 (STEPHEN: *"no
+public api change"*): nothing is added for 6.0; the held-ramp report moves to PL-102, after v6.0.0. Q5 remains.
 
 ### PL-161 -- the steering front cog overruns its 1 ms slot
 
@@ -2442,6 +2473,36 @@ rides the release-candidate pass is decided with that sheet.
 - **R22-T0-REVA-FOLD:** its PASS (a window rise of 0) still holds. Its record and notes still describe a threshold
   floored to 0 and a 1 mV fold. They need the effective threshold and a positive control before they carry
   certification (see the task report).
+
+### PL-164 -- the driver's supported clock range is one point, 270 MHz; users choose their own clock
+
+> **Status (2026-09-27):** AFTER v6.0.0 — STEPHEN: *"user gets to chose clock freq to run their system. we need to be as
+> capable as possible at a wide clock range... seems we need a post v6 study wherein we identify our limits/senitivities
+> and move what we can by adjusting code to widen our supported range. it ships at v6 as stated testing conditions."*
+
+**What is known (DERIVED unless marked):**
+- The front cog's 1 ms pass scales with the clock: 533 µs worst MEASURED at 270 MHz would be ~900 µs at 160 MHz,
+  against its 950 µs budget (PL-161's note).
+- The driver's PWM frame and stop-planner stages fit at 160 MHz (worst stage 60.5 % of the frame, `tools/pasm_equiv`).
+- PL-50: the 23-frame drive pass can be 22 frames at clocks that are exact multiples of 44 kHz (176, 264 MHz).
+- Every demo and every bench pass ran at 270 MHz; `dual-clock-200/270/300` tiers exist for the frame constant only.
+
+**The study:** find each clock-sensitive budget (front-cog pass, PWM frame and planner stages, drive-pass framing,
+ADC periods, serial and debug timing), derive its limit, then move what code can move so the supported range widens;
+certify at the range's ends. README states v6.0.0's supported condition (270 MHz).
+
+### PL-165 -- the DEBUG footprint gate counts every -d-only byte, not only the debug records that can be lost
+
+> **Status (2026-09-28):** AFTER v6.0.0 — found while fitting the RC demos.
+
+**Found 2026-09-28.** The gate's footprint (PLOT-DISPLAY-RULES.md §1) is the `-d` image minus the plain image. The
+hazard it guards is narrower: debug RECORDS past image offset 13,684 are cut or never sent. Code that exists only in
+`-d` builds (e.g. helper bodies inside `#ifdef __DEBUG__`) is ordinary bytecode, yet it counts against the limit, so
+gating a demo's line-builders out of plain builds (about 1.3-3.5 KB saved there) would cost the same bytes of margin.
+**MEASURED** (scratch, demo-rc): ungated 10,488 footprint; demo helpers gated 11,504; demo and flysky gated 11,800; the
+`-d` image identical (58,204) in every variant. **Not established:** where pnut-ts places `-d`-only code relative to the
+debug record table. Settling that from a `-l` listing, then measuring the records themselves, would let plain builds
+drop the builders without losing margin. v6.0.0 keeps the builders in both builds (under 1 % of hub RAM).
 
 ---
 

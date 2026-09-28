@@ -1,6 +1,5 @@
 
 # P2-BLDC-Motor-Control - Systems Review
-Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
 
 Last Udpated: 220215 15:44 MST
 
