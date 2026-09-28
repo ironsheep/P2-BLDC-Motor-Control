@@ -200,7 +200,6 @@ STATES = [
     ("RES_SLIPPED", "RESULT: SLIPPED"),
     ("RES_LIMITED", "RESULT: LIMITED"),
     ("RES_NOTRUN", "RESULT: NOT MEASURED"),
-    ("INC_OVL", "TO THE TOP: OVERLOADED"),
     ("INC_DOWN", "DRIVING DOWN TO THE START"),
     # 4. FAULT RETURN RUN
     ("FR_FWD", "NEXT: 1 M FORWARD, NO FAULT"),
@@ -386,10 +385,11 @@ SCREENS = [
     ("RETURN_DRIVE",
      "DRIVING BACK TO ITS START. STAND CLEAR: IT STOPS BY ITSELF. STOP (SPACE BAR) STOPS IT NOW.",
      "RET_DRIVE", ["STOP"], "NONE", "0"),
-    # 3. INCLINE (the hold's creep and HOLD_CEILING_PCT; the overload hold climbing): up in four legs, three stops, down
+    # 3. INCLINE (the hold on a slope: its creep and HOLD_CEILING_PCT): up in three legs, a stop after each, down
+    #  (SRC_REV 63: the overloaded climb removed -- GRAB alone proves the overload hold)
     ("INC_READY",
      "INCLINE. PUT THE PLATFORM ON THE FLAT AT THE FOOT OF THE SLOPE, FACING UP IT, ITS WHEELS JUST SHORT OF THE "
-     "SLOPE. CLICK START (KEY S): IT CLIMBS %d M IN FOUR STEPS, STOPPING THREE TIMES, THEN DRIVES %d M BACK DOWN BY "
+     "SLOPE. CLICK START (KEY S): IT CLIMBS %d M IN THREE STEPS, STOPPING AFTER EACH, THEN DRIVES %d M BACK DOWN BY "
      "ITSELF. STAND BESIDE IT, A HAND NEAR. SKIP (KEY K) SKIPS IT." % (FL_LEG_M, FL_LEG_M),
      "INC_NEXT", ["START", "SKIP"], "GIVES_UP", "OPER_START_TIMEOUT_MS"),
     ("INC_CLIMB",

@@ -36,7 +36,12 @@ unplug testing; pass 7's detection stands). Open after it: the release items bel
 - **Doc defects PL-7, PL-16, PL-54: fixed** (*"we fix them!"*).
 
 **Deferred to a later release (Stephen's rulings above):** PL-27, PL-71 (DocoEng), PL-148, PL-154, PL-157 and PL-111's
-serial half (serial), PL-164 (clock range).
+serial half (serial), PL-164 (clock range), PL-102 with Q4 (a "following" getter), PL-165 (the DEBUG footprint
+measure), PL-166 (the inertia term, Q5).
+
+**Floor rulings (STEPHEN 2026-09-28):** the fault return run faults its wheel with the guarded `testForceFault()`
+(*"fp1: A"*), not the wrong-offset write (PL-119's surge); the overload hold is proved on the grab run only, and the
+incline proves only the hold on a slope (*"fp2 B"*).
 
 The owner's rule for 6.0.0 (Stephen, 2026-09-26): *"What we need is not an eye towards looking for things we
 can address, but an eye towards whether we have everything we need to meet the criteria for the features that
@@ -62,7 +67,7 @@ do the right thing, and then we can call them done without having to test on the
 | --- | --- | --- |
 | PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | A blocked-wheel cell that trips SR_BLOCKED (the floor run «#3576» has none today) |
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | The floor run (cells built, SRC_REV 58-61); it now also carries HOLDSET/NOTFOL's question (RC F4) |
-| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Built (DRIVER_REV 38); wheels-up: t0-stopreason at SRC_REV 28 (RAMP-SHAPE, -UNWIND, -REVERSE failed at the RC pass on harness defects, fixed); feel on the floor; owner Q5 (Q4 ruled: no API change, moved to PL-102 after 6.0) |
+| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Built (DRIVER_REV 38); wheels-up: t0-stopreason at SRC_REV 28 (RAMP-SHAPE, -UNWIND, -REVERSE failed at the RC pass on harness defects, fixed); feel on the floor (owner questions all ruled: Q4 → PL-102, Q5 → PL-166, both after 6.0) |
 
 **Awaits certification** (fix built, not yet run)
 
@@ -2226,7 +2231,9 @@ The four driver parameters stay readable to a harness as the TESTING USE `testGe
 now set the right wheel only once the left accepted (a rejected call changes neither wheel, by construction). README
 lists the removal as BREAKING. Q2 (the built-in rates): Stephen asked whether the defaults make sense; the answer given
 was keep them and confirm on the floor (the floor sheet's PL-160 feel line). Q4 RULED 2026-09-27 (STEPHEN: *"no
-public api change"*): nothing is added for 6.0; the held-ramp report moves to PL-102, after v6.0.0. Q5 remains.
+public api change"*): nothing is added for 6.0; the held-ramp report moves to PL-102, after v6.0.0. **Q5 RULED
+2026-09-28 (STEPHEN: "Q5: A"): no inertia term in 6.0**; it is filed after v6.0.0 as PL-166. All of PL-160's owner
+questions are now answered; what remains is the wheels-up re-run (t0 SRC_REV 28) and the feel on the floor.
 
 ### PL-161 -- the steering front cog overruns its 1 ms slot
 
@@ -2503,6 +2510,16 @@ gating a demo's line-builders out of plain builds (about 1.3-3.5 KB saved there)
 `-d` image identical (58,204) in every variant. **Not established:** where pnut-ts places `-d`-only code relative to the
 debug record table. Settling that from a `-l` listing, then measuring the records themselves, would let plain builds
 drop the builders without losing margin. v6.0.0 keeps the builders in both builds (under 1 % of hub RAM).
+
+### PL-166 -- the ramp's rates take no account of the platform's mass (PL-160's owner Q5)
+
+> **Status (2026-09-28):** AFTER v6.0.0 — STEPHEN: *"Q5: A"* (no inertia term in 6.0).
+
+The acceleration and deceleration rates are rim rates in mm/s², the same whatever the robot weighs. On a heavy platform a
+high rate asks for more current than the motors can give; the rotor-lag gate eases the ramp off or fold-back caps the
+current, so nothing faults, but the robot accelerates more slowly than the rate set and the program is not told why
+(PL-102 carries the "not told" half). The candidate: a platform-mass constant in the user config (0 = no cap) from which
+the driver caps each rate at what the current limit can deliver, validated on the floor at known masses.
 
 ---
 
