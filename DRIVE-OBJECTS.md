@@ -120,7 +120,7 @@ The object **isp\_steering_2wheel.spin2** provides the following methods. Every 
 | PUB getHallIllegalCodes() : nLtAllLow, nLtAllHigh, nRtAllLow, nRtAllHigh | Returns each motor's illegal hall codes split by kind: all three lines low (%000, a sensor without power) and all three high (%111, a line stuck or floating high)
 | PUB getMaxSpeed() : maxSpeed | Returns the last specified {maxSpeed}; 75 until one is set, before start() as after
 | PUB getMaxSpeedForDistance() : maxSpeed4dist | Returns the last specified {maxSpeedForDistance}; 75 until one is set, before start() as after
-| PUB getAcceleration() : nRate | Returns the rate both wheels speed up at, in mm/s² at the rim, as setAcceleration() set it; the built-in rate, ACCEL\_BUILTIN\_MM\_S2 (1,000), until one is set. (Before driver revision 38 this read 0 until one was set: the old built-in ramp had no single rate.) 0 only when no wheel diameter is configured. It reads the same before start().
+| PUB getAcceleration() : nRate | Returns the rate both wheels speed up at, in mm/s² at the rim, as setAcceleration() set it; the built-in rate, ACCEL\_BUILTIN\_MM\_S2 (1,000), until one is set. 0 only when no wheel diameter is configured. It reads the same before start().
 | PUB getDeceleration() : nRate | Returns the rate both wheels slow down and stop at, in mm/s² at the rim, as setDeceleration() set it; the built-in rate, DECEL\_BUILTIN\_MM\_S2 (1,470), until one is set. It reads the same before start().
 | PUB isReady() : bState | Return T/F where T means both motors' driver cogs are running
 | PUB isStopped() : bState | Return T/F where T means both motors are stopped (at rest; not TRUE while faulted or emergency-stopped: to wait for a drive to end, use isMoveDone())

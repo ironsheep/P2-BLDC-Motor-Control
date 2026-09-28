@@ -97,23 +97,19 @@ Open questions are marked ⬚ where they arise and collected in §9. Strike ever
 There is **no shaft**. The motor *is* the wheel, so there is nowhere to mount a shaft encoder
 — which is why every position fact below had to be obtained from the halls or by hand.
 
-### 2.2 Why we believe 30 poles and 90 ticks
+### 2.2 How the 90 ticks were counted
 
-This is worth stating because a competing figure exists: hoverboard wheels are sometimes said to
-have *"like 23 electrical revolutions per mechanical revolution."* If that were right for this
-motor, every distance and rotation reading in the library would be wrong by 53 %.
-
-**It is not right for this motor, and the check was direct.** With the motor unpowered, a wheel
-was turned **three full revolutions by hand** and the hall transitions counted:
+With the motor unpowered, a wheel was turned **three full revolutions by hand** and the hall
+transitions counted:
 
 ```
 T0-12,begin,told_direction,CW_FROM_HUB,revolutions,3,wheel,RIGHT_P16
 T0-12,end,transitions,270,illegal,0,pos,-270,final_hall_code,6
 ```
 
-270 ÷ 3 = **exactly 90 ticks per revolution**, hence 15 electrical cycles. 23 cycles would have
-required 414 transitions. The starting and final hall codes match (as they must after a whole
-number of cycles) and no illegal hall state occurred.
+270 ÷ 3 = **exactly 90 ticks per revolution**, hence 15 electrical cycles and 30 magnets. The
+starting and final hall codes match (as they must after a whole number of cycles) and no illegal
+hall state occurred.
 
 Note what this measurement does *not* use: no library constant appears anywhere in it. A human
 supplied the ground truth and a counter counted edges. Checks that *look* like confirmations
@@ -429,10 +425,9 @@ Measured over two runs, counting only steps at which the wheel held its commande
 table value sits inside its flat region. Between points the drive interpolates linearly; outside
 the table it holds the end value and never extrapolates.
 
-**L falls by about 15° from 49 to 98 ticks/s, then holds at 3–8° up to full speed.** An earlier
-version of the duty servo, which held a band rather than a point, measured about 28° at 49 ticks/s
-and about 16° at 98 ticks/s. The servo change moved the whole curve. That is what a drive parameter
-does, and it is why L is not quoted as a property of the motor.
+**L falls by about 15° from 49 to 98 ticks/s, then holds at 3–8° up to full speed.** These values
+hold for this driver's duty servo: a servo that settles at a different point moves the whole curve.
+That is what a drive parameter does, and it is why L is not quoted as a property of the motor.
 
 ⚠ **The textbook current-lag model gives the wrong sign here.** The standard argument is that
 current lags applied voltage more at higher electrical frequency, so the *voltage* lead needed
@@ -454,11 +449,9 @@ Measured current against swept offset, LEFT motor, negative increment, net mV:
 
 **167.1 → 13.1 mV over 30° — a 12.7× change.**
 
-A common expectation is that the minimum is broad (*"±15° from the optimum costs only a few
-percent"*). On this motor it is not, and in our favour. A basin that deep is consistent with
-off-optimum current being dominated by **circulating current that produces no torque**, rather than
-by a modest loss of torque per amp — which is also the most natural reading of the 15–26× current
-collapse in §7.3.
+A basin that deep is consistent with off-optimum current being dominated by **circulating current
+that produces no torque**, rather than by a modest loss of torque per amp — which is also the most
+natural reading of the 15–26× difference in §7.3.
 
 **What it means for you: alignment on this motor is worth a lot, and being 30° out costs an
 order of magnitude in current, not a few percent.**
@@ -481,7 +474,7 @@ ceiling increment and `power` 1 the floor.
 | → wheel speed | **294 RPM** | calculated |
 | → rim speed | **2.54 m/s** (5.7 mph) | calculated |
 | Floor increment | **100,000** → 0.27 ticks/s, ~0.2 RPM | measured: every speed down to it rotated steadily at exactly its commanded rate; it was the lowest tried, so the true floor is lower |
-| Ceiling at the other supply voltages | 165 × 10⁶ scaled by voltage, rounded down | calculated; earlier measurements followed that line to within 2.5 % |
+| Ceiling at the other supply voltages | 165 × 10⁶ scaled by voltage, rounded down | calculated; measurements at other voltages follow that line to within 2.5 % |
 
 **How the ceiling is chosen.** It is the fastest measured speed that keeps an unloaded duty
 reserve: at 165 × 10⁶ duty runs at 92–93 % of its ceiling, on both motors and in both directions.
@@ -513,16 +506,13 @@ of the commanded rate and −7° never settled.
 Above a certain speed the drive runs out of voltage: duty reaches its ceiling and can rise no
 further. That knee is a **voltage / back-EMF limit**, not a commutation defect.
 
-**Where the knee sits.** Duty first caps between 175 and 185 × 10⁶ on all four wheel-directions.
-Before the duty ceiling was raised from 24,264 to the clip-free 27,648 (§3.2), it capped between 155
-and 165 × 10⁶. The raise moved the knee up 13 % and changed nothing below it: from 40 to 140 × 10⁶,
-net current agreed within ±10 % or ±5 mV, and duty within 0.5 %.
+**Where the knee sits.** With the clip-free duty ceiling (27,648, §3.2), duty first caps between 175
+and 185 × 10⁶ on all four wheel-directions.
 
 **Above the knee the wheel still follows, by field weakening.** With duty pinned, the only way to
 advance the rotor further is more lead. `err` grows from 48 to 65 counts, about 24° more field
 advance, and the wheel keeps its commanded rate up to 245 × 10⁶, the highest command tried. It pays
-in current: 2.3–2.6 A at 245 × 10⁶ unloaded, against 0.3–0.4 A at the knee. On the old, lower duty
-ceiling the same speed needed 3.8–4.2 A.
+in current: 2.3–2.6 A at 245 × 10⁶ unloaded, against 0.3–0.4 A at the knee.
 
 ⚠ **Field-weakened running can slip.** One motor, driven forward, lost synchronism between 235 and
 245 × 10⁶ on three consecutive runs, with a current peak of about 23–25 A and no fault. The other three
@@ -539,20 +529,16 @@ not swing on the way:
 
 | Start to 98 ticks/s, both motors, both directions | Largest duty drop while accelerating | Peak current ÷ settled |
 |---|---|---|
-| This driver | **0.01–0.03** | **1.15–1.53** |
-| The 5.x driver | 0.34–0.53 | 1.94–3.04 |
+| | **0.01–0.03** | **1.15–1.53** |
 
-**Why the 5.x driver surged.** Its servo was integral-only, with a fixed gain. The rotor's torque rises
-with lag only weakly near its operating angle, and more weakly the lower the duty. An integral loop
-around a rotor that is only slightly stiff is stable only below a gain that scales with that stiffness.
-At low speed the old gain was above that limit, so the loop hunted on a ~150 ms cycle, and every start
-passed through that region. It hunted at *constant* low speed too. This driver gives the servo the duty
-a speed needs in advance (the feedforward) and a trim whose gain scales with duty (§3.2). That removed
-the surge, as a desk model of the drive had predicted, with both start figures landing inside the
-model's predicted ranges.
+**Why the servo stays quiet.** The rotor's torque rises with lag only weakly near its operating angle,
+and more weakly the lower the duty. An integral loop around a rotor that is only slightly stiff is stable
+only below a gain that scales with that stiffness; a fixed gain high enough for the top of the range
+hunts at low speed. So the servo gets the duty a speed needs in advance (the feedforward) and a trim
+whose gain scales with duty (§3.2), and the loop stays stable across the range.
 
-**What remains at the lowest speeds.** At the two slowest speeds tested, 10 and 20 × 10⁶ (27 and 53
-ticks/s), duty still swings, 178–399 counts against 800–1,650 before, and `err` still peaks at 76–86 counts around its mean of 48. It is a small residual,
+**At the lowest speeds.** At the two slowest speeds tested, 10 and 20 × 10⁶ (27 and 53 ticks/s), duty
+swings by 178–399 counts, and `err` peaks at 76–86 counts around its mean of 48. It is a small residual,
 not a surge.
 
 **Faster ramps.** Starts at two and four times the default acceleration also follow cleanly, without the
@@ -561,9 +547,9 @@ current peak grows with the acceleration, as it must (1.26–1.34 × settled at 
 at twice it and 1.57–2.13 at four times), and in absolute terms it stays at about 0.2 A. Slowing down
 produces no surge at either rate tried: the current only falls.
 
-⬚ These start figures were taken on the ramp that stepped its acceleration on and off. The jerk-limited
-ramp that replaced it (§7.5) has been measured for its shape and its stops, not yet for start current.
-Every trace here was taken wheels-up; how a start behaves under load is in §9.
+⬚ These start figures were measured at a constant acceleration. The driver's ramp eases its acceleration
+in and out (§7.5); that ramp is measured for its shape and its stops, not yet for start current. Every
+trace here was taken wheels-up; how a start behaves under load is in §9.
 
 ### 6.5 Stopping, faulting and holding
 
@@ -610,7 +596,7 @@ on this ramp costs about 250 ms and v × 125 ms of travel more than a constant-r
 of easing the deceleration in and out (§7.5).
 
 This is `FR_GRADED`, the driver's default fault response. `FR_SHIPPED`, which coasts or shorts at once by
-stop mode, as the 5.x driver did, stays selectable. On a two-wheel platform, a fault on one wheel stops
+stop mode, stays selectable. On a two-wheel platform, a fault on one wheel stops
 the other.
 
 **At rest, the stop states are distinct at the wheel.** A hand spin of a stopped wheel gives:
@@ -690,7 +676,7 @@ resistance, or by the graded short's duty (§6.5).
 ### 7.3 Current in normal running
 
 **What alignment is worth.** Net current (mV) at the same commanded speed, both motors, aligned (offsets
-14 / 338) and driven 25° off optimum, on the fixed-offset drive:
+14 / 338) and driven 25° off optimum, each with a fixed offset pair:
 
 | Motor | Speed (increment) | **aligned** (neg / pos) | the same motor driven 25° off optimum | cost of that misalignment |
 |---|---|---|---|---|
@@ -708,14 +694,13 @@ channel at all), and the fact that the commanded rate was met in both cases to w
 turns the same wheel at the same speed for a fraction of the current.**
 
 **Letting the lead follow speed goes further.** With the lead table (§5.2), net current is a further
-**22–74 % below** the aligned fixed-offset drive from 40 to 140 × 10⁶, and the saving grows with speed:
+**22–74 % below** the aligned fixed pair from 40 to 140 × 10⁶, and the saving grows with speed:
 22–27 % at 40 × 10⁶, 70–74 % at 120 × 10⁶. Duty falls 5–13 % with it, and speed tracks within 0.04–0.47 %.
 
 **Direction symmetry.** The LEFT motor's two directions draw the same current to within 1–4 % at every
 speed from 40 to 140 × 10⁶. The RIGHT motor keeps a small residual: its negative direction draws 2–8 %
-less than its positive one (for example 264 against 286 mV × 10 at 100 × 10⁶), the same size as on the
-fixed-offset drive. It is a few percent of a current that is already an order of magnitude smaller than
-misaligned.
+less than its positive one (for example 264 against 286 mV × 10 at 100 × 10⁶). It is a few percent of a
+current that is already an order of magnitude smaller than misaligned.
 
 ### 7.4 What off-optimum current costs
 
@@ -727,18 +712,10 @@ windings.
 
 ### 7.5 Transitions
 
-Changing speed produces a current kick above the settled value, which you can feel as a small jolt.
-Aligning the drive cut the worst kick from 1,247 to 204 counts, and the lead table brought the mean peak
-at a speed change to 79–84, against 116–125 with a flat 18° lead, with the worst at 253–270.
-
-**Most of what remained was a driver defect, and it is gone.** On the one drive pass where a speed
-change reached its target, the driver did not advance the field, though every pass before and after it
-did. So each arrival stepped the field back by a whole increment, 12° electrical at 147 × 10⁶. That rang
-the rotor's load angle at about 18 Hz, and the motoring half of the ring was the current kick 10–35 ms
-after arrival. It explained everything the logs had shown: the kick grew with the speed arrived at, not
-with the size of the step, and slow-downs were worse than speed-ups. A desk model reproduced the logged
-kicks within about 10 mV before the fix was built. With the arrival pass advancing the field, the worst
-excess over settled current fell to **16 mV left and 13 mV right**, against 64–183 before.
+Changing speed draws current above the settled value while the wheel accelerates. Beyond that, the
+excess at a speed change is small: at worst **10 mV left and 12 mV right** over the settled current,
+across every speed change measured (below). Misalignment makes it much larger, which is one more reason
+to use the lead table.
 
 **The ramp is jerk-limited.** One trajectory generator runs every drive pass the motor is not at rest.
 Its acceleration moves toward its limit by at most one jerk step a pass, rising from 0 to the limit over
@@ -755,8 +732,7 @@ deceleration a takes about v ÷ a + 0.25 s and runs about v² ÷ 2a + v × 0.125
 moved the acceleration by at most one jerk step a pass (71 up, 104 down) and never past its limit, and
 settled on the target; a reversal from +40 × 10⁶ to −40 × 10⁶ passed through zero without the driver
 reporting STOPPED; stop limits armed at cruise and mid-ramp came to rest within 2 ticks and 3 ms of their
-limits, and the same stop plans repeated to within a millisecond on a second day. The speed-change kick
-on this ramp is **10 mV left and 12 mV right**.
+limits, and the same stop plans repeated to within a millisecond on a second day.
 
 ⬚ **Not yet known:** the feel of a start, a speed change and a stop on the floor, the current each draws
 under load, and whether the built-in rates suit a loaded platform (§9).

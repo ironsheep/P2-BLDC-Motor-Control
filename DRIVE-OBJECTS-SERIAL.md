@@ -154,7 +154,7 @@ Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A
 | PUB getHallIllegalCodes() : nLtAllLow, nLtAllHigh, nRtAllLow, nRtAllHigh <BR><PRE>SER gethallillegal<br>SER Returns: hallillegal {ltAllLow} {ltAllHigh} {rtAllLow} {rtAllHigh}</PRE>| Returns each motor's illegal hall codes since start, split by kind. %000 (all low) is a sensor without power or a line pulled low; %111 (all high) is a line stuck or floating high. Each count stops at 65,535.
 | PUB getMaxSpeed() : maxSpeed <BR><PRE>SER getmaxspd<br>SER Returns: speedmax {maxSpeed}</PRE>| Returns the last specified {maxSpeed}
 | PUB getMaxSpeedForDistance() : maxSpeed4dist <BR><PRE>SER getmaxspdfordist<br>SER Returns: speeddistmax {maxSpeed}</PRE>| Returns the last specified {maxSpeedForDistance}
-| PUB getAcceleration() : nRate <BR><PRE>SER getaccel<br>SER Returns: accel {rate}</PRE>| Returns the speed-up rate `setaccel` set, in mm/s²; the built-in rate, 1,000, until one is set. (Before driver revision 38 this read 0 until one was set: the old built-in ramp had no single rate.)
+| PUB getAcceleration() : nRate <BR><PRE>SER getaccel<br>SER Returns: accel {rate}</PRE>| Returns the speed-up rate `setaccel` set, in mm/s²; the built-in rate, 1,000, until one is set.
 | PUB getDeceleration() : nRate <BR><PRE>SER getdecel<br>SER Returns: decel {rate}</PRE>| Returns the slow-down and stop rate `setdecel` set, in mm/s²; the built-in rate, 1,470, until one is set.
 
 **NOTE1** {power} whenever used is [(-100) - 100] where neg. values drive backwards, pos. values forward, 0 is hold/stop

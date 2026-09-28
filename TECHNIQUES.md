@@ -38,9 +38,7 @@ revolutions, and electrical cycles per revolution is that ÷ 6. Two checks come 
 at the end must equal the code at the start, and no illegal code (`%000` or `%111`) may appear.
 
 **Worked example.** Three revolutions of a 6.5″ wheel gave **270 transitions**, 0 illegal, and the same
-start and end code: exactly 90 ticks per revolution, 15 electrical cycles, 30 magnets. A figure of
-"about 23 electrical cycles" had been suggested for hoverboard motors; it would have needed 414
-transitions, and would have made every distance reading 53 % wrong.
+start and end code: exactly 90 ticks per revolution, 15 electrical cycles, 30 magnets.
 
 ⚠ **Beware circular checks.** Wheel travel per tick, a speed sweep's ticks per second, and the driver's
 RPM against a program's RPM all *look* like confirmations, but each divides by the same 90 it claims to
@@ -159,7 +157,7 @@ commanded rate.
 pass). Above that, the wheel still followed up to 245 × 10⁶, drawing 2.3–2.6 A unloaded against 0.3–0.4 A
 at the knee, and one motor lost synchronism with a 23–25 A peak. The ceiling is 165 × 10⁶, where duty sits
 at 92–93 % of its maximum: 294 RPM, 2.54 m/s. Every speed down to 100,000 (about 0.2 RPM) turned steadily.
-The other voltages' ceilings are that one number scaled by voltage, and our earlier measurements at other
+The other voltages' ceilings are that one number scaled by voltage, and measurements at other
 voltages followed that line to within 2.5 %.
 
 **Where it lives.** The `dual-limits` and `dual-limits-top` tiers of `src/test_bench_dual.spin2`;
@@ -174,9 +172,9 @@ itself at start, without a meter.
 would bias the reading, and read the DC-link current: R = d² × V × rSense ÷ net mV. Use the *measured*
 supply voltage.
 
-**Worked example.** About 0.48 Ω phase to phase on both motors, each reading good to about ±6 %. The first
-calculation used the nominal 18.5 V and came out 12 % low, which is exactly 18.5 ÷ 20.72, the pack's real
-voltage. The instrument's assumption was wrong, not the motor. The negative case: with one lead withheld
+**Worked example.** About 0.48 Ω phase to phase on both motors, each reading good to about ±6 %, on the
+measured pack voltage of 20.72 V. Computed with the nominal 18.5 V instead, the same readings come out 12 %
+low, exactly 18.5 ÷ 20.72: an instrument's assumption, not the motor. The negative case: with one lead withheld
 in firmware, the two pairs through it read "not visible" and the third still measures, in 10 of 10
 starts.
 
@@ -246,7 +244,8 @@ can mean the thing that triggers it never happened.
 **The idea.** Before concluding the motor or the driver is wrong, check the instrument's assumptions:
 its scale, its zero, its supply voltage, its timing.
 
-**Worked example.** The winding resistance read 12 % low: a nominal voltage, not the winding (§1.7). The
+**Worked example.** Computed with the nominal supply voltage, the winding resistance reads 12 % low: a
+voltage assumption, not the winding (§1.7). The
 current sense's rest offset differs per board and per start, so every reading here is *net* of a zero
 taken with nothing driven, and a zero is only valid within the driver session that took it.
 

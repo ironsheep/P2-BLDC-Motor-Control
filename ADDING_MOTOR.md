@@ -280,7 +280,7 @@ can, drawing more current as it tries.
 
 **Worked example.** The 6.5″ motor at 18.5 V: knee at 175–185 × 10⁶, ceiling 165 × 10⁶ (294 RPM), with every
 speed down to 100,000 turning steadily. Its other voltages' ceilings are that one number scaled by voltage,
-which our earlier per-voltage measurements followed to within 2.5 %.
+which measurements at other voltages follow to within 2.5 %.
 
 **Where it goes.**
 
