@@ -39,8 +39,12 @@ See also:
 
 - [How to select the motor in your project code](MOTOR_CHOICE.md) - has motor reference info
 - [Connecting the smaller motor](DOCOENG_MOTOR.md) - wiring information
+- [The 6.5" motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - what we measured about the 6.5" motor, and how to drive it well
+- [Adding support for a new motor](ADDING_MOTOR.md) - the procedure for characterizing a motor and adding it to the driver
 
 ## Current status
+
+Why v6.0.0 reworked the drive, what changed, and how each change was checked: [The 6.0 driver — what changed, and how we know](DRIVER-6.0-REWORK.md).
 
 Latest Changes:
 
@@ -299,6 +303,11 @@ Additional pages:
 
 - [Steering and Motor control](DRIVE-OBJECTS.md) - The object public interfaces
 - [Start your drive project using these objects](DEVELOP.md) - Walks thru configuration and setup of your own project using these objects
+- [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md) - How the driver works inside: its cogs, the Spin2/PASM2 contract, commutation, ramps, stops and protection, and the behaviors that will surprise you
+- [The 6.0 driver — what changed, and how we know](DRIVER-6.0-REWORK.md) - Why the drive was reworked for v6.0.0, and how each change was checked
+- [The 6.5" motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - The 6.5" motor as measured: geometry, commutation, speed and current envelope, stopping and holding
+- [Techniques](TECHNIQUES.md) - How we measured the motor and built the driver, written so you can reuse the methods
+- [Adding support for a new motor](ADDING_MOTOR.md) - Characterize your motor and add it to the driver
 - [Use RPi or Arduino to control your platform](SERIAL-CONTROL.md) - Walks thru configuration and setup of RPi control system (extrapolate to Arduino)
 - [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
 - [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards

@@ -8,7 +8,8 @@ This is a *developer reference*. For the public method tables see
 [DEVELOP.md](DEVELOP.md); for adding a motor see [ADDING_MOTOR.md](ADDING_MOTOR.md). How the
 6.5″ motor itself behaves under this driver — its hall zero, the lead it wants, its speed and
 current envelope — is in
-[the 6.5″ motor technical manual](DOCs/MOTOR-6.5IN-TECHNICAL-MANUAL.md).
+[the 6.5″ motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md). How its numbers were measured,
+and how the driver's engineering was verified, is in [TECHNIQUES.md](TECHNIQUES.md).
 
 It describes `src/isp_bldc_motor.spin2` and `src/isp_steering_2wheel.spin2` as of v6.0.0.
 
@@ -99,8 +100,8 @@ base pin and the parameter-block pointer, and steps past `targetAngle` and `targ
 | `fault` | `ptra[24]` | driver → Spin2, on fault only | 1 |
 | Parameter block, `offset_fwd` … `sense_zero` | `params_ptr_` | Spin2 → driver, every frame | `DRVR_PARAMS_LONGS_COUNT` = 27 |
 
-The launch quartet's own length is `DRVR_LAUNCH_LONGS_COUNT` = 4. The counts are as of
-DRIVER_REV 39; the constants in `isp_bldc_motor.spin2` are the authority, not this page.
+The launch quartet's own length is `DRVR_LAUNCH_LONGS_COUNT` = 4. The constants in
+`isp_bldc_motor.spin2` are the authority for every count, not this page.
 
 ### The invariants
 
@@ -129,14 +130,13 @@ status block.
 | 19 | `fault_resyncs` | faults answered by a re-sync and a controlled stop (unbounded) |
 | 20 | `foldback_frames` | frames the current fold-back lowered the duty (unbounded) |
 | 21 | `drv_accel_now` | the ramp generator's acceleration: the signed change of `drv_incr_now` per pass |
-| 22 | `drv_stop_passes` | the driver's stop plan: drive passes to rest for a stop written now (DRIVER_REV 39) |
-| 23 | `drv_stop_fp` | the driver's stop plan: the field's travel to rest, 1/256 hall tick (DRIVER_REV 39) |
+| 22 | `drv_stop_passes` | the driver's stop plan: drive passes to rest for a stop written now |
+| 23 | `drv_stop_fp` | the driver's stop plan: the field's travel to rest, 1/256 hall tick |
 | 24 | `fault` | ← immediately after the run; written TRUE on every fault |
 
 The driver writes them in one burst (`setq #DRVR_STATUS_LONGS_COUNT-1` / `wrlong drive_u_,
-ptra`) and reports a fault by writing `ptra[DRVR_STATUS_LONGS_COUNT]`. Since `drv_accel_now`
-is no longer the run's last long, a reader of the raw run (a bench harness) finds the three
-appended longs by the index constants `DRVR_STATUS_ACCEL_NOW_IDX` (21),
+ptra`) and reports a fault by writing `ptra[DRVR_STATUS_LONGS_COUNT]`. A reader of the raw run
+(a bench harness) finds the last three longs by the index constants `DRVR_STATUS_ACCEL_NOW_IDX` (21),
 `DRVR_STATUS_STOP_PASSES_IDX` (22) and `DRVR_STATUS_STOP_FP_IDX` (23), not by counting.
 
 **Invariant 3 — the parameter block is 27 contiguous longs.**
@@ -150,13 +150,13 @@ appended longs by the index constants `DRVR_STATUS_ACCEL_NOW_IDX` (21),
 | 4 | `servo_shift` | the trim accumulator's shift |
 | 5 | `ff_ceiling` | the motor's back-EMF line the feedforward scales by (not a speed ceiling) |
 | 6 | `dead_gap` | the dead gap between a half-bridge's two sides |
-| 7 | `accel_dn` | the slow-down acceleration limit (was `ramp_down`) |
+| 7 | `accel_dn` | the slow-down acceleration limit |
 | 8 | `cfg_ctcks` | the drive pass's 500 µs deadline, clock ticks |
 | 9 | `stop_mode` | `SM_FLOAT` or `SM_BRAKE` |
 | 10 | `e_stop` | `ES_OFF`, or the kind of emergency stop latched |
-| 11 | `accel_up` | the speed-up acceleration limit (was `ramp_max`) |
-| 12 | `jerk_up` | the speed-up jerk (was `ramp_min`) |
-| 13 | `jerk_dn` | the slow-down jerk (was `ramp_inc`) |
+| 11 | `accel_up` | the speed-up acceleration limit |
+| 12 | `jerk_up` | the speed-up jerk |
+| 13 | `jerk_dn` | the slow-down jerk |
 | 14 | `i_limit_k` | the current-limit threshold factor |
 | 15 | `duty_floor` | the duty floor for the phase-current estimate |
 | 16 | `hold_duty` | the duty applied at rest |
@@ -289,7 +289,7 @@ The driver runs two nested loops.
 7. compute the duty feedforward for this pass's speed
 ```
 
-**The ramp is jerk-limited** (DRIVER_REV 38, PL-160). One trajectory generator, `jerkStep` (in
+**The ramp is jerk-limited.** One trajectory generator, `jerkStep` (in
 the LUT), runs every pass the motor is not at rest, whatever the state, and takes every command
 as it stands; the states are now only what it reports. Four parameter longs drive it:
 `accel_up` and `accel_dn`, the acceleration limits (change of `drv_incr` per pass), and
@@ -298,17 +298,17 @@ rises by at most a jerk a pass to its limit, and ramps back out to land exactly 
 a limit lowered mid-ramp is unwound at the larger jerk. A reversal passes through zero in one
 continuous ramp: only a start from `DCS_STOPPED` seeds the field from the halls. The
 generator's present acceleration is the status long `drv_accel_now`. Built-in limits:
-1,000 mm/s² up and 1,470 mm/s² down (33,958 and 49,918 on the 6.5″ wheel), provisional.
+1,000 mm/s² up and 1,470 mm/s² down (33,958 and 49,918 on the 6.5″ wheel).
 `setAcceleration()` and `setDeceleration()` set the limits from mm/s², and are the only
-ramp setters (the raw `setRampingValues()` was removed at DRIVER_REV 46). A bench harness
-reads the four driver parameters with the testing hook `testGetRampLimits()`.
+ramp setters. A bench harness reads the four driver parameters with the testing hook
+`testGetRampLimits()`.
 
 Steps 5 and 6 are why the driver seldom faults any more: the field never gets far enough
 ahead of the rotor to trip the 175.8° fault test unless the rotor is truly lost.
 
 ### The stop plan
 
-**The driver plans its own stop** (DRIVER_REV 39, PL-161), so no front cog computes one.
+**The driver plans its own stop**, so no front cog computes one.
 After each drive pass, `planStage` runs the jerk-limited stop's closed form in integers
 (`planA` … `planC`: 64-bit sums, `QSQRT` roots, no float), a third of a plan a frame over the
 next nine frames so that it fits at 160 MHz. It plans from the pass's own increment and
@@ -321,8 +321,8 @@ tenth frame after the pass (about 230 µs).
 ### Cog and LUT memory
 
 Registers live in cog RAM, because instruction operands reach only cog RAM; code may live in
-the LUT, which runs at cog speed. The `fit` comments in the source, read from the compiler at
-DRIVER_REV 45, give the budget:
+the LUT, which runs at cog speed. The `fit` comments in the source, read from the compiler,
+give the budget:
 
 | Memory | Holds | Used |
 |---|---|---|
@@ -330,45 +330,44 @@ DRIVER_REV 45, give the budget:
 | LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $290: the start sequence and `driveinit` | 144 (hidden under the run image) |
 | LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3C9: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **457 of 512** |
 
-The LUT holds **two images at the same addresses, one after the other** (DRIVER_REV 42). The
-entry code block-loads the start image from `lutCodePtr` and runs it. Its last act is
+The LUT holds **two images at the same addresses, one after the other**. The entry code
+block-loads the start image from `lutCodePtr` and runs it. Its last act is
 `loadOverlay`, in cog RAM, which block-loads the run image from `planCodePtr` over it and
 enters the drive loop. The two are partitioned by call graph: the start image calls only cog
 RAM and its own `driveinit`, and nothing in cog RAM or the run image calls into the start
 image, so no run-image address is reached before the load and no start-image address after
 it. `countIllegal`, which both phases call, lives in cog RAM for that reason. So LUT use is the
 larger of the two images, and the start image costs none. The load happens once, after the ATN
-release: both wheels load the same 457 longs, so their lockstep is unchanged. Until
-DRIVER_REV 41 the LUT held 507 resident longs, and only the planner's 126-long core was an
-overlay over the spent start sequence.
+release: both wheels load the same 457 longs, so their lockstep is unchanged.
 
-DRIVER_REV 41 also made 21 cog longs do double duty. The entry code, `loadOverlay`, eight
-start-only constants, `adc_modes` and `calibPeriod` are dead once the start sequence has run,
-and each is also the home of a register only the drive loop uses (`pl_v` … `sp_F`, `jrk_e`
-… `jrk_lim`).
+**Cog longs do double duty.** The entry code, `loadOverlay`, eight start-only constants,
+`adc_modes` and `calibPeriod` are dead once the start sequence has run, and each of those 21
+longs is also the home of a register only the drive loop uses (`pl_v` … `sp_F`, `jrk_e` …
+`jrk_lim`).
 
-DRIVER_REV 43 took 15 more cog longs out of the frame loop and the drive pass, each by an exact
+**The frame loop and the drive pass are written tight**, each saving by an exact
 instruction-level identity: the phase levels' minimum and maximum by `FLES`/`FGES`, the centre
 bias and the dead gap folded into the one offset each level is moved by, the fold-back compare
-as `sense_i > t + sense_zero` (no `fold_net` register), `NEGC` for the signed lag, `TJZ` for the
-e-stop and duty-ceiling tests, and `ADDCT1` on `ctrlSrtTix` itself (no `ctrlEndTix`). The pins,
-the hub writes and every live register are unchanged.
+as `sense_i > t + sense_zero`, `NEGC` for the signed lag, `TJZ` for the e-stop and duty-ceiling
+tests, and `ADDCT1` on `ctrlSrtTix` itself.
 
-DRIVER_REV 44 took 20 more. The driver's `deltas` table is 8 longs of nibbles, not 64 bytes:
-nibble `new` of long `old`, read by `ALTGN`/`GETNIB`. Each nibble carries the transition's
-step (bits 1:0, −1/0/+1) and its integrity event: bit 2 a missed transition, bit 3 an entry
-into `%000` or `%111`. Both events are fixed by the pair and its step, so `init()` works them
-out once (`packHallDeltas()`), from the motor's byte table (`deltas65`, `deltas4k`, still the
-authoring format) with any test hall swap applied. The frame then needs 8 instructions where
-it had 20. A step outside −1..+1 cannot be packed, so every start checks every motor's byte
-table first and refuses a bad one with `ERR_BAD_MOTOR_TABLE` (`bHallDeltaTablesValid()`).
+**The hall transition table is packed.** The driver's `deltas` table is 8 longs of nibbles, not
+64 bytes: nibble `new` of long `old`, read by `ALTGN`/`GETNIB`. Each nibble carries the
+transition's step (bits 1:0, −1/0/+1) and its integrity event: bit 2 a missed transition, bit 3
+an entry into `%000` or `%111`. Both events are fixed by the pair and its step, so `init()` works
+them out once (`packHallDeltas()`), from the motor's byte table (`deltas65`, `deltas4k`, the
+authoring format) with any test hall swap applied. The frame needs 8 instructions for it. A step
+outside −1..+1 cannot be packed, so every start checks every motor's byte table first and
+refuses a bad one with `ERR_BAD_MOTOR_TABLE` (`bHallDeltaTablesValid()`).
 
-DRIVER_REV 45 took 8 cog longs and 19 run-image longs out of the stop planner. `planStage`
-runs one parameterised part A, B or C for all three plans (the stop taken at the next pass, and
-the two ends of the take pass) and one fold. It adds the take pass only when the plan has one.
-`plan_stage` keeps its values 1 to 9, so each stage runs on the same frame as before and the
-published pair is unchanged. `run`, `planSat`, `planFp` and `planCorner` lost redundant
-instructions, and `DECOD`/`BMASK` replace `##` constants.
+**The stop planner runs one parameterised stage.** `planStage` runs one part A, B or C for all
+three plans (the stop taken at the next pass, and the two ends of the take pass) and one fold,
+and adds the take pass only when the plan has one.
+
+Every one of these savings was proved to leave the driver's behaviour unchanged — every hub
+write, pin operation and live register, frame by frame — by `tools/pasm_equiv`
+([TECHNIQUES.md §3.3](TECHNIQUES.md#33-prove-a-pasm-rewrite-identical-before-you-trust-it)).
+Together they took cog RAM from 492 to 441 longs and the LUT from 507 to 457.
 
 ### The frame loop — commutation
 
@@ -381,8 +380,8 @@ codes with no step (`hall_missed`). Bit 3 marks an entry into `%000` or `%111`, 
 counted by kind (`hall_illegal`, low and high words). A change out of `%000` or `%111` counts
 nothing, since it was counted on entry. Both marks depend only on the transition and its step,
 so `init()` sets them once (`packHallDeltas()`) and the frame only tests them. The per-motor
-byte tables below are the source `init()` packs from; since DRIVER_REV 44 the driver no longer
-holds them as bytes.
+byte tables below are the source `init()` packs from; the driver itself holds only the packed
+form.
 
 The hall code also indexes `hall_angles` for the rotor's angle within the hall cycle; bit 3 of
 the index selects the forward or reverse half. Per-motor tables are chosen in `init()`:
@@ -467,7 +466,7 @@ schedule re-anchored, never replayed.
 1. take, apply and answer the posted requests (e-stops, then stops, then the rest); one
    that depends on the driver (a synchronized take, an e-stop release, a fault clear) is
    held in flight and answered on the pass that sees the driver act, within 4 drive
-   passes (DRIVER_REV 37) -- no front pass waits on a driver
+   passes -- no front pass waits on a driver
 2. tracking: latch a new fault's cause; accumulate hall ticks since the last pass
    every 8th pass (125 Hz): advance the 1-second rpm window, update the following
    reading, and re-derive the lead (6.5″ only)
@@ -484,11 +483,10 @@ the front cog computes nothing and only reads and compares. `frontStopTicks()` i
 rounded up. The plan counts from the published pass's own time, and the run is read after
 that, so its age can only make a limit's stop early, never late. The plan is the jerk-limited
 stop's phases (unwinding any acceleration still speeding up, the rise, the plateau at
-`accel_dn`, the ramp-out) in closed form, exact against the driver's own per-pass arithmetic —
-the form the Spin2 `stopPlan()` computed at DRIVER_REV 38 (it is gone). From 196 ticks/s on
-the 6.5″ motor that form gave about 100 hall ticks, DERIVED and not yet measured; the
-constant-rate ramp before DRIVER_REV 38 gave 75, the figure the bench measured. Only one limit
-is live at a time: a time limit is checked first, and a distance limit only while no time
+`accel_dn`, the ramp-out) in closed form, exact against the driver's own per-pass arithmetic.
+Measured on the 6.5″ motor, a stop from 81.7 × 10⁶ ran 122 ticks against a plan of 120, and stop
+limits armed at cruise and mid-ramp came to rest within 2 ticks and 3 ms of their limits. Only
+one limit is live at a time: a time limit is checked first, and a distance limit only while no time
 limit is armed.
 
 **The following reading** divides the rpm window's measured rate by the commanded rate. The
@@ -539,13 +537,23 @@ back up — so the platform keeps its path and loses speed.
 | Reverse power on a `MOTR_DOCO_4KRPM` uses *negative* increments as "forward" | The DocoEng motor's increment convention is inverted relative to the 6.5″ motor. |
 | Distance methods need a non-zero wheel diameter | With `WHEEL_DIA_IN_INCH = 0.0` they return `ERR_NO_WHEEL_DIA`. Single-motor bench setups usually have it at 0. |
 | `power` 100 is not the fastest the motor can turn | It is the fastest speed that keeps a duty reserve. Above it the motor follows only by field weakening, at a steep cost in current, and can slip. |
+| Every stop takes about 0.25 s longer, and runs about speed × 0.125 s further, than its deceleration alone predicts | The ramp eases the deceleration in and out over 250 ms. The stop limits allow for it and land on their limit; a plain `stopMotor()` does not, so leave the room. |
+| An e-stop, or a hold that has handed off to the short, is not current-limited | Shorting the phases circulates current through the low-side FETs, and the current shunt never sees it. About 35–42 A from top speed on the 6.5″ motor. Ramp down first where you can. |
+| The dead-time is the same on both board revisions | Both Parallax manuals give a 250 ns minimum, set by the MOSFETs, even though Rev B's gate drivers are faster. It is not a per-revision setting. |
+| On the 6.5″ motor, the best commutation lead *falls* as speed rises | The textbook current-lag model says it should grow. Measured, it falls about 15° between a crawl and a quarter of top speed, then holds at 3–8°. That is why the lead comes from a measured table, not a formula. |
+| The commutation offset and the duty servo's setpoint add | Both place the field. The lead is carried in the offset, and the setpoint stays fixed; moving both counts one correction twice. |
+| A misaligned motor still runs | It just draws far more current: 30° off the best placement costs 12.7× the current on the 6.5″ motor, as circulating current that does no work. If a board runs hot, suspect the commutation first. |
+| Turning an unpowered 6.5″ wheel, you feel it detent | That is magnetic cogging between the magnets and the stator teeth, 15 times a revolution. It is not commutation and says nothing about the offsets. |
+| `getCurrent()` is net of a zero taken at `start()` | The sense reading at rest differs per board and per start, so `start()` measures it with nothing driven and every reading afterwards is taken less it. That zero belongs to that start. |
+| The start checks prove the motor was healthy at start, and no more | They run with nothing moving before the first command. A connection that fails later in a run is not something they can see. |
 
 ---
 
 ## 8. Adding a motor — what the driver must be told
 
-Summarised from [ADDING_MOTOR.md](ADDING_MOTOR.md), from the driver's point of view. The
-driver cannot detect any of this at runtime, so all of it is compiled in:
+Summarised from [ADDING_MOTOR.md](ADDING_MOTOR.md), from the driver's point of view; that page
+gives the procedure that measures each one, and a checklist of every routine that names a motor.
+The driver cannot detect any of this at runtime, so all of it is compiled in:
 
 1. **Hall geometry** — ticks per revolution and degrees per tick (`hallTicInfoForMotor`).
 2. **Hall order** — the forward/reverse sequence, encoded in the `hltb*` angle table.
