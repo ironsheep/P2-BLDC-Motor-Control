@@ -4,7 +4,8 @@
 DRIVER_REV 38's jerk-limited ramp and DRIVER_REV 39's stop plan, and **SRC_REV 62 rebuilt it on Stephen's floor rules and
 the five situations he chose (2026-09-27)**; **SRC_REV 63 applies his two rulings on it (2026-09-28)**, below; **SRC_REV 64
 records what the run needs to say how the drive works for a platform of this size** ("record all we should to understand
-how we are working for this size platform", Stephen, 2026-09-28): see *The platform's size* below.
+how we are working for this size platform", Stephen, 2026-09-28): see *The platform's size* below. **SRC_REV 65 makes
+it a countdown run and postpones INCLINE (Stephen, 2026-09-29)**: see *The countdown run* below.
 **Tier:** `dual-spin` (part `DUAL_PART_SPIN`, one binary). **Burn-down:** `DOCs/PUNCH-LIST.md`, "Release burn-down".
 
 **Stephen's rulings (2026-09-28).**
@@ -14,6 +15,17 @@ how we are working for this size platform", Stephen, 2026-09-28): see *The platf
 2. **Only GRAB ONE SIDE proves the overload hold; the INCLINE proves only the hold on a slope.** The incline's overloaded
    climb and its LDHOLD judgement are removed. The incline now climbs in three steps with a stop after each, then
    drives down.
+
+**Stephen's rulings (2026-09-29).**
+
+3. **INCLINE is postponed**: "postpone the incline testing until we've returned all other results and have corrected
+   the driver using them." It is not in this run (SRC_REV 65); section 3 below is kept for when it returns.
+4. **No interaction with the PC once the run starts**: "I'll be 4 ft away from the monitor telling me what to do when
+   i'm at the platform... so there can't be any interaction by me with the plot window after the test is running... i'll
+   need to know before test starts what to look for to know when to interact a timer-countdown with large numbers could
+   tell me when to interact." One START click, then the countdown board (below) runs the visit.
+5. **A mid-run stop is his own**: "i'll find a way... at the very least i lift the wheels and disconned the battery."
+6. **The countdown durations** in the timeline below: "durations seem ok."
 
 **Why this visit exists:** the floor run keeps only the claims that need a load (Stephen, 2026-09-26). It is the last
 bench visit before 6.0, so it has to decide every load-dependent release item in one visit:
@@ -31,7 +43,8 @@ bench visit before 6.0, so it has to decide every load-dependent release item in
 | PL-160 (the feel, under load) | the jerk-limited ramp eases every start and stop in and out under a real load: SPINSTRT and SPINPEAK judge the quarter's START, and **you record what you feel** (below) | every drive |
 
 It also carries the floor run's own claims, unchanged since «#3591»: the commutation offsets under load and R18.3's
-loaded expectations (5 SPINS), and the hold on an incline, which sizes `HOLD_CEILING_PCT` (3 INCLINE).
+loaded expectations (5 SPINS), and the hold on an incline, which sizes `HOLD_CEILING_PCT` (3 INCLINE — postponed by
+ruling 3, so `HOLD_CEILING_PCT` is not sized by this visit).
 
 **The demos ran at the release-candidate pass (PL-149 certified).** The 27 A derate cannot be reached on this rig.
 
@@ -66,19 +79,19 @@ Then battery off, the platform on the floor, and the floor run below.
 already compiled; it prints the commit it was built from and each binary's SHA-256 before it runs, and its logs
 land in the folder's `logs/`. Its `README.txt` says which binary each test runs. pnut-term-ts must be on the PATH.
 
-Pulling instead: `git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 64** and the
+Pulling instead: `git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 65** and the
 release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate pass leads to a fix).
 
 ## Check the banner before reading anything else
 
 | Every `dual-spin` log must read |
 |---|
-| `BM-BANNER,...,src_rev,64,fmt,41,part,SPIN` |
+| `BM-BANNER,...,src_rev,65,fmt,42,part,SPIN` |
 | `BM-BUILD ... drv_rev,46`: the driver under test. A lower number means an old tree. |
-| `BM-PLAN` rows in this order: `OBSTACLE`, `GRAB`, `INCLINE`, `FAULTRUN`, `SPIN` |
+| `BM-PLAN` rows in this order: `OBSTACLE`, `GRAB`, `FAULTRUN`, `SPIN` (no `INCLINE`: ruling 3) |
 | `BM-FLBUILD`, `BM-BLKBUILD`, `BM-LDBUILD`, `BM-CRPBUILD` and `BM-RDBUILD` present: every bound below was pre-registered |
 | `BM-FLBUILD ... leg_mm,1000,leg_tk,173,over_tk,6`: the floor rule's 1 m, and the harness's own cap 6 ticks past it |
-| `BM-CRPBUILD,...,legs,3,leg_tk,57,power,7`: the incline's three steps of 328 mm |
+| `BM-CRPBUILD` is still written (the build records are one block); with INCLINE not run, its cells read NOMEAS |
 | ten `BM-SPINLEG` rows; the quarter's (legs 7–10) read `win_ms,300` |
 
 ---
@@ -90,19 +103,19 @@ release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate 
 | Only distance-controlled test rigs run on the floor; spinning in place is allowed. | Every drive is armed with the steering object's own distance limit **before it moves** (`stopAfterDistance()` / `stopAfterRotation()`); a refused limit and the drive is never made. Each drive ends at rest at that limit. |
 | Straight runs at most 1 m forward and 1 m back to the start. | Every straight leg is armed at 1 m (173 hall ticks) or less. A drive back is armed with the travel the drive out actually made, never more. |
 | The incline at most 1 m up and 1 m back down, with stops. | Three climbs of 328 mm (57 ticks, 171 in all), each ending at a stop on the slope, the last at the top, then one drive down by the net climb. |
-| The operator must know which test is running before it moves. | Every situation starts on a READY screen that names it, says what it will do and how far, and waits for your START. Every drive back, and FAULTRUN's two later drives, has a READY screen of its own. INCLINE runs its whole sequence on one START (its READY screen says the whole sequence), so the platform never waits on a screen while on the slope. |
+| The operator must know which test is running before it moves. | Every situation starts on a READY screen that names it, says what it will do and how far. **SRC_REV 65:** the countdown board shows it in large type, and a red STAND CLEAR countdown precedes every drive; only the run's first READY waits for your START (rulings 4–6). Every drive back, and FAULTRUN's two later drives, has a READY of its own. |
 | The platform can damage its surroundings, so motion stays inside these limits. | **The harness's own hard cap:** every drive is watched on the drivers' own hall positions and the platform is e-stopped the moment either wheel is **6 ticks (35 mm) past** its drive's declared travel. The distance stop promises rest within 3 ticks of its limit, so 6 past it is a stop that did not happen. STOP (click or space bar) is live whenever a wheel can move; the 10 A abort and the fold-back apply throughout. |
 
 ## Before the run: you measure, gather and write down
 
 | What | Value | Why |
 |---|---|---|
-| Incline angle, measured on the ramp surface | ____ ° (about 10°) | the creep cells judge a hold against this slope; with the mass, it is the force the climbs and the hold work against |
+| Incline angle | **not this visit** (ruling 3) | — |
 | Platform mass | **7.71 kg (17.0 lb)** — given 2026-09-28, nothing to do | with the angle, the holding torque per wheel = m·g·sinθ·0.08255 m / 2 |
 | *(optional)* FAULTRUN's leg out, measured with a tape: how far the platform really went | ____ mm (the driver says 1,000) | the loaded tyre's rolling size: how true a distance command is on this platform. One reading; skip it if it costs more than it is worth to you |
 | The obstacle for OBSTACLE STOP | you / an object (circle one) | the log cannot tell which |
 | A straight lane | 1.5 m long, 0.5 m wide, hard floor, clear | GRAB and FAULTRUN drive 1 m out and back; OBSTACLE drives at most 1 m |
-| The incline | about 10°, at least 1 m of slope past the drive wheels plus the platform's own length, the flat at its foot | INCLINE climbs 171 ticks (0.98 m) from the foot |
+| A monitor you can read from the platform | the PC's screen, turned toward the lane and the spin space, about 1.2 m (4 ft) away | the countdown board is how the run talks to you once START is clicked |
 | Space for SPIN | level floor, 1 m clear all round | a spin leg is at most one platform turn |
 | Tether routing | from above the centre, or ≥ 3 m free | 1 m out and back, and one turn in each direction |
 
@@ -112,19 +125,55 @@ release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate 
 
 | | |
 |---|---|
-| **Purpose** | **Certification** of the load claims above, on the release-candidate driver (DRIVER_REV 46), plus the floor run's measurements: loaded current by direction and pair, and the hold's duty and current on the incline. |
-| **Hardware risk** | **The highest this project has: wheels down, a person present.** Every drive is at most 1 m (a spin leg at most one turn), armed before it moves, e-stopped by the harness 35 mm past its limit. The speeds are a slow walk: 0.16 m/s (OBSTACLE, GRAB, INCLINE), 0.23 m/s (FAULTRUN), and SPIN's at most power 23 (about half a platform turn a second). OBSTACLE pushes on its obstacle — you, if you choose — with at most about 14 N at each tyre (2 A) for about a second before it stops itself. FAULTRUN faults the LEFT wheel on purpose at 0.23 m/s: both wheels ramp down within half a second, the platform turning under 1° (up to about 7° if the faulted wheel coasts instead). On the incline the platform rolls back about 2 cm at the first stop before the harness brakes it, and slips and drags up to 35 mm at the second. **Stand outside the swept circle while it spins. Panic: disconnect the battery.** |
-| **Who observes / acts** | Stephen, on every screen: each says what is happening, the one next click, and what he should see. He is the obstacle or places it (OBSTACLE), holds the frame back (GRAB), sets the platform at the foot of the slope (INCLINE), and records the ramp's feel (PL-160). |
-| **Runs that carry state** | None. Every OBSTACLE and GRAB trial, the incline and the fault run each run in their own steering lifetime; SPIN pairs share one; a written offset pair is restored and read back (`BM-OFFREST`); the lowered current limits are restored before each lifetime stops. |
-| **Run length** | About **11 minutes of run**: OBSTACLE about 1.5, GRAB about 3 (up to three tries), INCLINE about 2 (three climbs of about 2.4 s, the three watches, the drive down in about 7 s, and the setup), FAULTRUN about 1 (with a 5 s fault cool-down), SPIN about 3.5. About **35 minutes at the rig** with the setups. Cap 30 minutes of run. About 30 clicks. |
-| **Repeatability** | Repeatable. Every READY screen has SKIP: to rerun only one situation, SKIP the ones before it. |
-| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 7,550 bytes (limit 12,404; SRC_REV 64 adds four fields to BM-FLLEG and no debug() statement). |
+| **Purpose** | **Certification** of the load claims above, on the release-candidate driver (DRIVER_REV 46), plus the floor run's measurements: loaded current by direction and pair. (The hold on the incline is postponed: ruling 3.) |
+| **Hardware risk** | **The highest this project has: wheels down, a person present.** Every drive is at most 1 m (a spin leg at most one turn), armed before it moves, e-stopped by the harness 35 mm past its limit. The speeds are a slow walk: 0.16 m/s (OBSTACLE, GRAB), 0.23 m/s (FAULTRUN), and SPIN's at most power 23 (about half a platform turn a second). OBSTACLE pushes on its obstacle — you, if you choose — with at most about 14 N at each tyre (2 A) for about a second before it stops itself. FAULTRUN faults the LEFT wheel on purpose at 0.23 m/s: both wheels ramp down within half a second, the platform turning under 1° (up to about 7° if the faulted wheel coasts instead). **Stand outside the swept circle while it spins. Once START is clicked nobody is at the PC: a stop is yours — lift the wheels, disconnect the battery (ruling 5).** |
+| **Who observes / acts** | Stephen, at the platform, reading the countdown board from about 4 ft: it names the situation, gives one action word in its colour (amber: your move; red: it is about to drive; blue: hands off), counts down to the next drive in large digits, and says what he should see. He is the obstacle (OBSTACLE), holds the frame back (GRAB), moves it to the spin space (SPIN), and records the ramp's feel (PL-160). |
+| **Runs that carry state** | None. Every OBSTACLE and GRAB trial and the fault run each run in their own steering lifetime; SPIN pairs share one; a written offset pair is restored and read back (`BM-OFFREST`); the lowered current limits are restored before each lifetime stops. |
+| **Run length** | About **10 minutes of run**, the countdowns included (the timeline below): OBSTACLE about 2.5 with its two pull-backs, GRAB about 3.5 (up to three tries), FAULTRUN about 1, SPIN about 3. **One click**: START on the briefing. |
+| **Repeatability** | Repeatable. To start at a later situation, stay at the PC: SKIP on the briefing ends that situation, the briefing shows again at the next one, and START there begins the run from it. After START, nothing more can be skipped. |
+| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 8,385 bytes (limit 12,404; SRC_REV 65 adds the countdown board's 21 debug() statements). |
 
 ## The command — one
 
 ```bash
-tools/bench-run.sh dual-spin    # the floor run: OBSTACLE, GRAB, INCLINE, FAULTRUN, SPIN
+tools/bench-run.sh dual-spin    # the floor run: OBSTACLE, GRAB, FAULTRUN, SPIN (INCLINE postponed)
 ```
+
+## The countdown run (SRC_REV 65): what you will see, and when to act
+
+Two windows open. The small **operator panel** (`bmpanel`, top left) is the one you click, once. The large
+**countdown board** (`fboard`, 1000 × 620, beside it) is the one you read from the platform. Before you walk away
+the board shows the briefing; click **START** on the operator panel, then go to the platform. From then on nothing
+waits for the PC: each step ends on its countdown, or, for a pull-back, when the wheels' own hall sensors saw the
+platform move and then stay still for 3 s.
+
+**Read the colour first.** Amber = your move. Red STAND CLEAR = it drives when the count reaches 0. Blue WATCH = it is
+moving; hands off. Grey WAIT = nothing moves. Green DONE / red ENDED EARLY = the run is over and the wheels are off.
+
+| Situation | Board says | Count | What you do | Ends when |
+|---|---|---|---|---|
+| — | CLICK START | — (120 s at the PC) | read the briefing, click START, walk to the platform | your click |
+| OBSTACLE, each of 2 trials | TAKE YOUR PLACE | 20 s | stand 0.3–0.8 m in front of it, square across its path, still | the count |
+| | STAND STILL | — | it drives into you and stops itself about 1 s after it is blocked | its stop |
+| | WATCH | — | it may push once more, for an instant | the check |
+| | PULL IT BACK | up to 60 s | pull it back to where it started, aimed at you, and let go | wheels moved then still 3 s, or 60 s |
+| GRAB, up to 3 tries | AIM IT DOWN THE LANE (1st) / HOLD HARDER / HOLD LESS (retries) | 30 s / 15 s | aim it down the 1.5 m lane, stand at its LEFT side, hands off | the count |
+| | GET READY | seconds to the grab point | walk beside its LEFT side | the wheels reach the grab point |
+| | GRAB NOW | about 4 s; the wheel's speed % below | hold its LEFT side back so the speed falls to about 50, never 0 | the count |
+| | LET GO | — | let go, step away; it stops itself at 1 m | its stop |
+| | STAND CLEAR, then WATCH | 5 s | stand clear of the lane behind it; it drives back to its start | its stop |
+| | *(or)* PULL IT BACK | up to 60 s | when there was no drive back: push it back to its start | wheels moved then still 3 s, or 60 s |
+| FAULTRUN | STAND CLEAR | 15 s | leave it aimed down the lane, stand clear | the count |
+| | WATCH | — | it drives 1 m forward and stops | its stop |
+| | STAND CLEAR, then WATCH | 5 s | it drives back; about 1 s in its LEFT wheel is faulted on purpose and both stop | its stop |
+| | STAND CLEAR, then WATCH | 5 s | the drive back goes on to its start | its stop |
+| SPIN, 10 legs | MOVE IT TO THE SPIN SPACE (leg 1) | 45 s | move it to level floor, 1 m clear all round; stand outside that circle | the count |
+| | STAND CLEAR (legs 2–10) | 5 s | stay outside the circle; the small readout is the leg number | the count |
+| | WATCH | — | it spins in place, at most one turn | its stop |
+| — | WAIT (writing results), then DONE or ENDED EARLY | — | lift the wheels or disconnect the battery | — |
+
+During a countdown the operator panel draws no buttons (nothing reads them); its STOP stays live on the drive screens
+for anyone at the PC.
 
 `dual-ui` is not on this sheet: it previews only `dual-brake`'s screens, which SRC_REV 62 and 63 left byte-for-byte as they
 were (the generator rewrote only the SPIN part's own rows), and a tier re-run to certify only the panel earns no slot
@@ -132,7 +181,7 @@ were (the generator rewrote only the SPIN part's own rows), and a tier re-run to
 
 ---
 
-## The five situations, in order
+## The five situations, in order (four run: INCLINE is postponed)
 
 Each drive's travel below is hall ticks at 5.76 mm a tick. Every start and stop number comes from the pass-by-pass model
 of the driver's jerk-limited ramp at the built-in rates (the model gives the sheet's own stops to the tenth of a tick):
@@ -231,6 +280,10 @@ overload hold is not certified at this visit.
 least path scale, the SHORT polls, each wheel's longest tick gap, the engages), `BM-FLLEG` for the drive back, a trace.
 
 ### 3. INCLINE (segment `INCLINE`; the hold on a slope: its creep and `HOLD_CEILING_PCT`)
+
+> **⏸ POSTPONED — not run at SRC_REV 65 (ruling 3).** "postpone the incline testing until we've returned all other
+> results and have corrected the driver using them." The section is kept as written for when it returns; its screens
+> still use clicks and will need the countdown treatment then.
 
 **What it proves, and what it does not (ruling 2).** The incline proves only the hold on a slope. It does not prove the
 overload hold; GRAB ONE SIDE alone does. SRC_REV 62's overloaded climb is removed: its fourth step at a lowered 2 A

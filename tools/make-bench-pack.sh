@@ -20,6 +20,7 @@
 #     BENCH-PACKAGE    the commit, when it was built, and each binary's SHA-256
 #     README.txt       per test: its binary, what to type, and the exact pnut-term-ts line that runs
 #     bins/<tier>.bin
+#     *.bmp            every file a binary loads at run time (a panel's LAYER bitmaps), read from the binary itself
 #
 # At the rig: unzip it, cd into the folder, and run ./bench-run.sh <tier>. The logs land in the folder's logs/.
 # pnut-term-ts must be on the PATH; pnut-ts is not needed. Every command here is echoed, prefixed "+ ".
@@ -53,12 +54,29 @@ for tier in "${TIERS[@]}"; do
     BENCH_PACK_DIR="$WORK/$NAME/bins" run "$WORK/tree/tools/bench-run.sh" "$tier"
 done
 
+# ---- every file a binary asks pnut-term-ts to load comes with it ----------------------------------------------
+# A panel's LAYER bitmaps are loaded by name from the terminal's working directory: src/ in the tree, the pack's own
+# folder here. The names are read from each COMPILED binary (its DEBUG data carries them as 'name.bmp'), never from a
+# list kept by hand, and a name with no file in the tree refuses the pack. (2026-09-29: the first pack carried no
+# bitmaps, dual-spin's panel loaded nothing, and the floor run ended at its first screen.)
+ASSETS=""
+for tier in "${TIERS[@]}"; do
+    names=$(LC_ALL=C grep -aoE "'[A-Za-z0-9_.-]+\.(bmp|BMP|png|PNG|jpg|JPG)'" "$WORK/$NAME/bins/$tier.bin" | tr -d "'" | sort -u)
+    for f in $names; do
+        [ -f "$WORK/tree/src/$f" ] || { echo "ERROR: $tier.bin loads '$f' at run time and src/ has no such file -- no pack built" >&2; exit 1; }
+        [ -f "$WORK/$NAME/$f" ] || run cp -p "$WORK/tree/src/$f" "$WORK/$NAME/$f"
+        ASSETS="$ASSETS
+asset $tier $f"
+    done
+done
+
 cp -p "$WORK/tree/tools/bench-run.sh" "$WORK/$NAME/bench-run.sh"
 
 {
     echo "commit $COMMIT ($(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M' "$REF")): $(git log -1 --format=%s "$REF" | cut -c1-100)"
     echo "built $(date '+%Y-%m-%d %H:%M') by tools/make-bench-pack.sh with $(pnut-ts --version 2>/dev/null | head -1 | sed 's/^pnut-ts: *//')"
     (cd "$WORK/$NAME/bins" && sha256sum *.bin) | sed 's/^/sha256 /'
+    printf '%s\n' "$ASSETS" | sed '/^$/d'
 } > "$WORK/$NAME/BENCH-PACKAGE"
 
 # README: per test, its binary, the command, and the line the runner runs -- descriptions from bench-run.sh's usage

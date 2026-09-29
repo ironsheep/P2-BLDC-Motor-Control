@@ -160,7 +160,8 @@ limit, but the interleaving is real.
 costs the operator focusing the window; a click does not. Count what each step costs them (reach, focus,
 read, act) before the panel is built, and remove what can be removed.
 
-**The operator ends every step they take part in.** A timer may end only a step they are not part of. A step's result
+**The operator ends every step they take part in** — except where the operator cannot reach the screen (below). A
+timer may end only a step they are not part of. A step's result
 stays on the screen, saying what the program saw and whether it counted, until they click NEXT or REDO. Every step can
 be redone. Only live buttons are drawn, and the input is polled often enough that a click cannot fall between polls.
 Every input taken is logged, with the button it hit or the position it missed at. **The review renders every screen
@@ -178,6 +179,21 @@ MODE". It never said what a row should feel like. It asked for SPACE "as you let
 the rule. On buttons, Stephen, the same day: *"buttons with titles should be all we need in this case vs.
 keystrokes. I have to focus the panel to press keys so mouse clicks is less effort -- always think about the
 interaction effort when designing UIs."*
+
+**When the operator is away from the screen: the countdown form.** When the operator works at the hardware, not at the PC
+(the wheels-down floor run), a click is not the least effort: it is out of reach. There, **one START click, at the PC,
+begins the run, and after it nothing waits for a click.** Every step they take part in ends on a countdown agreed with
+them before the run, or on a sensor that sees them finish (the pull-back: the wheels' hall sensors saw it move, then
+stay still for 3 s, bounded). The screen they read, `fboard` in `test_bench_dual.spin2`, is built to be read at 4 ft:
+the situation's name, **one action word coloured by who acts** (amber: yours; red STAND CLEAR: it drives at 0; blue
+WATCH: hands off), large countdown digits, and the step's detail. The rest of this rule still holds: each screen says
+the four things above, **before the run starts they know what each colour and count asks of them** (a briefing screen
+and the run sheet's timeline), the review renders every screen in order at the desk, and every step's end is logged
+with what ended it (`TIMER` or `SENSOR`). Only live buttons are drawn: the clickable panel's buttons are removed for a
+countdown, since nothing reads them. Stephen, 2026-09-29: *"I'll be 4 ft away from the monitor telling me what to do
+when i'm at the platform... so there can't be any interaction by me with the plot window after the test is running...
+i'll need to know before test starts what to look for to know when to interact a timer-countdown with large numbers
+could tell me when to interact."* On the durations: *"durations seem ok."*
 
 ## 11 · Signals that are not signals
 

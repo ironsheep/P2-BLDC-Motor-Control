@@ -544,6 +544,12 @@ if [ -n "$PREBUILT" ]; then
     if [ ! -f "$SCRIPT_DIR/$PACK_BIN" ]; then
         die "this package has no binary for tier '$TIER'. It carries: $(cd "$SCRIPT_DIR/bins" 2>/dev/null && ls *.bin 2>/dev/null | sed 's/\.bin$//' | tr '\n' ' ')"
     fi
+    # Every file this binary loads at run time (a panel's LAYER bitmaps, from the terminal's working directory) must
+    #  be beside it: BENCH-PACKAGE lists them, read from the binary when the pack was built. A missing one is a blank
+    #  panel and a lost visit (2026-09-29), so it refuses here, before anything moves.
+    for asset in $(sed -n "s/^asset $TIER //p" "$PACKAGE_FILE"); do
+        [ -f "$SCRIPT_DIR/$asset" ] || die "tier '$TIER' loads '$asset' at run time and it is not in this package folder -- its panel would draw nothing. Unzip the whole package again."
+    done
 elif ! command -v "$PNUT" >/dev/null 2>&1; then
     echo "ERROR: '$PNUT' not found on PATH (override with PNUT_TS=/path/to/pnut-ts)" >&2
     exit 2
