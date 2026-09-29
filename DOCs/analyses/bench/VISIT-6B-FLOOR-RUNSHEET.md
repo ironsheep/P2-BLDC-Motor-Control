@@ -143,7 +143,10 @@ tools/bench-run.sh dual-spin    # the floor run: OBSTACLE, GRAB, FAULTRUN, SPIN 
 
 Two windows open. The small **operator panel** (`bmpanel`, top left) is the one you click, once. The large
 **countdown board** (`fboard`, 1000 × 620, beside it) is the one you read from the platform. Before you walk away
-the board shows the briefing; click **START** on the operator panel, then go to the platform. From then on nothing
+the board shows the briefing; click **START** on the operator panel, then go to the platform. **Check before you
+click:** the operator panel shows its READY screen with START and SKIP, and the board shows the yellow CLICK START band
+over the four-line briefing. If either window is blank, the bitmaps did not load: do not click; close the terminal and
+send the logs. From then on nothing
 waits for the PC: each step ends on its countdown, or, for a pull-back, when the wheels' own hall sensors saw the
 platform move and then stay still for 3 s.
 
