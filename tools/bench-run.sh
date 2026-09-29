@@ -53,10 +53,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # A PREBUILT PACKAGE (tools/make-bench-pack.sh, STEPHEN 2026-09-28: "i need pre-compiled binaries for our test runs
 # zipped up so i can send one file to the test revB platform unpack it and then run them"). The package holds this
-# script, a BENCH-PACKAGE file naming the commit it was built from, and bins/<tier>.bin, each compiled by this script
+# script, a BENCH-PACKAGE file naming the commit it was built from, and <tier>.bin, each compiled by this script
 # with exactly the flags below. Run from inside the unpacked package, this script compiles nothing: it runs the tier's
 # packaged binary with the same pnut-term-ts line, the same precondition banner and the same PL-74 checks, with the
 # package folder as the working directory (so the logs land in its logs/). pnut-ts is not needed there.
+# Every binary sits in the package folder itself, beside the bitmaps its panels load, never in a subfolder: at the
+# source tree the binary, the bitmaps and the working directory are all src/, and the package keeps all three in one
+# place too. (2026-09-29 14:16: with the binaries in bins/ and the bitmaps one folder up, in the working directory,
+# no layer loaded -- so the terminal does not find a LAYER file from its working directory alone.)
 PACKAGE_FILE="${SCRIPT_DIR}/BENCH-PACKAGE"
 PREBUILT=""
 [ -f "$PACKAGE_FILE" ] && PREBUILT=1
@@ -540,11 +544,11 @@ if [ -n "$PREBUILT" ] && { [ -n "$MEASURE_ONLY" ] || [ -n "$PACK_DIR" ]; }; then
     die "this is a prebuilt package: it runs its binaries and builds none (BENCH_MEASURE_ONLY / BENCH_PACK_DIR belong to the source tree)"
 fi
 if [ -n "$PREBUILT" ]; then
-    PACK_BIN="bins/$TIER.bin"
+    PACK_BIN="$TIER.bin"
     if [ ! -f "$SCRIPT_DIR/$PACK_BIN" ]; then
-        die "this package has no binary for tier '$TIER'. It carries: $(cd "$SCRIPT_DIR/bins" 2>/dev/null && ls *.bin 2>/dev/null | sed 's/\.bin$//' | tr '\n' ' ')"
+        die "this package has no binary for tier '$TIER'. It carries: $(cd "$SCRIPT_DIR" 2>/dev/null && ls *.bin 2>/dev/null | sed 's/\.bin$//' | tr '\n' ' ')"
     fi
-    # Every file this binary loads at run time (a panel's LAYER bitmaps, from the terminal's working directory) must
+    # Every file this binary loads at run time (a panel's LAYER bitmaps, loaded by bare name) must
     #  be beside it: BENCH-PACKAGE lists them, read from the binary when the pack was built. A missing one is a blank
     #  panel and a lost visit (2026-09-29), so it refuses here, before anything moves.
     for asset in $(sed -n "s/^asset $TIER //p" "$PACKAGE_FILE"); do

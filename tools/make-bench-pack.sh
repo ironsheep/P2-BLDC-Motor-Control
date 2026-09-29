@@ -16,11 +16,14 @@
 # the same -D flags, that a run at the bench would make. The zip holds one folder:
 #
 #   bench-<commit>/
-#     bench-run.sh     the runner itself; run from here it compiles nothing and runs bins/<tier>.bin
+#     bench-run.sh     the runner itself; run from here it compiles nothing and runs <tier>.bin
 #     BENCH-PACKAGE    the commit, when it was built, and each binary's SHA-256
 #     README.txt       per test: its binary, what to type, and the exact pnut-term-ts line that runs
-#     bins/<tier>.bin
+#     <tier>.bin
 #     *.bmp            every file a binary loads at run time (a panel's LAYER bitmaps), read from the binary itself
+#
+# One folder, no subfolders: each binary sits beside the bitmaps it loads, as it does in src/ (2026-09-29 14:16: a
+# pack with the binaries in bins/ loaded no layer; tools/bench-run.sh's PREBUILT note says why).
 #
 # At the rig: unzip it, cd into the folder, and run ./bench-run.sh <tier>. The logs land in the folder's logs/.
 # pnut-term-ts must be on the PATH; pnut-ts is not needed. Every command here is echoed, prefixed "+ ".
@@ -44,25 +47,25 @@ NAME="bench-$COMMIT"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bldc-benchpack.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
-mkdir -p "$WORK/tree" "$WORK/$NAME/bins"
+mkdir -p "$WORK/tree" "$WORK/$NAME"
 echo "+ git archive $REF | tar -x -C $WORK/tree"
 git archive "$REF" | tar -x -C "$WORK/tree"
 
 for tier in "${TIERS[@]}"; do
     echo
     echo "== $tier"
-    BENCH_PACK_DIR="$WORK/$NAME/bins" run "$WORK/tree/tools/bench-run.sh" "$tier"
+    BENCH_PACK_DIR="$WORK/$NAME" run "$WORK/tree/tools/bench-run.sh" "$tier"
 done
 
 # ---- every file a binary asks pnut-term-ts to load comes with it ----------------------------------------------
-# A panel's LAYER bitmaps are loaded by name from the terminal's working directory: src/ in the tree, the pack's own
-# folder here. The names are read from each COMPILED binary (its DEBUG data carries them as 'name.bmp'), never from a
+# A panel's LAYER bitmaps are loaded by bare name, and they sit beside the binary in the folder the terminal runs
+# from: src/ in the tree, the pack's own folder here. The names are read from each COMPILED binary (its DEBUG data carries them as 'name.bmp'), never from a
 # list kept by hand, and a name with no file in the tree refuses the pack. (2026-09-29: the first pack carried no
 # bitmaps, dual-spin's panel loaded nothing, and the floor run ended at its first screen.)
 ASSETS=""
 for tier in "${TIERS[@]}"; do
     # a binary that loads nothing (an unattended tier) matches nothing: grep's exit 1 there is not an error
-    names=$( { LC_ALL=C grep -aoE "'[A-Za-z0-9_.-]+\.(bmp|BMP|png|PNG|jpg|JPG)'" "$WORK/$NAME/bins/$tier.bin" || true; } | tr -d "'" | sort -u)
+    names=$( { LC_ALL=C grep -aoE "'[A-Za-z0-9_.-]+\.(bmp|BMP|png|PNG|jpg|JPG)'" "$WORK/$NAME/$tier.bin" || true; } | tr -d "'" | sort -u)
     for f in $names; do
         [ -f "$WORK/tree/src/$f" ] || { echo "ERROR: $tier.bin loads '$f' at run time and src/ has no such file -- no pack built" >&2; exit 1; }
         [ -f "$WORK/$NAME/$f" ] || run cp -p "$WORK/tree/src/$f" "$WORK/$NAME/$f"
@@ -76,7 +79,7 @@ cp -p "$WORK/tree/tools/bench-run.sh" "$WORK/$NAME/bench-run.sh"
 {
     echo "commit $COMMIT ($(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M' "$REF")): $(git log -1 --format=%s "$REF" | cut -c1-100)"
     echo "built $(date '+%Y-%m-%d %H:%M') by tools/make-bench-pack.sh with $(pnut-ts --version 2>/dev/null | head -1 | sed 's/^pnut-ts: *//')"
-    (cd "$WORK/$NAME/bins" && sha256sum *.bin) | sed 's/^/sha256 /'
+    (cd "$WORK/$NAME" && sha256sum *.bin) | sed 's/^/sha256 /'
     printf '%s\n' "$ASSETS" | sed '/^$/d'
 } > "$WORK/$NAME/BENCH-PACKAGE"
 
@@ -85,15 +88,15 @@ cp -p "$WORK/tree/tools/bench-run.sh" "$WORK/$NAME/bench-run.sh"
     echo "Prebuilt bench binaries, commit $COMMIT"
     echo
     echo "Unzip, then in this folder:   ./bench-run.sh <test>"
-    echo "It runs bins/<test>.bin with the same safety banner and checks as the source tree's runner, and compiles"
+    echo "It runs <test>.bin with the same safety banner and checks as the source tree's runner, and compiles"
     echo "nothing. The logs land in logs/ here. pnut-term-ts must be on the PATH."
     echo
     for tier in "${TIERS[@]}"; do
         desc=$(sed -n "s/^ \{19\}$tier  *\(.*\)/\1/p" "$WORK/tree/tools/bench-run.sh" | head -1)
         echo "$tier"
-        echo "    binary:   bins/$tier.bin"
+        echo "    binary:   $tier.bin"
         echo "    type:     ./bench-run.sh $tier"
-        echo "    runs:     pnut-term-ts -u -r bins/$tier.bin --exit-on-end-session"
+        echo "    runs:     pnut-term-ts -u -r $tier.bin --exit-on-end-session"
         echo "    what:     $desc"
         echo
     done
