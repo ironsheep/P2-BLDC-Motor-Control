@@ -61,7 +61,8 @@ done
 # bitmaps, dual-spin's panel loaded nothing, and the floor run ended at its first screen.)
 ASSETS=""
 for tier in "${TIERS[@]}"; do
-    names=$(LC_ALL=C grep -aoE "'[A-Za-z0-9_.-]+\.(bmp|BMP|png|PNG|jpg|JPG)'" "$WORK/$NAME/bins/$tier.bin" | tr -d "'" | sort -u)
+    # a binary that loads nothing (an unattended tier) matches nothing: grep's exit 1 there is not an error
+    names=$( { LC_ALL=C grep -aoE "'[A-Za-z0-9_.-]+\.(bmp|BMP|png|PNG|jpg|JPG)'" "$WORK/$NAME/bins/$tier.bin" || true; } | tr -d "'" | sort -u)
     for f in $names; do
         [ -f "$WORK/tree/src/$f" ] || { echo "ERROR: $tier.bin loads '$f' at run time and src/ has no such file -- no pack built" >&2; exit 1; }
         [ -f "$WORK/$NAME/$f" ] || run cp -p "$WORK/tree/src/$f" "$WORK/$NAME/$f"
