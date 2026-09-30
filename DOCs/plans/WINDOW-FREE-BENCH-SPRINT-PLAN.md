@@ -18,6 +18,21 @@ final state of the driver."*
   until «#3516» bumps it at the tag.
 - **Working tree:** clean, apart from Stephen's own `.vscode/settings.json` (not ours; untouched) and this plan,
   committed as the sprint's foundation. `main` is ahead of origin by 11; pushing is his.
+- **Tracking readiness: READY.**
+  - Archived 41 completed tasks (`tasks/archives/archive_20260930_194528.md`).
+  - Context: deleted `sprint_panel_pl92_open` (panels are out of testing; PL-92 is in the punch-list archive) and
+    `study_bench_logs_2026_09_21` (its study is `DOCs/analyses/BENCH-LOG-STUDY-2026-09-21.md`). Replaced
+    `sprint_resume_2026_09_23_panels_certified` with `sprint_resume_2026_09_30_window_free`.
+    `sprint_release_notes_pending` is kept until §1 checks it.
+  - Auto-memory: the resume file was replaced (`project_window_free_bench_state_2026-09-30.md`); `MEMORY.md` is 3
+    lines.
+  - Live tasks:
+    - «#3576» in progress (superseded by this plan's tasks);
+    - «#3613» and «#3611» paused (§1);
+    - «#3516», ship, pending after this plan;
+    - five tasks Stephen ruled out of this release («#3506», «#3532», «#3562», «#3592», «#3602»), left as they are.
+  - Task shape (backlog observation: all nine predate the creation-time checks): gist ≤ 60 characters 0/9, priority
+    unset 0/9, `attention:` in body 5/9.
 
 ## Open questions
 
@@ -65,6 +80,16 @@ before any build.
 - `DOCs/PUNCH-LIST.md` PL-163: its disposition line speaks of a swapped-in board. It now closes on the Rev A platform
   (§3).
 - The sprint-resume context key and the auto-memory resume file: repoint both to this plan.
+- **`CHANGELOG.md` v6.0.0 lacks two changes recorded as landed** (found at sprint start, 2026-09-30, from the
+  retired `sprint_release_notes_pending` key). Verify each against the source, then add each class-1 voiced:
+  - the BREAKING renames in the support objects: `isp_flysky_rx` `swIsOn`/`swIsOff`/`swIsMiddle` became
+    `isSwitchOn`/`isSwitchOff`/`isSwitchMiddle`, and `isp_queue_serial` `haveCommand`/`haveRxString` became
+    `hasCommand`/`hasRxString` (STEPHEN 2026-09-18, "yes A");
+  - `driveDirection()`'s positive direction now turns RIGHT, as DRIVE-OBJECTS.md and the serial protocol always
+    documented, and the RC demos no longer invert the joystick («#3569», 57e5785). This is a behaviour change: users
+    who compensated must remove their compensation.
+  - At the same time, check the retired key's other "LANDED" lines against the entry. Each one either appears, or
+    is added.
 
 **Verify.** Each item cites the line or log that settled it, and no record touched still names a swap, a
 countdown-board visit or an unfitted sensor.
