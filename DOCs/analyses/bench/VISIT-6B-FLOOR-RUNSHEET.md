@@ -104,7 +104,7 @@ release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate 
 | Straight runs at most 1 m forward and 1 m back to the start. | Every straight leg is armed at 1 m (173 hall ticks) or less. A drive back is armed with the travel the drive out actually made, never more. |
 | The incline at most 1 m up and 1 m back down, with stops. | Three climbs of 328 mm (57 ticks, 171 in all), each ending at a stop on the slope, the last at the top, then one drive down by the net climb. |
 | The operator must know which test is running before it moves. | Every situation starts on a READY screen that names it, says what it will do and how far. **SRC_REV 65:** the countdown board shows it in large type, and a red STAND CLEAR countdown precedes every drive; only the run's first READY waits for your START (rulings 4–6). Every drive back, and FAULTRUN's two later drives, has a READY of its own. |
-| The platform can damage its surroundings, so motion stays inside these limits. | **The harness's own hard cap:** every drive is watched on the drivers' own hall positions and the platform is e-stopped the moment either wheel is **6 ticks (35 mm) past** its drive's declared travel. The distance stop promises rest within 3 ticks of its limit, so 6 past it is a stop that did not happen. STOP (click or space bar) is live whenever a wheel can move; the 10 A abort and the fold-back apply throughout. |
+| The platform can damage its surroundings, so motion stays inside these limits. | **The harness's own hard cap:** every drive is watched on the drivers' own hall positions and the platform is e-stopped the moment either wheel is **6 ticks (35 mm) past** its drive's declared travel. The distance stop promises rest within 3 ticks of its limit, so 6 past it is a stop that did not happen. There is no STOP button once the run starts (SRC_REV 68: nobody is at the PC); the stop is yours, physical, and the 10 A abort and the fold-back apply throughout. |
 
 ## Before the run: you measure, gather and write down
 
@@ -129,9 +129,9 @@ release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate 
 | **Hardware risk** | **The highest this project has: wheels down, a person present.** Every drive is at most 1 m (a spin leg at most one turn), armed before it moves, e-stopped by the harness 35 mm past its limit. The speeds are a slow walk: 0.16 m/s (OBSTACLE, GRAB), 0.23 m/s (FAULTRUN), and SPIN's at most power 23 (about half a platform turn a second). OBSTACLE pushes on its obstacle — you, if you choose — with at most about 14 N at each tyre (2 A) for about a second before it stops itself. FAULTRUN faults the LEFT wheel on purpose at 0.23 m/s: both wheels ramp down within half a second, the platform turning under 1° (up to about 7° if the faulted wheel coasts instead). **Stand outside the swept circle while it spins. Once START is clicked nobody is at the PC: a stop is yours — lift the wheels, disconnect the battery (ruling 5).** |
 | **Who observes / acts** | Stephen, at the platform, reading the countdown board from about 4 ft: it names the situation, gives one action word in its colour (amber: your move; red: it is about to drive; blue: hands off), counts down to the next drive in large digits, and says what he should see. He is the obstacle (OBSTACLE), holds the frame back (GRAB), moves it to the spin space (SPIN), and records the ramp's feel (PL-160). |
 | **Runs that carry state** | None. Every OBSTACLE and GRAB trial and the fault run each run in their own steering lifetime; SPIN pairs share one; a written offset pair is restored and read back (`BM-OFFREST`); the lowered current limits are restored before each lifetime stops. |
-| **Run length** | About **10 minutes of run**, the countdowns included (the timeline below): OBSTACLE about 2.5 with its two pull-backs, GRAB about 3.5 (up to three tries), FAULTRUN about 1, SPIN about 3. **One click**: START on the briefing. |
-| **Repeatability** | Repeatable. To start at a later situation, stay at the PC: SKIP on the briefing ends that situation, the briefing shows again at the next one, and START there begins the run from it. After START, nothing more can be skipped. |
-| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 8,385 bytes (limit 12,404; SRC_REV 65 adds the countdown board's 21 debug() statements). |
+| **Run length** | About **10 minutes of run**, the countdowns included (the timeline below): OBSTACLE about 2.5 with its two pull-backs, GRAB about 3.5 (up to three tries), FAULTRUN about 1, SPIN about 3. **One click**: START on the operator panel. |
+| **Repeatability** | Repeatable. To start at a later situation, stay at the PC: SKIP on the operator panel ends that situation, the next one's READY waits for START in the same way, and START there begins the run from it. After START, nothing more can be skipped. |
+| **Variant matrix** | One binary, `-D BENCH_QUIET -D DUAL_PART_SPIN`, on the Visit 10 rig: Rev B, 6.5in hubs, 18.5 V pack, 270 MHz, DRIVER_REV 46, built-in ramp rates (1,000 / 1,470 mm/s²). DEBUG footprint 8,385 bytes (limit 12,404; SRC_REV 65 adds the countdown board's 21 debug() statements; SRC_REV 68 has 20 board records, 78 of 255 per image). |
 
 ## The command — one
 
@@ -141,23 +141,32 @@ tools/bench-run.sh dual-spin    # the floor run: OBSTACLE, GRAB, FAULTRUN, SPIN 
 
 ## The countdown run (SRC_REV 65): what you will see, and when to act
 
-Two windows open. The small **operator panel** (`bmpanel`, top left) is the one you click, once. The large
-**countdown board** (`fboard`, 1000 × 620, beside it) is the one you read from the platform. Before you walk away
-the board shows the briefing; **click anywhere on the board** (or START on the operator panel; SRC_REV 67), then go to
-the platform. **Check before you click:** the operator panel shows its READY screen with START and SKIP, and the board
-shows the yellow CLICK HERE TO START band
-over the four-line briefing. **Give the board about 15 s to appear**: on the platform's Pi the terminal takes about
-11 s to load both windows' bitmaps, and the program waits for it (SRC_REV 66). If either window is still blank after
-30 s, the bitmaps did not load: do not click; close the terminal and send the logs. From then on nothing
-waits for the PC: each step ends on its countdown, or, for a pull-back, when the wheels' own hall sensors saw the
-platform move and then stay still for 3 s.
+**SRC_REV 68: one window, then the other.** Each window has one job. The small **operator panel** (`bmpanel`) is the
+only one you click, and you click it once. The large **countdown board** (`fboard`, 1000 × 620) is display only, and you
+read it from the platform.
+
+1. **At the PC, only the operator panel is open.** It shows OBSTACLE's READY screen with START and SKIP. Read the
+   briefing below, then **click START on the operator panel**. SKIP ends that situation, and the next one's READY waits
+   for START in the same way.
+2. **The panel's buttons disappear and the countdown board opens.** Give it about 15 s: on the platform's Pi the
+   terminal takes about 11 s to load its bitmaps, and the program waits for it (SRC_REV 66). It opens on TAKE YOUR
+   PLACE with its countdown running. Walk to the platform. If it is still blank after 30 s, the bitmaps did not load:
+   close the terminal and send the logs.
+3. **From then on nothing reads the PC.** No window is polled and no button is drawn. Each step ends on its countdown,
+   or, for a pull-back, when the wheels' own hall sensors saw the platform move and then stay still for 3 s. A stop is
+   yours: lift the wheels, or disconnect the battery.
+
+**The briefing: what you will do.** (1) OBSTACLE STOP: be the obstacle, twice, and pull it back after each. (2) GRAB
+ONE SIDE: hold its LEFT side back when GRAB NOW shows, up to 3 tries. (3) FAULT RETURN RUN: stand clear and watch. (4)
+SPINS: move it to a clear space, ten spins, stay outside the circle. Every drive starts after a red STAND CLEAR
+countdown.
 
 **Read the colour first.** Amber = your move. Red STAND CLEAR = it drives when the count reaches 0. Blue WATCH = it is
 moving; hands off. Grey WAIT = nothing moves. Green DONE / red ENDED EARLY = the run is over and the wheels are off.
 
 | Situation | Board says | Count | What you do | Ends when |
 |---|---|---|---|---|
-| — | CLICK HERE TO START | — (120 s at the PC) | read the briefing, click the board, walk to the platform | your click |
+| — | *(not open yet)* | — (120 s at the PC) | read the briefing, click START on the operator panel | your click |
 | OBSTACLE, each of 2 trials | TAKE YOUR PLACE | 20 s | stand 0.3–0.8 m in front of it, square across its path, still | the count |
 | | STAND STILL | — | it drives into you and stops itself about 1 s after it is blocked | its stop |
 | | WATCH | — | it may push once more, for an instant | the check |

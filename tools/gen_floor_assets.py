@@ -5,11 +5,11 @@ drawn by part SPIN (-D DUAL_PART_SPIN, tools/bench-run.sh tier dual-spin) from S
 WHY IT EXISTS. Stephen, 2026-09-29: "I'll be 4 ft away from the monitor telling me what to do when i'm at the platform...
 so there can't be any interaction by me with the plot window after the test is running... i'll need to know before test
 starts what to look for to know when to interact. a timer-countdown with large numbers could tell me when to interact."
-So after ONE START (a click anywhere on this board while it shows the briefing, or START on the operator panel,
-bmpanel), this board is the only instruction: the situation's name, ONE action word in a colour that says whether it is
-his move or the platform's, a countdown in seconds large enough to read at 4 ft, the step's detail in plain words, and a
-small readout (the held wheel's speed during GRAB, the leg number during SPINS). After that START nothing on it is
-clicked. A step he takes part in ends on a timer he agreed (2026-09-29) or on the wheels' own sensors.
+So after ONE START on the operator panel (bmpanel), this board is the only instruction: the situation's name, ONE
+action word in a colour that says whether it is his move or the platform's, a countdown in seconds large enough to read
+at 4 ft, the step's detail in plain words, and a small readout (the held wheel's speed during GRAB, the leg number during
+SPINS). It is display only: nothing on it is clicked, it is never polled, and it opens only after that START (SRC_REV
+68). A step he takes part in ends on a timer he agreed (2026-09-29) or on the wheels' own sensors.
 
 Built on the supplied crop-and-overlay technique (DOCs/REF-NO-COMMIT/dbg-display-theory/, read in full 2026-09-29) and
 DOCs/procedures/PLOT-DISPLAY-RULES.md, exactly as tools/gen_dual_assets.py builds bmpanel: every layer is loaded once
@@ -28,7 +28,6 @@ Layers (the Spin2 LAYER numbers):
     5 fb_big.bmp     "0".."9" plus a blank at index 10, the big countdown
     6 fb_small.bmp   "0".."9" plus a blank at index 10, the small readout
     7 fb_slabel.bmp  one readout label per kind; row 0 blank
-    8 fb_brief.bmp   the briefing, over the whole lower area, shown until START
 
 DEBUG LAYER needs 24-bit, uncompressed, no-alpha BMP: what Pillow writes for an "RGB" image saved as .bmp. Cells are
 opaque, so each carries the background of the region it lands on.
@@ -47,8 +46,6 @@ W, H = 1000, 620                              # the window, SIZE W H
 POS_X, POS_Y = 560, 40                        # where it opens, clear of bmpanel (POS 60 80, 480 x 306)
 NAME_X, NAME_Y, NAME_W, NAME_H = 0, 0, W, 90
 ACT_X, ACT_Y, ACT_W, ACT_H = 0, 96, W, 170
-LOW_Y = 276                                   # the lower area: restored from layer 1 before every frame
-LOW_H = H - LOW_Y
 DET_X, DET_Y, DET_W, DET_H = 16, 286, 500, 250
 SLBL_X, SLBL_Y, SLBL_W, SLBL_H = 16, 546, 330, 64
 SDG_X, SDG_Y, SDG_W, SDG_H = 350, 546, 48, 64
@@ -80,7 +77,6 @@ NAME = {n: i for i, n in enumerate(NAMES)}
 
 # action word, class
 ACTIONS = [
-    ("CLICK HERE TO START", "YOU"),
     ("TAKE YOUR PLACE", "YOU"),
     ("STAND STILL", "YOU"),
     ("WATCH", "WATCH"),
@@ -107,9 +103,6 @@ SK_NONE, SK_SPEED, SK_LEG = 0, 1, 2
 # some other way or not at all). The durations are Stephen's, 2026-09-29 ("durations seem ok"), except OBS_PLACE before
 # the second trial, which is 20 s like the first: he has to get back in front of the platform after pulling it back.
 STEPS = [
-    ("BRIEF", "CLICK HERE TO START",
-     "Click anywhere on this board (or START on the small operator panel), then walk to the platform. After that you never touch the PC: this "
-     "board says what to do and counts down to it.", SK_NONE, 0),
     ("OBS_PLACE", "TAKE YOUR PLACE",
      "Stand 0.3 to 0.8 m in front of the platform, square across its path, and stand still. When the count ends it "
      "drives slowly into you.", SK_NONE, 20_000),
@@ -176,16 +169,6 @@ STEPS = [
      "The run ended before its last step. The wheels are off. The log says why.", SK_NONE, 0),
 ]
 STEP = {s[0]: i for i, s in enumerate(STEPS)}
-
-BRIEF_LINES = [
-    "THE FLOOR RUN -- WHAT YOU WILL DO",
-    "1  OBSTACLE STOP    be the obstacle, twice; pull it back after each",
-    "2  GRAB ONE SIDE    hold its LEFT side back when GRAB NOW shows; up to 3 tries",
-    "3  FAULT RETURN RUN   stand clear and watch",
-    "4  SPINS    move it to a clear space; ten spins; stay outside the circle",
-    "Every drive starts after a red STAND CLEAR countdown.  AMBER = your move.  BLUE = hands off.",
-    "PANIC: lift the wheels, disconnect the battery.",
-]
 
 FONTS = [
     "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -340,25 +323,11 @@ def draw_digits(cell_w, cell_h, _size, color):
     return img
 
 
-def draw_brief():
-    img = Image.new("RGB", (W, LOW_H), C_PANEL)
-    d = ImageDraw.Draw(img)
-    d.rectangle((10, 6, W - 11, LOW_H - 7), fill=C_WELL)
-    y = 18
-    for n, ln in enumerate(BRIEF_LINES):
-        size = 30 if n == 0 else 25
-        fnt = fit(d, ln, size, W - 60)
-        d.text((28, y), ln, font=fnt, fill=C_DIGIT if n == 0 else C_TEXT)
-        y += size + 18
-    return img
-
-
 def con_block():
     out = ["CON { the floor countdown board (fboard) -- printed by tools/gen_floor_assets.py; re-run it, never edit }", ""]
     for k, v in [("FB_W", W), ("FB_H", H), ("FB_POS_X", POS_X), ("FB_POS_Y", POS_Y),
                  ("FB_NAME_X", NAME_X), ("FB_NAME_Y", NAME_Y), ("FB_NAME_W", NAME_W), ("FB_NAME_H", NAME_H),
                  ("FB_ACT_X", ACT_X), ("FB_ACT_Y", ACT_Y), ("FB_ACT_W", ACT_W), ("FB_ACT_H", ACT_H),
-                 ("FB_LOW_Y", LOW_Y), ("FB_LOW_H", LOW_H),
                  ("FB_DET_X", DET_X), ("FB_DET_Y", DET_Y), ("FB_DET_W", DET_W), ("FB_DET_H", DET_H),
                  ("FB_SLBL_X", SLBL_X), ("FB_SLBL_Y", SLBL_Y), ("FB_SLBL_W", SLBL_W), ("FB_SLBL_H", SLBL_H),
                  ("FB_SDG_X", SDG_X), ("FB_SDG_Y", SDG_Y), ("FB_SDG_W", SDG_W), ("FB_SDG_H", SDG_H),
@@ -396,7 +365,6 @@ def preview():
     big = draw_digits(BIG_W, BIG_H, 290, C_DIGIT)
     small = draw_digits(SDG_W, SDG_H, 56, C_TEXT)
     slbl = draw_strip(SMALL_KINDS, SLBL_W, SLBL_H, paint_slabel)
-    brief = draw_brief()
     name_of = {"OBS": "OBSTACLE STOP", "GRAB": "GRAB ONE SIDE", "RET": "GRAB ONE SIDE", "FR": "FAULT RETURN RUN",
                "SPIN": "SPINS"}
     for i, (sid, act, _det, sk, ms) in enumerate(STEPS):
@@ -404,27 +372,24 @@ def preview():
         nm = name_of.get(sid.split("_")[0], "FLOOR RUN")
         frame.paste(names.crop((0, NAME[nm] * NAME_H, NAME_W, (NAME[nm] + 1) * NAME_H)), (NAME_X, NAME_Y))
         frame.paste(acts.crop((0, ACT[act] * ACT_H, ACT_W, (ACT[act] + 1) * ACT_H)), (ACT_X, ACT_Y))
-        if sid == "BRIEF":
-            frame.paste(brief, (0, LOW_Y))
-        else:
-            frame.paste(dets.crop((0, i * DET_H, DET_W, (i + 1) * DET_H)), (DET_X, DET_Y))
-            frame.paste(slbl.crop((0, sk * SLBL_H, SLBL_W, (sk + 1) * SLBL_H)), (SLBL_X, SLBL_Y))
-            shown = {SK_SPEED: 48, SK_LEG: 3}.get(sk)
-            for c in range(SDG_COUNT):
-                digit = DGT_BLANK
-                if shown is not None:
-                    div = 10 ** (SDG_COUNT - 1 - c)
-                    if div == 1 or shown >= div:
-                        digit = (shown // div) % 10
-                frame.paste(small.crop((digit * SDG_W, 0, (digit + 1) * SDG_W, SDG_H)), (SDG_X + c * SDG_W, SDG_Y))
-            secs = (ms // 1000) if ms else None
-            for c in range(BIG_COUNT):
-                digit = DGT_BLANK
-                if secs is not None:
-                    div = 10 ** (BIG_COUNT - 1 - c)
-                    if div == 1 or secs >= div:
-                        digit = (secs // div) % 10
-                frame.paste(big.crop((digit * BIG_W, 0, (digit + 1) * BIG_W, BIG_H)), (BIG_X + c * BIG_W, BIG_Y))
+        frame.paste(dets.crop((0, i * DET_H, DET_W, (i + 1) * DET_H)), (DET_X, DET_Y))
+        frame.paste(slbl.crop((0, sk * SLBL_H, SLBL_W, (sk + 1) * SLBL_H)), (SLBL_X, SLBL_Y))
+        shown = {SK_SPEED: 48, SK_LEG: 3}.get(sk)
+        for c in range(SDG_COUNT):
+            digit = DGT_BLANK
+            if shown is not None:
+                div = 10 ** (SDG_COUNT - 1 - c)
+                if div == 1 or shown >= div:
+                    digit = (shown // div) % 10
+            frame.paste(small.crop((digit * SDG_W, 0, (digit + 1) * SDG_W, SDG_H)), (SDG_X + c * SDG_W, SDG_Y))
+        secs = (ms // 1000) if ms else None
+        for c in range(BIG_COUNT):
+            digit = DGT_BLANK
+            if secs is not None:
+                div = 10 ** (BIG_COUNT - 1 - c)
+                if div == 1 or secs >= div:
+                    digit = (secs // div) % 10
+            frame.paste(big.crop((digit * BIG_W, 0, (digit + 1) * BIG_W, BIG_H)), (BIG_X + c * BIG_W, BIG_Y))
         frame.save(os.path.join(PREVIEW_DIR, f"{i:02d}_{sid}.png"))
     print(f"previews: {PREVIEW_DIR}/NN_<step>.png, one per step")
 
@@ -438,7 +403,6 @@ def main():
     save(draw_digits(BIG_W, BIG_H, 290, C_DIGIT), "fb_big.bmp")
     save(draw_digits(SDG_W, SDG_H, 56, C_TEXT), "fb_small.bmp")
     save(draw_strip(SMALL_KINDS, SLBL_W, SLBL_H, paint_slabel), "fb_slabel.bmp")
-    save(draw_brief(), "fb_brief.bmp")
     if "--preview" in sys.argv:
         preview()
     print(con_block())
