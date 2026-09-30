@@ -34,6 +34,20 @@ final state of the driver."*
   - Task shape (backlog observation: all nine predate the creation-time checks): gist ≤ 60 characters 0/9, priority
     unset 0/9, `attention:` in body 5/9.
 
+### Entry baseline (2026-09-30, at d109813, the dev container)
+
+- **Compile gate** (`tools/build-check.sh -v`): PASS, 50/50 files certified across 2 configurations, both release
+  demos certified, every bench tier within the DEBUG footprint. **0 warnings**, by a search of the whole captured log.
+  One exclusion, printed by the gate: `hng034rm` (PL-1).
+- **Style gate** (`tools/check_style.sh`): **FAIL, 2 findings in 1 file**, 45 of 51 files in scope. The six excluded
+  are imported and never modified: p2videodrv, p2textdrv, jm_ez_analog, jm_nstr, jm_sbus_rx, hng034rm.
+  - `test_bench_dual.spin2:17978` rule 2.2: `fbStepCol()` returns the generic name `value`.
+  - `test_bench_dual.spin2:18169` rule 5.4: `fbHallWait()` returns the boolean `bSensed` but is not named as a query.
+  - One group, one cause: both arrived with the countdown board (f395e5e, SRC_REV 65, 2026-09-29). **Fixed in §2's
+    batch.** Code is written to the guide as it goes. Both gates run once, over the finished §1-§5 batch, as an audit
+    (Stephen, 2026-09-30).
+- **A green compile gate is a compile result only.** Behaviour is certified on hardware, at the visit (§7).
+
 ## Open questions
 
 None. Every question was asked and answered on 2026-09-30 (below).
@@ -332,6 +346,31 @@ of the audit's pattern, and don't change with this plan.
    - **The shipped `CFG_DUAL_MOTOR` block** puts LEFT on P16 and RIGHT on P32 (`isp_bldc_motor_userconfig.spin2`).
      The rig's bench config has LEFT on P32 and RIGHT on P16 (`BM-BANNER left_base,32,right_base,16`). This doesn't
      affect any bench run. Whether the shipped example is right is a Plan B question for Stephen.
+
+## Tasks
+
+Sprint tag `window-free`. **Dispatch model:** arbiter-serial, the project default, with every task inline. Every
+installed task-* profile carries a shell (overlay P1), and the bench is one physical device. No task is two-phase.
+**Atomic green-unit:** «#3628»-«#3632» are one batch that «#3633» gates once (Stephen 2026-09-27: one gate per complete
+batch). Between them, each task ends at its own bare compiles, not at a gate run. «#3576» is superseded by this set.
+
+| Plan § | Deliverable | Task | seq |
+| --- | --- | --- | --- |
+| §1 | aged records, and the two CHANGELOG omissions | «#3627» | 2 |
+| §2 | the ten single-action floor commands, with no windows | «#3628» | 3 |
+| §3 | the Rev A platform test, with no windows | «#3629» | 4 |
+| §4 | "1 rotation" removed | «#3630» | 5 |
+| blast radius | the RC CHANGELOG line, header and PRECONDITION checks | «#3631» | 6 |
+| §6 | the run sheet | «#3632» | 7 |
+| §5 + gate | one gate over the batch, the commit, the pack | «#3633» | 8 |
+| §7 | the visit and its analysis | «#3634» | 9 |
+| §8 | the results into every dependent record | «#3635» | 10 |
+| §9 | driver ready | «#3636» | 11 |
+
+Board changes made with the task set (2026-09-30):
+- «#3516», ship, is set to medium priority, so its sequence (16) places it after this set.
+- The five tasks Stephen ruled out of this release («#3506», «#3532», «#3562», «#3592», «#3602») are set to backlog.
+  `todo_next` scores priority before sequence, and it had been returning «#3516» first.
 
 ## Revision history
 
