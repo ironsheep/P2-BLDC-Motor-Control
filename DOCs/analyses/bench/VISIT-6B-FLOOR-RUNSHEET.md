@@ -79,14 +79,14 @@ Then battery off, the platform on the floor, and the floor run below.
 already compiled; it prints the commit it was built from and each binary's SHA-256 before it runs, and its logs
 land in the folder's `logs/`. Its `README.txt` says which binary each test runs. pnut-term-ts must be on the PATH.
 
-Pulling instead: `git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 65** and the
+Pulling instead: `git log --oneline -1 -- src/` at the bench must show the commit that carries **test_bench_dual SRC_REV 66** and the
 release-candidate driver, **DRIVER_REV 46** (or later, if the release-candidate pass leads to a fix).
 
 ## Check the banner before reading anything else
 
 | Every `dual-spin` log must read |
 |---|
-| `BM-BANNER,...,src_rev,65,fmt,42,part,SPIN` |
+| `BM-BANNER,...,src_rev,66,fmt,42,part,SPIN` |
 | `BM-BUILD ... drv_rev,46`: the driver under test. A lower number means an old tree. |
 | `BM-PLAN` rows in this order: `OBSTACLE`, `GRAB`, `FAULTRUN`, `SPIN` (no `INCLINE`: ruling 3) |
 | `BM-FLBUILD`, `BM-BLKBUILD`, `BM-LDBUILD`, `BM-CRPBUILD` and `BM-RDBUILD` present: every bound below was pre-registered |
@@ -145,8 +145,9 @@ Two windows open. The small **operator panel** (`bmpanel`, top left) is the one 
 **countdown board** (`fboard`, 1000 × 620, beside it) is the one you read from the platform. Before you walk away
 the board shows the briefing; click **START** on the operator panel, then go to the platform. **Check before you
 click:** the operator panel shows its READY screen with START and SKIP, and the board shows the yellow CLICK START band
-over the four-line briefing. If either window is blank, the bitmaps did not load: do not click; close the terminal and
-send the logs. From then on nothing
+over the four-line briefing. **Give the board about 15 s to appear**: on the platform's Pi the terminal takes about
+11 s to load both windows' bitmaps, and the program waits for it (SRC_REV 66). If either window is still blank after
+30 s, the bitmaps did not load: do not click; close the terminal and send the logs. From then on nothing
 waits for the PC: each step ends on its countdown, or, for a pull-back, when the wheels' own hall sensors saw the
 platform move and then stay still for 3 s.
 

@@ -581,6 +581,12 @@
 ''               testing until we've returned all other results and have corrected the driver using them"): the
 ''               run is OBSTACLE, GRAB, FAULTRUN, SPIN. A mid-run stop is Stephen's own ("at the very least i lift
 ''               the wheels and disconned the battery"); STOP stays live on bmpanel's drive screens as before
+''               29 Sep 2026 -- SRC_REV=66: the 14:42 run from bench-b045702 drew bmpanel but not fboard, and ended on
+''               the watchdog 11 s in. The platform's Pi took 11 s to load both windows' 32 MB of bitmaps: fboard's first
+''               crops ran before their layers had loaded, and cog 0, blocked in its first PC_KEY until the terminal
+''               had worked through the load, tripped the 4 s watchdog. fbSetup() now syncs on one PC_KEY right after
+''               the LAYER commands under a watchdog grace of three times the measured load (FB_LOAD_GRACE_MS), and
+''               the board redraws in full, background first, every FB_REFRESH_MS. No record, cell or motion changes
 ''
 '' =================================================================================================
 
@@ -633,18 +639,19 @@
                                                             restore CROP, digit CROP, countdown-label
                                                             CROP, strip CROP, heartbeat CROP, UPDATE);
                                                             panelReadInput() 2 (PC_KEY, PC_MOUSE)
-    test_bench_dual.spin2, countdown board              21  read, part SPIN only (SRC_REV 65): fbSetup() 12
-                                                            (PLOT, CARTESIAN, 8 x LAYER, CROP 1, UPDATE);
-                                                            fbRender() 9 (name CROP, action CROP, briefing
-                                                            CROP, lower-area restore CROP, detail CROP,
+    test_bench_dual.spin2, countdown board              22  read, part SPIN only (SRC_REV 66): fbSetup() 13
+                                                            (PLOT, CARTESIAN, 8 x LAYER, the sync PC_KEY,
+                                                            CROP 1, UPDATE);
+                                                            fbRender() 9 (background restore CROP, name CROP,
+                                                            action CROP, briefing CROP, detail CROP,
                                                             readout-label CROP, small digit CROP, big
                                                             digit CROP, UPDATE)
     isp_bench_log.spin2                                  0  read: no debug statement
     isp_bldc_motor.spin2 under the quiet masks          20  DEBUG-CHANNELS-DESIGN.md: ERROR 17 +
                                                             WARNING 3
     isp_steering_2wheel.spin2 under the quiet masks     10  DEBUG-CHANNELS-DESIGN.md: ERROR 10
-    TOTAL, each object image counted once               79  of 255 (58 in every part but SPIN)
-    TOTAL, each of the four motor instances counted    139  of 255 (118 in every part but SPIN; wheelL, wheelR and the steering
+    TOTAL, each object image counted once               80  of 255 (58 in every part but SPIN)
+    TOTAL, each of the four motor instances counted    140  of 255 (118 in every part but SPIN; wheelL, wheelR and the steering
                                                             object's two, design sec 11 fact 9)
 
   The library rows hold only under -D BENCH_CFG -D BENCH_QUIET. The builds tools/build-check.sh makes
@@ -662,7 +669,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 65                                 ' hand-bumped whenever this file changes
+    SRC_REV     = 66                                ' hand-bumped whenever this file changes
     FMT_VERSION = 42                                    ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -2513,6 +2520,15 @@ CON { the floor countdown board -- hand-written companions (SRC_REV 65) }
     FB_MOVED_CHANGES  = 6                   ' one electrical cycle, 24 mm of tyre: a pull, not a knock
     FB_STILL_MS       = 3_000               ' Stephen's "moved, then still 3 s" (2026-09-29)
     FB_HALL_POLL_MS   = 5                   ' far faster than a hand-pulled wheel's ticks
+    ' THE LOAD (2026-09-29 14:42, bench-b045702): on the platform's Pi the terminal took 11 s to load both windows' 16
+    '  bitmaps (32 MB; the P2 had sent everything by 14:42:52.16, and PC_KEY's reply came at 14:43:03.06). A CROP it ran
+    '  before a layer had loaded drew nothing ("Layer N not loaded"; the loads finish out of order), and cog 0, blocked in
+    '  its next PC_KEY for those 11 s, tripped the 4 s watchdog. So fbSetup() syncs on one PC_KEY right after the LAYER
+    '  commands -- the terminal answers it only after working through everything before it -- under a watchdog grace of
+    '  three times the measured load, and the board redraws in full every FB_REFRESH_MS, so a crop that landed on a
+    '  layer still loading is drawn again within a second
+    FB_LOAD_GRACE_MS  = 3 * 11_000
+    FB_REFRESH_MS     = 1_000
 
 CON { operator panel -- hand-written companions to the generated geometry (design sec 8) }
 
@@ -3676,6 +3692,7 @@ VAR { operator panel and attended-segment staging -- cog 0 only }
     LONG    fbDrawnStep                                     ' what the board last drew, so it redraws only on a change
     LONG    fbDrawnSeconds
     LONG    fbDrawnSmall
+    LONG    fbDrawnMs                                       ' getms() of the last full redraw (FB_REFRESH_MS)
     LONG    operPromptCode                                  ' PROMPT_* of the sequence on screen, for a BM-OPER STOP note
     LONG    operShownMs                                     ' getms() when the prompt now on screen was shown
     LONG    operQueue[OPER_QUEUE_MAX * OQ_LONGS]            ' BM-OPER records noted and not yet emitted
@@ -17933,9 +17950,16 @@ PRI fbSetup()
     debug(`fboard LAYER 6 'fb_small.bmp')
     debug(`fboard LAYER 7 'fb_slabel.bmp')
     debug(`fboard LAYER 8 'fb_brief.bmp')
+    wdGraceMs := FB_LOAD_GRACE_MS                           ' the load (FB_LOAD_GRACE_MS says why): for this one wait only
+    beat(CP_PANEL)
+    debug(`fboard `pc_key(@panelKey))                      ' the sync: answered once the terminal has taken every LAYER
+    beat(CP_PANEL)
+    wdGraceMs := 0
+    panelKey := 0                                           ' a key it read is no input: operWait() arms on its own reading
     debug(`fboard crop 1)
     debug(`fboard update)
     bBoardUp := TRUE
+    fbDrawnMs := getms()
     beat(CP_PANEL)
     fbTick()
 
@@ -18044,7 +18068,7 @@ PRI fbTick() | remainTicks
                 fbSmall := pnlSeconds
         if fbStepCol(fbStep, FB_COL_SMALL) == FB_SK_LEG
             fbSmall := fbLeg
-        if (fbStep <> fbDrawnStep) or (fbSeconds <> fbDrawnSeconds) or (fbSmall <> fbDrawnSmall)
+        if (fbStep <> fbDrawnStep) or (fbSeconds <> fbDrawnSeconds) or (fbSmall <> fbDrawnSmall) or ((getms() - fbDrawnMs) >= FB_REFRESH_MS)
             fbDrawnStep := fbStep
             fbDrawnSeconds := fbSeconds
             fbDrawnSmall := fbSmall
@@ -18068,21 +18092,23 @@ PRI fbNameRow() : nameRow
                 nameRow := FB_NM_SPINS
 
 PRI fbRender() | colIdx, divisor, digitCell
-' Compose one board frame: the name band, the action band, then either the briefing over the whole lower area or the lower
-' area restored from layer 1 (erase by restore) with the step's detail, the readout's label and digits and the countdown's
-' digits (leading zeros blank, a blank number all blank); then one UPDATE.
+' Compose one whole board frame: the background restored from layer 1 (erase by restore), the name band, the action band,
+' then either the briefing over the lower area or the step's detail, the readout's label and digits and the countdown's
+' digits (leading zeros blank, a blank number all blank); then one UPDATE. Every frame draws every piece, so the
+' FB_REFRESH_MS redraw repairs any piece a crop missed while its layer was still loading.
 '
 ' @local colIdx - digit column, most significant first
 ' @local divisor - its place value
 ' @local digitCell - fb_big.bmp / fb_small.bmp cell: 0..9, or FB_DGT_BLANK
 
     beat(CP_PANEL)
+    fbDrawnMs := getms()
+    debug(`fboard crop 1)
     debug(`fboard crop 2 `(0, fbNameRow() * FB_NAME_H, FB_NAME_W, FB_NAME_H, FB_NAME_X, FB_NAME_Y))
     debug(`fboard crop 3 `(0, fbStepCol(fbStep, FB_COL_ACTION) * FB_ACT_H, FB_ACT_W, FB_ACT_H, FB_ACT_X, FB_ACT_Y))
     if fbStep == FB_ST_BRIEF
         debug(`fboard crop 8 `(0, 0, FB_W, FB_LOW_H, 0, FB_LOW_Y))
     else
-        debug(`fboard crop 1 `(0, FB_LOW_Y, FB_W, FB_LOW_H))
         debug(`fboard crop 4 `(0, fbStep * FB_DET_H, FB_DET_W, FB_DET_H, FB_DET_X, FB_DET_Y))
         debug(`fboard crop 7 `(0, fbStepCol(fbStep, FB_COL_SMALL) * FB_SLBL_H, FB_SLBL_W, FB_SLBL_H, FB_SLBL_X, FB_SLBL_Y))
         divisor := PNL_DEC_RADIX * PNL_DEC_RADIX
