@@ -85,7 +85,7 @@ creation time does this). PL-120 watch.
 |---|---|
 | **Purpose** | **Certification** of the release-candidate driver (DRIVER_REV 46) wheels up, the release demos and the serial path |
 | **Hardware risk** | • `t0`: nothing is driven; motors are started.<br>• `t0-stopreason`: the right wheel at power 15, one **abrupt e-stop**, then spun to power 50, reversed through zero, stopped by limits mid-ramp.<br>• `t0-api`: nothing moves.<br>• `dual-start`: each start twitches the wheels; each wiring walk turns them 3.5 cm each way.<br>• `dual-d`: **wheels stop dead**, an e-stop is held, a wheel is stalled on a lowered limit, and twice the platform is switched off while spinning.<br>• `dual-reg`: half-power turns; **one wheel faulted on purpose**, twice.<br>• `dual-kick`: one wheel at a time to about 300 rpm commanded.<br>• `dual-fault`: **faults forced at speed**, including a phase short that **stops a wheel dead**.<br>• demos: **full power, 15 s at a time**.<br>• serial: power 30, and checkwiring.<br>**Wheels up throughout. Panic: physical battery disconnect.** |
-| **Who acts** | Hands-off except: `dual-pack` (unplug and replug the sensor Powerpole twice, when told); serial (wire three leads, run one host command); `t0-reva` if run (board swap and one hand grip) |
+| **Who acts** | Hands-off except: `dual-pack` (unplug and replug the sensor Powerpole twice, when told); serial (wire three leads, run one host command). `t0-reva` is superseded (see the end) |
 | **Runs that carry state** | None across runs. If PL-120 strikes, `t0-stopreason` waits up to 3 min for the right wheel; `dual-fault` pauses up to about 2 min, up to twice. The serial run is last |
 | **Run length** | About 25 minutes of run (table below), plus the serial wiring. Add up to 3 min (`t0-stopreason`) and 2.5–4.5 min (`dual-fault`) if PL-120 strikes |
 | **Repeatability** | All repeatable and idempotent |
@@ -124,7 +124,7 @@ tools/bench-run.sh dual-pack       # 9: NOTHING MOVES. Hands off 60 s, then unpl
 tools/bench-run.sh demo-single     # 10: the single-motor demo on the RIGHT wheel: wiring walk, 15 s forward and 15 s reverse at full power
 tools/bench-run.sh demo-dual       # 11: the two-wheel demo: wiring walk, 1 ft, two 15 s steered drives, each wheel alone 15 s at full power
 # 12: the serial path, below
-# 13 (optional, Stephen's call): tools/bench-run.sh t0-reva -- a Rev A board swapped in first; see the end
+# 13: SUPERSEDED 2026-09-30 -- t0-reva runs on the Rev A platform instead; see the end
 ```
 
 **No run depends on another run's result. Nothing is rewired until step 12.**
@@ -193,13 +193,13 @@ README names 270 MHz as the tested clock).
 
 ---
 
-## Optional, Stephen's call: the Rev A block for PL-163 (`t0-reva`)
+## SUPERSEDED 2026-09-30: the Rev A block for PL-163 (`t0-reva`)
+
+This block was never run, and it is not to be run as written: it asked for a board to be moved between platforms, and
+boards are never moved (STEPHEN 2026-09-30: *"we would never swap the rev A and B boards"*). PL-163 now certifies on
+the Rev A platform, which carries two Rev A boards, wheels up, with no window (`DOCs/plans/WINDOW-FREE-BENCH-SPRINT-PLAN.md`
+§3, «#3629»). The instructions for that run are in `DOCs/analyses/bench/VISIT-6B-FLOOR-RUNSHEET.md`.
 
 | | |
 |---|---|
-| **What it certifies** | R22-T0-REVA-FOLD: at a 2 A limit, a driven, unloaded Rev A wheel at the duty floor folds back on **no** frame (the pre-fix driver folded every frame); a fold on 4 mV or less FAILs, and an unloaded 5 mV reading is reported as the noise premise being wrong (NOMEAS). R22-T0-REVA-FOLDPOS: gripped by hand at the same limit, it **must** fold (the positive control) |
-| **Board swap** | Battery off. Swap one Rev B board for a Rev A on the same headers; both revisions auto-detect, so there is no config edit. Battery on. The tier prints which board each group read |
-| **What you do** | When the `t0reva` window opens, click it and press SPACE; when it says GRIP, grip the Rev A wheel's tyre firmly until it says LET GO (about 4 s) |
-| **Minutes** | About 1 of run, plus two swaps at your pace |
-| **After** | Battery off, put the Rev B board back on the headers it came from, battery on. Swapping the P16 board also moves PL-120's suspect board, so note which board went back |
-| **If not done** | PL-163 stays open past 6.0: fix built, not certified on hardware |
+| **What it certifies** | R22-T0-REVA-FOLD: at a 2 A limit, a driven, unloaded Rev A wheel at the duty floor folds back on **no** frame (the pre-fix driver folded every frame). R22-T0-REVA-FOLDPOS: gripped by hand at the same limit, it **must** fold (the positive control). Both carry over to the Rev A platform run |

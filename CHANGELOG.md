@@ -33,6 +33,9 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 - Ramp rates set before `start()` are kept across it
 - `getDriveVoltage()` returns the configured drive voltage
 - Distance commands accept `DDU_KM` and `DDU_MI`
+- Two wheels: `isFaulted()` and `isEmergency()` report a faulted or e-stopped platform
+- `isp_flysky_rx` `hasSignal()` reports whether the transmitter is heard; the FlySky demos stop the platform when
+  it is lost
 - Serial: new commands `settimeout`, `getvoltage`, `protclear`, `getprot`, `getpackvolt`, `getcurrent`,
   `getfaultcause`, `getholdstatus`, `gethallcounts`, `gethallillegal`, `checkwiring`, `setstartchecks`,
   `setdecel`, `getaccel` and `getdecel`; `protclear` releases a protective stop, which `emerclear` does not
@@ -55,6 +58,9 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 - `getError()` returns the calling cog's first error; the steering object's returns its own, the left
   wheel's and the right wheel's
 - The three hall sensors are read at one instant, so a switching transient cannot form a false hall code
+- Distance readings and distance stops are about 1 % more accurate
+- `isp_3wire_joystick` and `isp_4button_af1332` print no debug line per press; the joystick's `stop()` releases
+  its analog pins
 - The PWM dead-time is 260 ns on both board revisions, meeting the 250 ns minimum both board manuals specify
 - Serial: commands are handled about 1 ms after they arrive; a refused command replies
   `ERROR {cmd} failed: {ERR_NAME} ({code})`, and a parameter that is not a decimal integer is refused
@@ -70,6 +76,13 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 - `driveForDistance(left, right)` drives each wheel its own distance, so unequal distances turn
 - `holdAtStop(false)` coasts with all bridge transistors off; a fault coasts or brakes as `holdAtStop()`
   selects; `emergencyCutoff()` brakes and latches until `clearEmergency()`
+- After `clearEmergency()`, the next drive ramps up from rest; it faulted at once
+- Two wheels: `getDistance()` reports the distance travelled; it reported ten times it
+- `stopAfterDistance()` with `DDU_M` stops at the full distance, on both objects; it stopped at a tenth
+- `isReady()` and `isStopped()` answer `FALSE` after `stop()`, and a `start()` that fails releases its pin group
+- `isp_queue_serial` `stop()` stops its own receive cog; it stopped the cog numbered one lower
+- `isp_flysky_rx` `readSwitch()` and `readSw3Way()` read a channel that is not a 3-position switch as OFF; it
+  read as ON
 
 ### Breaking Changes
 
@@ -77,6 +90,16 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
   `#DEFINE CFG_SINGLE_MOTOR` (or `CFG_DUAL_MOTOR`) and a guarded `#PRAGMA EXPORTDEF` at its top; without
   them PNut-TS stops with an error naming the lines. PNut users select it in the config file instead
   ([DEVELOP.md](DEVELOP.md)).
+- **BREAKING**: `driveDirection()` turns right for a positive `{direction}` and left for a negative one, as
+  documented; it turned the other way. Programs that negated `{direction}` to compensate must remove the
+  negation. The FlySky demos no longer invert the joystick.
+- **BREAKING**: `start()` returns the started cog's id (0 to 7), or -1 when it fails; it returned the id + 1,
+  or 0. This holds for the motor, steering, joystick, 4-button and HDMI debug objects. Code that tests the
+  result for 0 must test for -1.
+- **BREAKING**: support-object renames: `isp_flysky_rx` `swIsOn()`, `swIsOff()` and `swIsMiddle()` are now
+  `isSwitchOn()`, `isSwitchOff()` and `isSwitchMiddle()`; `isp_queue_serial` `haveCommand()` and
+  `haveRxString()` are now `hasCommand()` and `hasRxString()`. Programs calling them rename the calls; the
+  motor and steering methods are unchanged.
 - **BREAKING**: command methods return `NO_ERROR` or a negative `ERR_*` code instead of aborting on bad
   arguments. Calls that ignore the result need no change; code relying on an abort to stop a cog must check
   the result.

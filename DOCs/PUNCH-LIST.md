@@ -65,7 +65,7 @@ do the right thing, and then we can call them done without having to test on the
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | A blocked-wheel cell that trips SR_BLOCKED (the floor run «#3576» has none today) |
+| PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | The floor's OBSTACLE runs, `floor-obstacle-coast` and `floor-obstacle-short` («#3628»): the wheels driven into an obstacle must latch SR_BLOCKED |
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | The floor run (cells built, SRC_REV 58-61); it now also carries HOLDSET/NOTFOL's question (RC F4) |
 | PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Wheels-up half CERTIFIED 2026-09-28 (Block A: RAMP-SHAPE, -REVERSE, -UNWIND PASS); remaining: the feel under load on the floor (owner questions all ruled: Q4 → PL-102, Q5 → PL-166, both after 6.0) |
 
@@ -78,7 +78,7 @@ do the right thing, and then we can call them done without having to test on the
 | PL-111 | A serial host could not clear a protective stop | A provoked protective stop (PL-106) |
 | PL-132 | The blocked-wheel stop shorted the phases even under coast | The floor run |
 | PL-144 | The two-wheel path limiter cycled the platform between crawl and full | The floor run (R21-DUAL-LDPATH-P): PATH-HUNT's precondition, a wheel falling behind, never arises wheels up (RC pass NOMEAS, as pass 7) |
-| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | `t0-reva` (optional block, a Rev A board swapped in): R22-T0-REVA-FOLD |
+| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | `t0-reva` on the Rev A platform (two Rev A boards, wheels up, no window; «#3629»): R22-T0-REVA-FOLD and its grip positive, FOLDPOS |
 
 **Watch**
 
@@ -1449,7 +1449,7 @@ it:** a sub-sector angle -- hall-timing interpolation or back-EMF -- against whi
 
 ### PL-106 -- the blocked-motor protective stop cannot be provoked on a lifted rig, so no driver change to it is certified
 
-> **6.0 status (2026-09-26 audit):** RELEASE — the protective stop (and SR_BLOCKED) has never been measured on a blocked wheel; it fired once on a dead bridge (2026-09-24, before DRIVER_REV 20). Needs a blocked-wheel cell (floor run «#3576» has none today).
+> **6.0 status (2026-09-26 audit):** RELEASE — the protective stop (and SR_BLOCKED) has never been measured on a blocked wheel; it fired once on a dead bridge (2026-09-24, before DRIVER_REV 20). (2026-09-30) The blocked-wheel cells are the floor's OBSTACLE runs, `floor-obstacle-coast` and `floor-obstacle-short` («#3628», run at «#3634»).
 
 **Found 2026-09-22 at Visit 8** ([evaluation](analyses/bench/2026-09-22/VISIT-8-EVALUATION.md) §3.4, F-3).
 `R16-DUAL-BLOCKED-D` has read NOMEAS (`why,NOT_BLOCKED`) in **every** part-D log on record: 2026-09-17 twice,
@@ -1810,7 +1810,7 @@ the set holds one. The harness watchdog printed nothing. The rerun and pass 2 bo
 
 **Undetermined:** a P2 reset, a supply loss, or a hang with its TX line disturbed. The log cannot separate them.
 **Watch:** the next run sheet says in advance what to look at if the log stops scrolling. A second instance, or that
-observation, makes it actionable. Owner «#3613».
+observation, makes it actionable. Owner: each visit's log analysis (now «#3634»; «#3613» closed 2026-09-30).
 
 ### PL-132 -- the blocked-wheel protective stop shorts the phases even when the user chose coast
 
@@ -1827,7 +1827,7 @@ reuse here is the defect.
 **Disposition:** ⛔ fix in the driver, «#3609». The protective stop gets its own immediate stop that takes the stop mode's
 at-rest state: SM_FLOAT coasts, SM_BRAKE holds, and the hold's own hand-off to the short still applies. It still latches
 and refuses drives until `clearProtectiveStop()`. **Unmeasurable wheels-up** (PL-106: a lifted wheel cannot be
-blocked), so it is certified by construction and by the floor run («#3576»). Building it gates no load on the current
+blocked), so it is certified by construction and by the floor run (the OBSTACLE runs, «#3628»). Building it gates no load on the current
 bench pass.
 
 **FIXED (DRIVER_REV 20, 2026-09-25), not bench-certified:** `e_stop` carries its kind: ES_OFF, ES_HARD (emergency
@@ -2441,7 +2441,8 @@ cadence, not the absent test, and the RC pass's steady readings certify the samp
 
 ### PL-163 -- on a Rev A board below about 2.7 A, the fold-back cut the drive on every driven frame
 
-> **6.0 status (2026-09-27):** AWAITS CERT — fix built (DRIVER_REV 38, 5cecb04); the rig is Rev B.
+> **6.0 status (2026-09-30):** AWAITS CERT — fix built (DRIVER_REV 38, 5cecb04; the residual DRIVER_REV 40); certifies on
+> the Rev A platform («#3629», tier `t0-reva`).
 
 **Found 2026-09-27** by the DRIVER_REV 37 desk review (PL-146's rest-offset work).
 - **DERIVED:** the fold-back threshold at the duty floor is `max(duty_, duty_floor_) * i_limit_k_ >> 16`. Rev A's
@@ -2453,8 +2454,11 @@ cadence, not the absent test, and the RC pass's steady readings certify the samp
 - **Negative:** on Rev A with `testSetCurrentLimits(2, 2)`, a driven, unloaded wheel at the duty floor counts
   `foldback_frames` every frame; fixed, it counts none.
 
-**Disposition:** certifies on a Rev A board (Stephen has two). Not on the Rev B rig's sheets; whether a Rev A check
-rides the release-candidate pass is decided with that sheet.
+**Disposition (2026-09-30):** certifies on the Rev A platform, which carries two Rev A boards; boards are never moved
+between platforms (STEPHEN 2026-09-30: *"Prepare it to run on the RevA platform that has two RevA boards"*). Tier
+`t0-reva`, rebuilt by «#3629» with no window: the unloaded legs on each Rev A group are the negative (FOLD), and a grip
+on the RIGHT wheel, held until the program stops it, is the positive (FOLDPOS). The cell's record states the effective
+threshold, `FOLD_MIN_MV` (a fold needs a 5 mV net reading).
 
 **2026-09-27, the residual, built (DRIVER_REV 40, uncommitted).**
 - **DERIVED:** DRIVER_REV 38 folds on a net reading above floor(t). At a 2 A Rev A limit near the duty floor t is
