@@ -138,7 +138,7 @@ Usage:  tools/bench-run.sh <tier>
                    t0-stopmode    Tier 0's T0-24 stop-state hand test only -- 8 ROWS: OPERATOR PUSHES OR SPINS ONE WHEEL SIX TIMES, TWO ROWS SPIN IT UNDER POWER  [WHEELS UP, ATTENDED]
                    t0-stopmode-fltfirst  as t0-stopmode with the two powered fault rows before the e-stop row (PL-116's discriminator)  [WHEELS UP, ATTENDED]
                    t0-stopreason  Tier 0's T0-25 only -- the RIGHT wheel driven slowly and stopped each way a program can, to read why it stopped and the driver's event log; then driven up to power 50, slowed, stopped and reversed while the ramp is watched pass by pass (PL-160) and every PWM frame's slack is watched (PL-161)  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   t0-reva        Tier 0's T0-27 only -- A REV A BOARD SWAPPED ONTO ONE GROUP FIRST: at a 2 A limit its wheel is driven slowly twice and must fold back no frame, then you hold it by hand and it must fold back (PL-163); drives nothing on an all-Rev B rig  [BOARD SWAP, WHEELS UP, ATTENDED: ONE HAND HOLD]
+                   t0-reva        Tier 0's T0-27 only, ON THE REV A PLATFORM: at a 2 A limit each wheel is driven slowly twice and must fold back no frame, then the RIGHT speeds up and you hold it by hand until it stops, and it must fold back (PL-163, the Rev A current fold-back)  [REV A PLATFORM, WHEELS UP, ATTENDED: ONE HAND HOLD]
                    spin           wiring check -- BOTH WHEELS TURN at 50%, fwd then reverse
                    spin-auto      as spin, the board revision auto-detected (PL-120's first factor)  [WHEELS UP, UNATTENDED]
                    spin-quiet     as spin, built quiet like the dual and T0 tests (PL-120's second factor)  [WHEELS UP, UNATTENDED]
@@ -161,8 +161,21 @@ Usage:  tools/bench-run.sh <tier>
                    dual-start-nowalk  as dual-start without checkWiring(), each start told to go ahead despite a failed check: nothing is commanded -- the load for B-1 (one wheel's hall connector unplugged)  [WHEELS UP, ATTENDED WIRING CHANGE]
                    dual-start-phaseneg  12 starts with one LEFT phase withheld from the lead check in firmware (B-3's negative), in three kinds: started anyway, refused, withheld on the first try only; nothing is commanded  [WHEELS UP, UNATTENDED]
                    dual-start-swapneg   as dual-start, with the LEFT wheel reading two halls as swapped in the walk lifetimes (B-5's negative): the left wheel may jerk  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   dual-spin      the FLOOR RUN (SRC_REV 62), every drive distance-limited and announced before it moves: an OBSTACLE STOP twice (a slow drive of at most 1 m into you or a fixed object), GRAB ONE SIDE (1 m out, you grab one side, then back), the INCLINE (short climbs of at most 1 m up with stops and holds, then back down), the FAULT RETURN RUN (1 m out, 1 m back with one wheel faulted on purpose), then 10 spin-in-place legs of at most one platform turn  [ATTENDED, WHEELS DOWN]
-                   dual-pack      motion harness part PACK: the pack voltage sensor -- NOTHING MOVES: 60 s hands off, then you unplug and replug the sensor at the pack twice; a meter reading only when the terminal asks  [ATTENDED]
+                   floor-obstacle-coast  the FLOOR RUN, ONE ACTION, NO WINDOW: a slow drive of at most 1 m into an obstacle you place 0.3-0.8 m ahead, the platform's own protective stop (bridge coasts), and the checks after it; you pull it back by hand afterwards  [WHEELS DOWN, ATTENDED]
+                   floor-obstacle-short  as floor-obstacle-coast with the stop shorting the bridge (the control)  [WHEELS DOWN, ATTENDED]
+                   floor-grab     the FLOOR RUN, ONE ACTION, NO WINDOW: a slow 1 m straight drive; about 3 s after it starts rolling you take hold of its LEFT side and hold until it stops by itself; you return it by hand afterwards  [WHEELS DOWN, ATTENDED: ONE HAND HOLD]
+                   floor-faultrun the FLOOR RUN, ONE ACTION, NO WINDOW: 1 m out, 1 m back with the LEFT wheel faulted on purpose, the recovery, and the drive on to the start  [WHEELS DOWN, ATTENDED]
+                   floor-spin-slow-left  the FLOOR RUN, ONE ACTION, NO WINDOW: one slow spin in place, at most one platform turn, counter-clockwise seen from above  [WHEELS DOWN, ATTENDED]
+                   floor-spin-slow-right as floor-spin-slow-left, clockwise  [WHEELS DOWN, ATTENDED]
+                   floor-spin-med-left   one medium-speed spin in place, at most one platform turn, counter-clockwise  [WHEELS DOWN, ATTENDED]
+                   floor-spin-med-right  as floor-spin-med-left, clockwise  [WHEELS DOWN, ATTENDED]
+                   floor-spin-fast-left  one fast (quarter-speed) spin in place, at most one platform turn, counter-clockwise  [WHEELS DOWN, ATTENDED]
+                   floor-spin-fast-right as floor-spin-fast-left, clockwise  [WHEELS DOWN, ATTENDED]
+                   floor-spin-legacy-left  a medium spin, counter-clockwise, on a comparison setting of the motor timing (the old 5.0.2 values), for comparing its current with floor-spin-med  [WHEELS DOWN, ATTENDED]
+                   floor-spin-legacy-right as floor-spin-legacy-left, clockwise  [WHEELS DOWN, ATTENDED]
+                   floor-spin-fixed-left   a fast spin, counter-clockwise, on a comparison setting of the motor timing (a fixed value), for comparing its current with floor-spin-fast  [WHEELS DOWN, ATTENDED]
+                   floor-spin-fixed-right  as floor-spin-fixed-left, clockwise  [WHEELS DOWN, ATTENDED]
+                   dual-pack     motion harness part PACK: the pack voltage sensor -- NOTHING MOVES: 60 s hands off, then you unplug and replug the sensor at the pack twice; a meter reading only when the terminal asks  [ATTENDED]
                    dual-brake     motion harness part BRAKE: OUTSIDE -- OPERATOR HAND-BRAKES THE LEFT WHEEL ONCE  [WHEELS UP, ATTENDED]
                    dual-c         motion harness part C: PREFLT, BASELINE, POSTFLT  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-d         motion harness part D: PREFLT, STEERSEG, LIMIT -- the front cog's contract and current limiting  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
@@ -211,6 +224,11 @@ CLK_OVERRIDE=""
 # approximation of it.
 EXTRA_DEFS=()
 PRECONDITION=""
+# The words every floor-* tier's PRECONDITION shares (the fourteen single-action floor commands, SRC_REV 69): what a floor
+# run is, what a spin does, and how it ends. Plain words for Stephen on the floor with the Rev B platform; no window, no key.
+FLOOR_FRAME="PLATFORM ON THE FLOOR, WHEELS DOWN, THE REV B PLATFORM, TETHERED -- ATTENDED, BUT NO WINDOW OPENS AND NOTHING IS CLICKED OR TYPED: you start the command and read the terminal. THIS IS ONE ACTION, RUN ONCE -- a repeat is this same command again. The terminal prints its records, then 'LEAD-IN: the platform starts moving in 10 s' (printed once; it does not count down): you have those 10 seconds to be standing where this says, and NOTHING MOVES BEFORE THEY ARE UP. YOUR FLOOR RULES ARE BUILT IN: every drive is armed with its own distance limit before it moves; the program stops any drive 6 hall ticks (35 mm) past that limit; a straight drive goes at most 1 m and a spin at most one platform turn; the 10 A abort applies. BEFORE THE RUN: a clear straight lane 1.5 m long and 0.5 m wide on a hard floor, a clear level space 1 m all round for a spin, the tether slack."
+FLOOR_SPIN_WHAT="WHAT IT DOES: spins the platform in place, ONE turn at most, and stops itself at its turn limit. WHERE YOU STAND: outside the circle it turns in, at least 1 m clear all round, the tether slack. WHAT YOU DO: nothing. WHAT YOU SEE: the lead-in line and 10 still seconds, then the platform turning once and stopping."
+FLOOR_TAIL="WHEN IT ENDS: the terminal's LAST line starts 'RESULT:' and says what happened. Read it, put the platform back at its start BY HAND (its wheels roll freely once it ends) and run the next command. THERE IS NO STOP BUTTON: to stop it mid-run, lift the wheels and disconnect the battery."
 case "$TIER" in
     # PL-74: t0 is built QUIET. It carries SIX isp_bldc_motor instances plus a steering
     #  object (motor, motorA, motorB, motorP, steer's two) -- more than any other tier --
@@ -269,15 +287,14 @@ case "$TIER" in
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_STOPREASON)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the program drives the RIGHT wheel (the P16 board; THE LEFT, the P32 board, INSTEAD if the right fails its start checks) slowly, at power 15, about 30 short times, and stops it each way a program can -- a normal stop, a timed stop, an EMERGENCY STOP THAT BRAKES IT ABRUPTLY, and the stop that comes when commands stop arriving -- then reads why each drive stopped and what the driver logged. Then it drives the wheel ONE FULL TURN to a stop-after-rotation limit, drives it again for a few seconds with no limit, and e-stops it once more at rest. THEN THE RAMP TESTS, FASTER: the wheel spins up to power 50 (about 145 rpm), slows to power 25, stops, spins up to 25 and REVERSES to -25 without stopping, stops, and then six more spin-ups to power 50, each ended by a stop the program or a limit sends -- every speed change is a smooth ramp of a second or two. IF THE RIGHT WAS REFUSED, it then tries to start the right every 10 s, for up to 3 minutes, to time its return. Nothing waits for you and no window opens. About 2 minutes, or up to about 5 if the right is refused"
                     ;;
-    # t0-reva (test_bench_t0 SRC_REV 26, DRIVER_REV 40, PL-163) -- T0-27 only: the Rev A fold-back, two unloaded legs
-    #  (no fold) and one attended hand-held leg (must fold: the positive control). The rig is Rev B, so this
-    #  tier needs ONE board swapped for a Rev A (same headers, same pins; the bench config auto-detects the revision, so
-    #  there is no config edit). It starts the RIGHT group and, unless that reads REV_A, the LEFT, prints the board each
-    #  read, and drives only the Rev A board's wheel. On an all-Rev B rig it drives nothing and its cell is NOMEAS, so it
-    #  cannot disturb a Rev B run. BENCH_QUIET for the same reason as t0.
+    # t0-reva (test_bench_t0 SRC_REV 29, DRIVER_REV 40, PL-163) -- T0-27 only: the Rev A fold-back on the Rev A platform
+    #  (two Rev A boards; boards are never moved between platforms, Stephen 2026-09-30). Both groups start and print
+    #  their board; each Rev A group runs two unloaded legs (no fold), and the RIGHT's last leg runs on into one attended
+    #  hand-held leg (must fold: the positive control), cued by the wheel speeding up. No window, no key. A group that
+    #  does not read REV_A is printed and not driven. BENCH_QUIET for the same reason as t0.
     t0-reva)        BENCH_FILE="test_bench_t0.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D T0_REVA)
-                    PRECONDITION="BEFORE THE RUN, YOU SWAP ONE BOARD: battery OFF; take ONE Rev B driver board off its headers (the RIGHT, P16, or the LEFT, P32 -- either works) and seat a REV A board on the same headers, fully seated; note which board came off; battery ON. Then WHEELS UP, HANDS OFF AT FIRST: the program starts the RIGHT motor and, unless it reads Rev A, stops it and starts the LEFT (each start pulses the leads with nothing able to move); it prints which board each group read. On the Rev A board ONLY, with its current limit lowered to 2 A, it drives that wheel SLOWLY twice (power 10, then power 5), about 6.5 s each, and stops it. THEN HOLD THE REV A WHEEL WHEN TOLD: a window named t0reva opens -- click it and press SPACE; the Rev A wheel spins slowly (power 20); when the window says GRIP, grip that wheel's tyre firmly by hand and keep holding it until the window says LET GO, about 4 s (the wheel may stop against your hand; that is expected). If neither group reads Rev A it drives nothing and no window opens. About 45 seconds plus your key press. AFTER THE RUN: battery OFF, put the Rev B board back on the headers it came from, battery ON, before anything else runs -- every other tier is Rev B"
+                    PRECONDITION="THE REV A PLATFORM (its two Rev A boards, as they are -- nothing is moved or swapped), ON THE BENCH, WHEELS UP, BOTH WHEELS FREE TO TURN -- ATTENDED AT THE END, BUT NO WINDOW OPENS AND NOTHING IS CLICKED OR TYPED. The terminal prints its records, then a LEAD-IN line: nothing moves for 10 seconds. Then the program starts the LEFT motor, then the RIGHT (each start pulses the motor leads with nothing able to move), and prints which board each read; a side that does not read Rev A is printed as a FINDING and not driven. With the current limit lowered to 2 A, it turns the LEFT wheel SLOWLY twice (power 10, then power 5, about 6.5 s each, stopping between), then the RIGHT wheel the same way -- except that the RIGHT's second slow turn does not stop: THE RIGHT WHEEL, ALREADY TURNING, SPEEDS UP (to power 20), and the terminal says GRIP. THAT IS YOUR CUE: grip the RIGHT tyre firmly by hand at once and KEEP HOLDING until the program stops the wheel, about 7 seconds later (it may slow or stop against your hand; that is expected); the terminal then says to let go. No let-go count, no key. About 50 seconds in all"
                     ;;
     spin)           BENCH_FILE="test_bench_spin.spin2"
                     PRECONDITION="BOTH WHEELS WILL TURN AT 50% POWER -- lift or support the platform"
@@ -415,23 +432,84 @@ case "$TIER" in
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_START -D START_NEG_SWAP)
                     PRECONDITION="WHEELS UP, HANDS OFF, DO NOT TOUCH ANY WIRING -- the program fakes crossed hall-sensor wires on the LEFT wheel, then nudges both wheels 3 times and must notice the left is miswired. The LEFT WHEEL MAY JERK, BUZZ OR TURN BACKWARDS for up to 2 s at a time until it stops itself. Panic: battery disconnect. Under 1 minute"
                     ;;
-    # dual-spin (task 3591, plan R18.2c tail and R19.8) -- the tethered spin-in-place FLOOR tier, loaded and attended: the
-    #  release's only loaded measurement. Twelve legs through the steering object, each armed with its own distance stop at
-    #  one revolution of the platform (pi x the 387 mm track = 211 hall ticks) BEFORE it is driven, each clockwise leg
-    #  followed by a counter-clockwise one, two of them faulting a wheel on purpose; then three hold trials on a measured
-    #  incline. No PREFLT: its single-wheel nudge would pivot a platform standing on the floor.
-    # SRC_REV 58 (the floor run becomes the last bench visit before 6.0; DOCs/analyses/bench/VISIT-6B-FLOOR-RUNSHEET.md):
-    #  the same part carries every load cell -- after each fault leg the same spin again (PL-93); segment BLOCK, the LEFT
-    #  wheel chocked and driven alone at 2 A until the protective stop latches, twice (PL-106, PL-111's precondition,
-    #  PL-132); segment LOAD, a straight drive at 4 A dragged by his strap (PL-150); PL-95 across both. Still one binary:
-    #  the new code adds no debug() statement, so the DEBUG footprint is unchanged (measured 7_494 bytes).
-    # SRC_REV 62 (Stephen, 2026-09-27: only distance-limited rigs on the floor; spins allowed; straight runs at most 1 m
-    #  out and back; the incline at most 1 m up and back): BLOCK becomes the OBSTACLE STOP (both wheels blocked by him or
-    #  a fixed object), LOAD becomes GRAB ONE SIDE on a 1 m run, the fault pair leaves SPIN for the FAULT RETURN RUN
-    #  (PL-93, X-5), SPIN keeps 10 legs; every drive is armed with its limit first and announced before it moves.
-    dual-spin)      BENCH_FILE="test_bench_dual.spin2"
-                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN)
-                    PRECONDITION="PLATFORM ON THE FLOOR, WHEELS DOWN, TETHERED -- ATTENDED motion harness part SPIN, THE FLOOR RUN, FIVE SITUATIONS IN THIS ORDER (OBSTACLE, GRAB, INCLINE, FAULTRUN, SPIN): THE PLATFORM MOVES UNDER POWER WITH YOU BESIDE IT. YOUR FLOOR RULES ARE BUILT IN: every drive is stopped by the steering object's own distance limit, armed before it moves, and the harness e-stops any drive 6 hall ticks (35 mm) past its limit; a straight drive goes at most 1 m out and 1 m back to its start; the incline at most 1 m up and 1 m back down; spinning in place is at most one platform turn a leg. NOTHING MOVES UNTIL YOU CLICK START ON A READY SCREEN THAT NAMES THE TEST, and each drive back has a READY screen of its own. BEFORE THE RUN: a clear straight lane 1.5 m long and 0.5 m wide on a hard floor; a clear level space 1 m all round for the spin; the incline (about 10 degrees, at least 1 m of slope past the drive wheels plus the platform's length, with the flat at its foot); the tether slack, hung from above the platform centre or with at least 3 m of free length; the incline angle and the platform mass written on the run sheet. 1 OBSTACLE: you stand 0.3-0.8 m in front of the platform (or put an object there that cannot move), square across its path; it drives slowly (0.16 m/s, current limited to 2 A) into it, twice, and each time must stop itself about a second after it is blocked; you pull it back after each. 2 GRAB: it drives 1 m straight at a slow walk (4 A); you walk beside its LEFT side and, when the panel says GRAB, hold the frame back so the number (its speed, % of command) falls to about 50, never to 0, until LET GO; it stops itself at 1 m, then (after START) drives 1 m back; up to three tries. 3 INCLINE: one START runs it all -- it climbs 1 m in three steps, stopping after each on the slope (it rolls back about 2 cm and is braked; then slips and drags; then, at the top, holds still 15 s), then drives 1 m back down; stand beside it with a hand near; a wheel that slips on a loose surface is not seen. 4 FAULTRUN: it drives 1 m forward (0.23 m/s); after START it drives back and after about a second the LEFT wheel is faulted on purpose -- both stop within half a second, the platform turning a few degrees; after the recovery and START it drives on to its start. 5 SPIN: ten legs, each armed at ONE REVOLUTION of the platform, clockwise then counter-clockwise, at most power 23 (about half a turn a second); stand outside the circle. STOP (click or space bar) is live whenever a wheel can move -- on the incline it brakes the wheels at once, and the panel then asks you to hold the platform; the 10 A abort and the fold-back limiter apply. PANIC: disconnect the battery. Click the bmpanel window first. Run cap 30 minutes, about 11 minutes of run plus your setup"
+    # The FLOOR RUN as FOURTEEN single-action commands with no window (Stephen, 2026-09-30, DOCs/plans/WINDOW-FREE-BENCH-
+    #  SPRINT-PLAN.md section 2; the old dual-spin tier -- the five-situation run behind the operator panel and the countdown
+    #  board -- is abandoned, R10). Each tier is part SPIN of test_bench_dual.spin2 with ONE action chosen by its own -D
+    #  FLOOR_ACT_*: it runs that action once (a repeat is a rerun, R4), after a 10 s lead-in (R3), opens no window and reads
+    #  no key or click (R1), and prints one plain RESULT line last. The floor rules are the construction: only distance-
+    #  controlled drives, every leg armed before it moves, at most 1 m straight and one turn in place, the harness's travel
+    #  guard and the 10 A abort. -D BENCH_QUIET for the motion harness's reason (I5). No PREFLT: its single-wheel nudge would
+    #  pivot a platform standing on the floor. The slow, med and fast spins are the confirmed-offset (SCHED) pairs at the three
+    #  speeds; legacy and fixed are the comparison pairs, so the analysis can judge the ratios that compare pairs across logs.
+    floor-obstacle-coast)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_OBST_COAST)
+                    PRECONDITION="$FLOOR_FRAME WHAT IT DOES: drives straight at an obstacle, slowly (0.16 m/s, current limited to 2 A), until the platform's own protective stop latches about a second after it is blocked -- with the motor bridge left to COAST -- then checks that stop: it must refuse a new drive until the stop is cleared, and take one after. WHERE YOU STAND: 0.3-0.8 m in front of the platform, square across its path, or put an object there that cannot move; keep clear of the wheels. WHAT YOU DO: nothing. WHAT YOU SEE: the lead-in line and 10 still seconds, then the platform creeping forward and stopping itself against the obstacle, then a few seconds of checks. THE LAST LINE TO EXPECT: 'RESULT: OBSTACLE COAST -- the platform stopped itself on the obstacle (the protective stop latched)'. If it says it never met the obstacle, stand it nearer and run it again. About 40 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-obstacle-short)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_OBST_SHORT)
+                    PRECONDITION="$FLOOR_FRAME WHAT IT DOES: the same drive into the obstacle as floor-obstacle-coast, but the protective stop leaves the motor bridge SHORTED instead of coasting -- the control that shows the coast run's reading can tell the two apart. Then the same checks of the stop. WHERE YOU STAND: 0.3-0.8 m in front of the platform, square across its path, or put an object there that cannot move; keep clear of the wheels. WHAT YOU DO: nothing. WHAT YOU SEE: the lead-in line and 10 still seconds, then the platform creeping forward and stopping itself against the obstacle, then a few seconds of checks. THE LAST LINE TO EXPECT: 'RESULT: OBSTACLE SHORT -- the platform stopped itself on the obstacle (the protective stop latched)'. About 40 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-grab)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_GRAB)
+                    PRECONDITION="$FLOOR_FRAME WHAT IT DOES: drives 1 m straight at a slow walk (0.16 m/s, current limited to 4 A) and stops itself at 1 m. WHERE YOU STAND: beside its LEFT side, hand ready, the lane clear ahead. WHAT YOU DO: about 3 seconds after it starts rolling, take hold of its LEFT side (the frame) firmly and KEEP HOLDING until it stops by itself at 1 m -- enough to slow it to about half speed, not enough to stop it. There is nothing to click, no key to press, and no let-go cue: the program times its own window from the start of the drive, and that window lies inside any hold taken between about 2.5 and 3.5 seconds after it starts rolling. WHAT YOU SEE: the lead-in line and 10 still seconds, then the platform rolling away, your hold slowing it, then the stop. THE LAST LINE TO EXPECT: 'RESULT: GRAB -- judged: the hold was read'. If it says 'too light: hold harder next run' or 'stalled: hold less next run', run it again as it says. About 45 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-faultrun)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_FAULTRUN)
+                    PRECONDITION="$FLOOR_FRAME WHAT IT DOES, as one sequence: drives 1 m forward (0.23 m/s); the terminal prints 'STAND CLEAR: the platform drives back in 5 s' and it drives back; after about a second the LEFT wheel is faulted on purpose -- both wheels stop within half a second and the platform turns a few degrees; it recovers; the terminal prints 'STAND CLEAR: the platform drives on to its start in 5 s' and it drives on to its start. WHERE YOU STAND: beside the lane, clear of it. WHAT YOU DO: nothing. WHAT YOU SEE: the lead-in line and 10 still seconds, the drive out, the first STAND CLEAR line and 5 still seconds, the drive back and the sudden stop, the second STAND CLEAR line and 5 seconds, the drive to the start. THE LAST LINE TO EXPECT: 'RESULT: FAULT RUN -- fault seen and recovered: the drive on to the start drew normal current'. About 65 seconds. The platform ends at or near its start: put it exactly there by hand before the next run. $FLOOR_TAIL"
+                    ;;
+    floor-spin-slow-left)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_SLOW_LEFT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: SLOW, LEFT (counter-clockwise seen from above). The turn takes about 8 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN SLOW LEFT -- ended at its turn limit'. About 25 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-slow-right)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_SLOW_RIGHT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: SLOW, RIGHT (clockwise seen from above). The turn takes about 8 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN SLOW RIGHT -- ended at its turn limit'. About 25 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-med-left)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_MED_LEFT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: MEDIUM, LEFT (counter-clockwise seen from above). The turn takes about 4 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN MEDIUM LEFT -- ended at its turn limit'. About 20 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-med-right)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_MED_RIGHT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: MEDIUM, RIGHT (clockwise seen from above). The turn takes about 4 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN MEDIUM RIGHT -- ended at its turn limit'. About 20 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-fast-left)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_FAST_LEFT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: FAST, the quarter of full speed, LEFT (counter-clockwise seen from above). The turn takes about 3 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN FAST LEFT -- ended at its turn limit'. About 30 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-fast-right)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_FAST_RIGHT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: FAST, the quarter of full speed, RIGHT (clockwise seen from above). The turn takes about 3 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN FAST RIGHT -- ended at its turn limit'. About 30 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-legacy-left)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_LEGACY_LEFT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: MEDIUM, LEFT (counter-clockwise seen from above). This spin uses a comparison setting of the motor timing -- the old version 5.0.2 values -- so its current can be compared with the matching standard medium spin (floor-spin-med); nothing else differs for you. The turn takes about 4 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN LEGACY LEFT -- ended at its turn limit'. About 22 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-legacy-right)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_LEGACY_RIGHT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: MEDIUM, RIGHT (clockwise seen from above). This spin uses a comparison setting of the motor timing -- the old version 5.0.2 values -- so its current can be compared with the matching standard medium spin (floor-spin-med); nothing else differs for you. The turn takes about 4 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN LEGACY RIGHT -- ended at its turn limit'. About 22 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-fixed-left)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_FIXED_LEFT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: FAST, the quarter of full speed, LEFT (counter-clockwise seen from above). This spin uses a comparison setting of the motor timing -- a fixed value in place of the speed-dependent one -- so its current can be compared with the matching standard fast spin (floor-spin-fast); nothing else differs for you. The turn takes about 3 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN FIXED LEFT -- ended at its turn limit'. About 30 seconds. $FLOOR_TAIL"
+                    ;;
+    floor-spin-fixed-right)
+                    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_SPIN -D FLOOR_ACT_SPIN_FIXED_RIGHT)
+                    PRECONDITION="$FLOOR_FRAME $FLOOR_SPIN_WHAT SPEED: FAST, the quarter of full speed, RIGHT (clockwise seen from above). This spin uses a comparison setting of the motor timing -- a fixed value in place of the speed-dependent one -- so its current can be compared with the matching standard fast spin (floor-spin-fast); nothing else differs for you. The turn takes about 3 seconds. THE LAST LINE TO EXPECT: 'RESULT: SPIN FIXED RIGHT -- ended at its turn limit'. About 30 seconds. $FLOOR_TAIL"
                     ;;
     # dual-pack (task 3611, plan R20.4) -- the pack voltage sensor on Stephen's fitted unit (VOLTAGE-SENSOR.md). One
     #  steering lifetime whose start checks run and nothing more: no wheel is ever commanded. Step 1 reads the pack
@@ -520,7 +598,7 @@ case "$TIER" in
     demo-rc)        BENCH_FILE="demo_dual_motor_rc.spin2"
                     PRECONDITION="ATTENDED -- YOU DRIVE IT WITH THE FLYSKY TRANSMITTER: the SBUS receiver wired to P58 and bound, the transmitter ON with swD (the kill switch) in its run position BEFORE the load. The two-wheel RC demo, as shipped: start checks, the wiring check (each wheel turns a little one way and back), then the sticks drive the platform and every event and stop is printed as it happens. Drive forward, reverse and both turns at low and full stick; flip swD to e-stop, then back to re-arm. It runs until you close the terminal. About 3 minutes, at your pace"
                     ;;
-    # floor-rc (test_bench_rc.spin2, SRC_REV 2) -- the RC demo's control loop, unchanged, driven ON THE FLOOR, with a
+    # floor-rc (test_bench_rc.spin2, SRC_REV 3) -- the RC demo's control loop, unchanged, driven ON THE FLOOR, with a
     #  logger cog streaming both wheels' state at 25 Hz (RC-TEL) and every drive event (RC-EVT), so the log shows any
     #  erratic handling. -D BENCH_QUIET for the motion harness's reason (I5): nothing may print from the steering front
     #  cog or the drivers, and the quiet masks compile out every debug() the front cog could reach. Its DEBUG footprint

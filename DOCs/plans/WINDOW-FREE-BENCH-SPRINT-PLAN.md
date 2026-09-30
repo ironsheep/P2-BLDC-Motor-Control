@@ -123,7 +123,8 @@ each with its repeats inside:
 Every situation opens the operator panel (`panelSetup()` `:9002`) and waits on READY screens (`readyAsk()`). The
 first READY waits for a START click that has never arrived on the platform's Pi.
 
-**Target.** Ten tiers. Each builds part SPIN with one action selected by name (P2: no typed data):
+**Target.** Fourteen tiers (ten as first written; the four comparison spins added 2026-09-30, see the revision history).
+Each builds part SPIN with one action selected by name (P2: no typed data):
 
 | Tier | One run does |
 |---|---|
@@ -131,7 +132,9 @@ first READY waits for a START click that has never arrived on the platform's Pi.
 | `floor-obstacle-short` | the brake trial, the control: the same, with the stop shorting |
 | `floor-grab` | one grab try: a straight drive, his hold, on to the 1 m stop |
 | `floor-faultrun` | the fault return run: 1 m out; back with the LEFT wheel faulted on purpose; the recovery; the drive back to the start. This is one sequence, not a repeat |
-| `floor-spin-{slow,med,fast}-{left,right}` | one spin leg at that speed and direction |
+| `floor-spin-{slow,med,fast}-{left,right}` | one spin leg at that speed and direction, on the confirmed timing |
+| `floor-spin-legacy-{left,right}` | one medium spin leg on v5.0.2's commutation offsets: SPINCTL's reference |
+| `floor-spin-fixed-{left,right}` | one fast spin leg on the fixed offset pair: SPINLEAD's reference |
 
 **Behaviour of every floor tier:**
 
@@ -163,7 +166,7 @@ R21-DUAL-HELDATSPD-P over every OBSTACLE drive and the GRAB window, are judged i
 runs. That is reading, not tooling (overlay P10).
 
 **Verify.**
-- Normal: each of the ten tiers compiles. Its build log shows only its one action in `BM-PLAN`, and `BM-BANNER` names
+- Normal: each of the fourteen tiers compiles. Its build log shows only its one action in `BM-PLAN`, and `BM-BANNER` names
   the action.
 - Edge: a grab too light or stalled still prints its BM-LOAD and a result line that says so; a spin leg that does not
   end at its limit prints its END cause.
@@ -234,10 +237,10 @@ E, so after this change the demos match their documentation.
 ## 5. The pack (R9)
 
 `tools/make-bench-pack.sh:39` defaults to `t0-stopreason t0-reva dual-spin floor-rc`. Change the default to exactly
-this visit: the ten floor tiers, `t0-reva` and `floor-rc`. `t0-stopreason` (done 2026-09-28, 19 of 19) and `dual-spin`
-(abandoned, R10) are removed. `dist/bench-c289e1f.zip` is deleted.
+this visit: the fourteen floor tiers, `t0-reva` and `floor-rc`. `t0-stopreason` (done 2026-09-28, 19 of 19) and
+`dual-spin` (abandoned, R10) are removed. `dist/bench-c289e1f.zip` is deleted.
 
-**Verify.** The pack lists exactly twelve binaries, each with the bitmaps it loads. The window-free builds load none.
+**Verify.** The pack lists exactly sixteen binaries, each with the bitmaps it loads. The window-free builds load none.
 
 ## 6. The run sheet: his only instructions (R8)
 
@@ -245,7 +248,7 @@ this visit: the ten floor tiers, `t0-reva` and `floor-rc`. `t0-stopreason` (done
 
 - the seven attributes, and how to get the pack onto the Pi (push, or copy the zip);
 - **the order of the day**: Rev A on the bench (wheels up); then the Rev B platform on the floor, in this order:
-  obstacle coast, obstacle short, grab (rerun as its result line says), fault run, the six spins, then the FlySky run;
+  obstacle coast, obstacle short, grab (rerun as its result line says), fault run, the ten spins, then the FlySky run;
 - **for each command**: its line to type; where he stands; the timeline from Enter (terminal start, then the 10 s
   lead-in, then the action); what he should see; the result line to expect; and what he does before the next run;
 - **the FlySky run**: a short guidance list, not a script, taken from the `floor-rc` roster (spins left and right;
@@ -378,3 +381,8 @@ Board changes made with the task set (2026-09-30):
 - 2026-09-30: §2 and §3 grips changed from "count four, let go" to "hold until it stops" (R14). Cause: 2, research
   incomplete. The fixed windows' dependence on his count was named as an unknown, when a hold-until-stop design
   removes it.
+- 2026-09-30: §2 gains four spin tiers, `floor-spin-legacy-{left,right}` and `floor-spin-fixed-{left,right}` (fourteen
+  floor tiers, sixteen binaries in the pack). Cause: 2, research incomplete. §2 named six spins from the speeds and
+  directions, missing that the leg table carries five offset pairs; without the v5.0.2 and fixed pairs, SPINCTL and
+  SPINLEAD, already in the floor run's scope, could not be judged. Found while building «#3628»; Stephen asked whether
+  "not measured" meant an incomplete test (it did).

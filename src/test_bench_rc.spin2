@@ -8,24 +8,29 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... 27 Sep 2026
-''   Updated.... 28 Sep 2026
+''   Updated.... 30 Sep 2026
 ''
 ''   Revision history:
 ''               27 Sep 2026 -- SRC_REV=1, FMT 1: first cut (tier floor-rc).
 ''               28 Sep 2026 -- SRC_REV=2, FMT 1: re-copied the demo's part after the demo's DEBUG-footprint fit
 ''                              (its lines built at run time and printed by one debug(), dbgShow()); every line
 ''                              prints as before.
+''               30 Sep 2026 -- SRC_REV=3, FMT 1: the demo's "1 rotation" switch is removed here as in the demo
+''                              (Stephen, 2026-09-30: "let's remove it as i can still command that to be done without
+''                              it"). It read switch E, which the transmitter does not have: the receiver decodes only
+''                              swA-swD and reads any other channel as OFF, so with the sticks disabled the loop drove
+''                              one wheel rotation on its own, once. The menu line, the read, the branch,
+''                              nDoingOneRotation and doOneRotation() are gone; no record changes.
 ''
 '' =================================================================================================
 
 { WHAT THIS BINARY IS
 
   THE CONTROL LOOP IS THE DEMO'S, UNCHANGED IN BEHAVIOUR. Everything from the CON block titled timing through map() is
-  copied from src/demo_dual_motor_rc.spin2 at its 28 Sep 2026 revision (HEAD e586ae9 plus the uncommitted batch, with
-  the demo's DEBUG-footprint fit; its header reads "Updated.... 28 Sep 2026"; sha256 of the file copied from:
-  2a20650fe60abe6084fabe6b3b6df1373d85d27f2e06506fe13e483fd85342d4): the same start (setStartChecks(true),
-  waitUntilMotorReady()), the same stick mapping, the same swA / swB / swC / swD / swE / VRA handling, the same event
-  and stop printing, the same doOneRotation(). To review, diff the two files. The ONLY differences in the demo's part:
+  copied from src/demo_dual_motor_rc.spin2 at its 30 Sep 2026 revision (its header reads "Updated.... 30 Sep 2026";
+  sha256 of the file copied from: 03aafb802000e22ba51a8168018a5265b27a20fd1de739cc402f17541b8ad227): the same start
+  (setStartChecks(true), waitUntilMotorReady()), the same stick mapping, the same swA / swB / swC / swD / VRA
+  handling, the same event and stop printing. To review, diff the two files. The ONLY differences in the demo's part:
    - lines marked "' RC:" in main() -- the banner, the logger's start and stop, RC-END, DEBUG_END_SESSION, and the
      cog-event quiet window (benchLog.cogEventBegin() / cogEventEnd(), PL-41 / PL-85) around each cog start and
      stop, which every bench program keeps;
@@ -270,7 +275,7 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detec
     emitEnd()                                                   ' RC: the logger's totals
     debug("DEBUG_END_SESSION")                                  ' RC: QUOTED -- a backtick would make it a display command
 
-PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, bOneRotation, accRngMin, accRngMax
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, accRngMin, accRngMax
 '' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
 ''
 
@@ -281,7 +286,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
 ' @local bEmerCutoff - TRUE while switch D is OFF: emergency cutoff
 ' @local bShowDriveStates - TRUE while switch C is in its middle position: show the drive states
 ' @local accrate - the acceleration the VRA knob selects, mm/s squared
-' @local bOneRotation - the channel-11 switch state: OFF asks for one rotation, ON re-arms it
 ' @local accRngMin - the VRA knob's lowest recorded reading
 ' @local accRngMax - the VRA knob's highest recorded reading
 
@@ -296,7 +300,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
     showLine(@"* swC MID    - show drive states")
     showLine(@"* swC DN     - end control")
     showLine(@"* swD DN     - emer cutoff; back UP releases it and any protective stop")
-    showLine(@"* swE DN     - 1 rotation")
     showLine(@"* VRA        - acceleration")
     showLine(@"------")
 
@@ -314,8 +317,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
         bShowDriveStates := remoteCtl.isSwitchMiddle(remoteCtl.CTL_SW_C)
         ' SwD down = Emergency Cutoff
         bEmerCutoff := remoteCtl.isSwitchOff(remoteCtl.CTL_SW_D)
-
-        bOneRotation := remoteCtl.isSwitchOn(remoteCtl.CH_11)
 
         ' setAcceleration() takes mm/s squared, so the knob's travel is mapped onto a range in those units
         accRngMin, accRngMax := remoteCtl.chanMinMax(remoteCtl.CTL_VRA)
@@ -384,11 +385,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
                 bCommandSucceeded(wheels.driveDirection(rcSpeed, rcDirection), @"joystick stop")
                 priorDirection := rcDirection
                 priorSpeed := rcSpeed
-            elseif bOneRotation == false and nDoingOneRotation == false         ' no emergency cutoff and no joystick before accept 1 rotation
-                nDoingOneRotation := true
-                doOneRotation()
-            elseif bOneRotation == true and nDoingOneRotation == true           ' switch must be reset before allowed again
-                nDoingOneRotation := false
 
         showEvents()                                            ' 2. whatever the drive handled on its own since the last pass
 
@@ -794,33 +790,6 @@ VAR
     long    bLastIgnoreJoyStks
     long    bLastShowDriveStates
     long    nAccelerationRate
-    long    nDoingOneRotation
-
-PRI doOneRotation() | ltdegree, rtdegree, eError
-' Drive forward slowly for one full wheel rotation, reporting the odometers it starts from.
-'
-' The rotation limit counts from its own call, not from the odometer (getRotationCount()), so it is 360 degrees
-' whatever the odometer reads. This returns at once, so the control loop keeps reading the kill switch; the end of the
-' rotation arrives as an EV_STOP event (SR_AT_LIMIT), which the loop's showEvents() prints.
-
-' Local Variables:
-' @local ltdegree - the left wheel's odometer, degrees
-' @local rtdegree - the right wheel's odometer, degrees
-' @local eError - the result of the rotation limit, then of the drive it guards
-
-    ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' the odometers before the rotation
-    ' arm the limit first and drive only if it was accepted, so the wheels never run without one
-    eError := wheels.stopAfterRotation(360, wheels.DRU_DEGREES)                 ' stop after one wheel rotation
-    if eError == wheels.NO_ERROR
-        eError := wheels.driveDirection(10, 0)                                  ' drive forward slowly
-    if bCommandSucceeded(eError, @"one rotation")
-        dbgBegin(@"  one rotation: driving, odometers from")
-        dbgText(@"ltdegree = ")
-        dbgSdec(ltdegree)
-        dbgText(@", rtdegree = ")
-        dbgSdec(rtdegree)
-        dbgText(@" degrees")
-        dbgShow()
 
 PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
 ' Read both joysticks and scale them to a drive speed and direction.
@@ -870,7 +839,7 @@ CON { --- the logger: everything below is test_bench_rc's own; nothing above cal
 
 CON { build identity }
 
-    SRC_REV     = 2                                             ' hand-bumped whenever this file changes; printed in RC-BANNER
+    SRC_REV     = 3                                            ' hand-bumped whenever this file changes; printed in RC-BANNER
     FMT_VERSION = 1                                             ' RC- record-format version: bumped when a record changes shape
 
 CON { logger cog }

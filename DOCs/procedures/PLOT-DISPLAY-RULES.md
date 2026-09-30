@@ -184,7 +184,8 @@ interaction effort when designing UIs."*
 (the wheels-down floor run), a click is not the least effort: it is out of reach. There, **one START click, at the PC,
 begins the run, and after it nothing waits for a click.** Every step they take part in ends on a countdown agreed with
 them before the run, or on a sensor that sees them finish (the pull-back: the wheels' hall sensors saw it move, then
-stay still for 3 s, bounded). The screen they read, `fboard` in `test_bench_dual.spin2`, is built to be read at 4 ft:
+stay still for 3 s, bounded). The screen they read (`fboard` in `test_bench_dual.spin2` SRC_REV 65-68, in git history;
+removed at SRC_REV 69, when the floor tests became window-free, Stephen 2026-09-30) is built to be read at 4 ft:
 the situation's name, **one action word coloured by who acts** (amber: yours; red STAND CLEAR: it drives at 0; blue
 WATCH: hands off), large countdown digits, and the step's detail. The rest of this rule still holds: each screen says
 the four things above, **before the run starts they know what each colour and count asks of them** (a briefing screen

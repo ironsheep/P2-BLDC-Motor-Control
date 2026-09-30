@@ -83,6 +83,8 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 - `isp_queue_serial` `stop()` stops its own receive cog; it stopped the cog numbered one lower
 - `isp_flysky_rx` `readSwitch()` and `readSw3Way()` read a channel that is not a 3-position switch as OFF; it
   read as ON
+- The FlySky demos no longer have a "1 rotation" switch. It read a switch the transmitter does not have, and could
+  drive one wheel rotation on its own while the sticks were disabled
 
 ### Breaking Changes
 

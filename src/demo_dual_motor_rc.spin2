@@ -7,7 +7,7 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Mar 2022
-''   Updated.... 28 Sep 2026
+''   Updated.... 30 Sep 2026
 ''
 ''   What it shows, beyond driving from the FlySky sticks:
 ''   1. start() checks each wheel before anything moves, and refuses a wheel that fails -- how to tell why (getHealth())
@@ -137,7 +137,7 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detec
 
     showLine(@"* DONE")
 
-PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, bOneRotation, accRngMin, accRngMax
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, accRngMin, accRngMax
 '' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
 ''
 
@@ -148,7 +148,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
 ' @local bEmerCutoff - TRUE while switch D is OFF: emergency cutoff
 ' @local bShowDriveStates - TRUE while switch C is in its middle position: show the drive states
 ' @local accrate - the acceleration the VRA knob selects, mm/s squared
-' @local bOneRotation - the channel-11 switch state: OFF asks for one rotation, ON re-arms it
 ' @local accRngMin - the VRA knob's lowest recorded reading
 ' @local accRngMax - the VRA knob's highest recorded reading
 
@@ -163,7 +162,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
     showLine(@"* swC MID    - show drive states")
     showLine(@"* swC DN     - end control")
     showLine(@"* swD DN     - emer cutoff; back UP releases it and any protective stop")
-    showLine(@"* swE DN     - 1 rotation")
     showLine(@"* VRA        - acceleration")
     showLine(@"------")
 
@@ -181,8 +179,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
         bShowDriveStates := remoteCtl.isSwitchMiddle(remoteCtl.CTL_SW_C)
         ' SwD down = Emergency Cutoff
         bEmerCutoff := remoteCtl.isSwitchOff(remoteCtl.CTL_SW_D)
-
-        bOneRotation := remoteCtl.isSwitchOn(remoteCtl.CH_11)
 
         ' setAcceleration() takes mm/s squared, so the knob's travel is mapped onto a range in those units
         accRngMin, accRngMax := remoteCtl.chanMinMax(remoteCtl.CTL_VRA)
@@ -251,11 +247,6 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
                 bCommandSucceeded(wheels.driveDirection(rcSpeed, rcDirection), @"joystick stop")
                 priorDirection := rcDirection
                 priorSpeed := rcSpeed
-            elseif bOneRotation == false and nDoingOneRotation == false         ' no emergency cutoff and no joystick before accept 1 rotation
-                nDoingOneRotation := true
-                doOneRotation()
-            elseif bOneRotation == true and nDoingOneRotation == true           ' switch must be reset before allowed again
-                nDoingOneRotation := false
 
         showEvents()                                            ' 2. whatever the drive handled on its own since the last pass
 
@@ -660,33 +651,6 @@ VAR
     long    bLastIgnoreJoyStks
     long    bLastShowDriveStates
     long    nAccelerationRate
-    long    nDoingOneRotation
-
-PRI doOneRotation() | ltdegree, rtdegree, eError
-' Drive forward slowly for one full wheel rotation, reporting the odometers it starts from.
-'
-' The rotation limit counts from its own call, not from the odometer (getRotationCount()), so it is 360 degrees
-' whatever the odometer reads. This returns at once, so the control loop keeps reading the kill switch; the end of the
-' rotation arrives as an EV_STOP event (SR_AT_LIMIT), which the loop's showEvents() prints.
-
-' Local Variables:
-' @local ltdegree - the left wheel's odometer, degrees
-' @local rtdegree - the right wheel's odometer, degrees
-' @local eError - the result of the rotation limit, then of the drive it guards
-
-    ltdegree, rtdegree := wheels.getRotationCount(wheels.DRU_DEGREES)           ' the odometers before the rotation
-    ' arm the limit first and drive only if it was accepted, so the wheels never run without one
-    eError := wheels.stopAfterRotation(360, wheels.DRU_DEGREES)                 ' stop after one wheel rotation
-    if eError == wheels.NO_ERROR
-        eError := wheels.driveDirection(10, 0)                                  ' drive forward slowly
-    if bCommandSucceeded(eError, @"one rotation")
-        dbgBegin(@"  one rotation: driving, odometers from")
-        dbgText(@"ltdegree = ")
-        dbgSdec(ltdegree)
-        dbgText(@", rtdegree = ")
-        dbgSdec(rtdegree)
-        dbgText(@" degrees")
-        dbgShow()
 
 PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
 ' Read both joysticks and scale them to a drive speed and direction.
