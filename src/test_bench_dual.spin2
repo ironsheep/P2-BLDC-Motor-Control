@@ -587,6 +587,10 @@
 ''               had worked through the load, tripped the 4 s watchdog. fbSetup() now syncs on one PC_KEY right after
 ''               the LAYER commands under a watchdog grace of three times the measured load (FB_LOAD_GRACE_MS), and
 ''               the board redraws in full, background first, every FB_REFRESH_MS. No record, cell or motion changes
+''               29 Sep 2026 -- SRC_REV=67: the 15:28 run drew both windows, but no START reached bmpanel: all 80 of its
+''               PC_KEY replies read 0 and all 79 PC_MOUSE replies the same position (420, 299) with no button. The
+''               briefing's START is now taken from the board as well (fbReadInput()): a click anywhere on it, or S / K
+''               typed to it, and the board says CLICK HERE TO START. No record, cell or motion changes
 ''
 '' =================================================================================================
 
@@ -639,19 +643,20 @@
                                                             restore CROP, digit CROP, countdown-label
                                                             CROP, strip CROP, heartbeat CROP, UPDATE);
                                                             panelReadInput() 2 (PC_KEY, PC_MOUSE)
-    test_bench_dual.spin2, countdown board              22  read, part SPIN only (SRC_REV 66): fbSetup() 13
+    test_bench_dual.spin2, countdown board              24  read, part SPIN only (SRC_REV 67): fbSetup() 13
                                                             (PLOT, CARTESIAN, 8 x LAYER, the sync PC_KEY,
                                                             CROP 1, UPDATE);
                                                             fbRender() 9 (background restore CROP, name CROP,
                                                             action CROP, briefing CROP, detail CROP,
                                                             readout-label CROP, small digit CROP, big
-                                                            digit CROP, UPDATE)
+                                                            digit CROP, UPDATE); fbReadInput() 2 (PC_KEY,
+                                                            PC_MOUSE)
     isp_bench_log.spin2                                  0  read: no debug statement
     isp_bldc_motor.spin2 under the quiet masks          20  DEBUG-CHANNELS-DESIGN.md: ERROR 17 +
                                                             WARNING 3
     isp_steering_2wheel.spin2 under the quiet masks     10  DEBUG-CHANNELS-DESIGN.md: ERROR 10
-    TOTAL, each object image counted once               80  of 255 (58 in every part but SPIN)
-    TOTAL, each of the four motor instances counted    140  of 255 (118 in every part but SPIN; wheelL, wheelR and the steering
+    TOTAL, each object image counted once               82  of 255 (58 in every part but SPIN)
+    TOTAL, each of the four motor instances counted    142  of 255 (118 in every part but SPIN; wheelL, wheelR and the steering
                                                             object's two, design sec 11 fact 9)
 
   The library rows hold only under -D BENCH_CFG -D BENCH_QUIET. The builds tools/build-check.sh makes
@@ -669,7 +674,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 66                                ' hand-bumped whenever this file changes
+    SRC_REV     = 67                               ' hand-bumped whenever this file changes
     FMT_VERSION = 42                                    ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -2478,7 +2483,7 @@ CON { the floor countdown board (fboard) -- printed by tools/gen_floor_assets.py
 
 DAT { the floor board's step table -- printed by tools/gen_floor_assets.py; re-run it, never edit }
 
-fbSteps         LONG     0, 0,      0          ' FB_ST_BRIEF: CLICK START
+fbSteps         LONG     0, 0,      0          ' FB_ST_BRIEF: CLICK HERE TO START
                 LONG     1, 0,  20000          ' FB_ST_OBS_PLACE: TAKE YOUR PLACE
                 LONG     2, 0,      0          ' FB_ST_OBS_DRIVE: STAND STILL
                 LONG     3, 0,      0          ' FB_ST_OBS_CHECK: WATCH
@@ -3693,6 +3698,8 @@ VAR { operator panel and attended-segment staging -- cog 0 only }
     LONG    fbDrawnSeconds
     LONG    fbDrawnSmall
     LONG    fbDrawnMs                                       ' getms() of the last full redraw (FB_REFRESH_MS)
+    LONG    bFbKeyArmed                                     ' fboard: a 0 key reading was seen since the last key taken
+    LONG    bFbMouseArmed                                   ' fboard: a released left button was seen since the last click
     LONG    operPromptCode                                  ' PROMPT_* of the sequence on screen, for a BM-OPER STOP note
     LONG    operShownMs                                     ' getms() when the prompt now on screen was shown
     LONG    operQueue[OPER_QUEUE_MAX * OQ_LONGS]            ' BM-OPER records noted and not yet emitted
@@ -9074,6 +9081,8 @@ PRI panelCompose(scr, stateIdx, drawnMask, liveMask, pressedIdx, stripRow, bPrev
         pnlSeconds := PNL_NO_COUNTDOWN
     panelRender()
 #ifdef DBP_SPIN
+    bFbKeyArmed := FALSE                                    ' as bmpanel's: an input is taken only for the screen it was made on
+    bFbMouseArmed := FALSE
     if bPreview == FALSE
         fbFollow(scr, stateIdx)                             ' SRC_REV 65: the board says what this screen says
 #endif
@@ -9174,6 +9183,10 @@ PRI panelReadInput(liveMask) : buttonIdx, inputCode
             buttonIdx := mouseButton(panelMouse[MOUSE_XPOS], panelMouse[MOUSE_YPOS], liveMask)
             if buttonIdx <> PNL_BTN_NONE
                 inputCode := INPUT_MOUSE
+#ifdef DBP_SPIN
+    if (buttonIdx == PNL_BTN_NONE) and bBoardUp and (fbStep == FB_ST_BRIEF)
+        buttonIdx, inputCode := fbReadInput(liveMask)       ' SRC_REV 67: the briefing's START is taken from the board too
+#endif
 
 PRI keyButton(keyValue, liveMask) : buttonIdx
 ' The live button a key names (either letter case): S START, K SKIP, space STOP, D DONE, L LEFT, R RIGHT,
@@ -17962,6 +17975,41 @@ PRI fbSetup()
     fbDrawnMs := getms()
     beat(CP_PANEL)
     fbTick()
+
+PRI fbReadInput(liveMask) : buttonIdx, inputCode
+' The briefing's START, taken from the board as well as from bmpanel (SRC_REV 67). The 2026-09-29 15:28 run drew both
+' windows, and every one of bmpanel's 80 PC_KEY replies read 0 and all 79 PC_MOUSE replies read the same position
+' (420, 299) with no button, so no START reached bmpanel. The board is the window created last and the one his eye
+' is on, so it is also the one clicked: a click anywhere on it is START (the board says CLICK HERE TO START), and a
+' key typed to it means what it means on bmpanel (S START, K SKIP). Same arming as panelReadInput(): a key or a click
+' is taken only after a released reading.
+'
+' @param liveMask - PNL_LIVE_* mask of the buttons that may be chosen
+' @returns buttonIdx - BM_BTN_START or BM_BTN_SKIP when live and chosen, PNL_BTN_NONE otherwise
+' @returns inputCode - INPUT_KEY, INPUT_MOUSE or INPUT_NONE
+
+    buttonIdx := PNL_BTN_NONE
+    inputCode := INPUT_NONE
+    beat(CP_PANEL)
+    debug(`fboard `pc_key(@panelKey))
+    beat(CP_PANEL)
+    if panelKey == 0
+        bFbKeyArmed := TRUE
+    elseif bFbKeyArmed
+        bFbKeyArmed := FALSE
+        buttonIdx := keyButton(panelKey, liveMask)
+        if buttonIdx <> PNL_BTN_NONE
+            inputCode := INPUT_KEY
+    if buttonIdx == PNL_BTN_NONE
+        beat(CP_PANEL)
+        debug(`fboard `pc_mouse(@panelMouse))
+        beat(CP_PANEL)
+        if panelMouse[MOUSE_LBTN] == 0
+            bFbMouseArmed := TRUE
+        elseif bFbMouseArmed and (panelMouse[MOUSE_XPOS] >= 0) and ((liveMask & (DECOD BM_BTN_START)) <> 0)
+            bFbMouseArmed := FALSE
+            buttonIdx := BM_BTN_START
+            inputCode := INPUT_MOUSE
 
 PRI fbStepCol(stepIdx, colIdx) : value
 ' One column of the step table (tools/gen_floor_assets.py): the action row, the readout kind or the countdown ms.

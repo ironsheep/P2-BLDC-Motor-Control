@@ -5,10 +5,11 @@ drawn by part SPIN (-D DUAL_PART_SPIN, tools/bench-run.sh tier dual-spin) from S
 WHY IT EXISTS. Stephen, 2026-09-29: "I'll be 4 ft away from the monitor telling me what to do when i'm at the platform...
 so there can't be any interaction by me with the plot window after the test is running... i'll need to know before test
 starts what to look for to know when to interact. a timer-countdown with large numbers could tell me when to interact."
-So after ONE START (on the operator panel, bmpanel), this board is the only instruction: the situation's name, ONE action
-word in a colour that says whether it is his move or the platform's, a countdown in seconds large enough to read at 4 ft,
-the step's detail in plain words, and a small readout (the held wheel's speed during GRAB, the leg number during SPINS).
-Nothing on it is clicked. A step he takes part in ends on a timer he agreed (2026-09-29) or on the wheels' own sensors.
+So after ONE START (a click anywhere on this board while it shows the briefing, or START on the operator panel,
+bmpanel), this board is the only instruction: the situation's name, ONE action word in a colour that says whether it is
+his move or the platform's, a countdown in seconds large enough to read at 4 ft, the step's detail in plain words, and a
+small readout (the held wheel's speed during GRAB, the leg number during SPINS). After that START nothing on it is
+clicked. A step he takes part in ends on a timer he agreed (2026-09-29) or on the wheels' own sensors.
 
 Built on the supplied crop-and-overlay technique (DOCs/REF-NO-COMMIT/dbg-display-theory/, read in full 2026-09-29) and
 DOCs/procedures/PLOT-DISPLAY-RULES.md, exactly as tools/gen_dual_assets.py builds bmpanel: every layer is loaded once
@@ -79,7 +80,7 @@ NAME = {n: i for i, n in enumerate(NAMES)}
 
 # action word, class
 ACTIONS = [
-    ("CLICK START", "YOU"),
+    ("CLICK HERE TO START", "YOU"),
     ("TAKE YOUR PLACE", "YOU"),
     ("STAND STILL", "YOU"),
     ("WATCH", "WATCH"),
@@ -106,8 +107,8 @@ SK_NONE, SK_SPEED, SK_LEG = 0, 1, 2
 # some other way or not at all). The durations are Stephen's, 2026-09-29 ("durations seem ok"), except OBS_PLACE before
 # the second trial, which is 20 s like the first: he has to get back in front of the platform after pulling it back.
 STEPS = [
-    ("BRIEF", "CLICK START",
-     "Click START on the small operator panel, then walk to the platform. After that you never touch the PC: this "
+    ("BRIEF", "CLICK HERE TO START",
+     "Click anywhere on this board (or START on the small operator panel), then walk to the platform. After that you never touch the PC: this "
      "board says what to do and counts down to it.", SK_NONE, 0),
     ("OBS_PLACE", "TAKE YOUR PLACE",
      "Stand 0.3 to 0.8 m in front of the platform, square across its path, and stand still. When the count ends it "
