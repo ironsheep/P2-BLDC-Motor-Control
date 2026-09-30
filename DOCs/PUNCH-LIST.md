@@ -78,7 +78,7 @@ do the right thing, and then we can call them done without having to test on the
 | PL-111 | A serial host could not clear a protective stop | A provoked protective stop (PL-106) |
 | PL-132 | The blocked-wheel stop shorted the phases even under coast | The floor run |
 | PL-144 | The two-wheel path limiter cycled the platform between crawl and full | The floor run (R21-DUAL-LDPATH-P): PATH-HUNT's precondition, a wheel falling behind, never arises wheels up (RC pass NOMEAS, as pass 7) |
-| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | `t0-reva` on the Rev A platform (two Rev A boards, wheels up, no window; «#3629»): R22-T0-REVA-FOLD and its grip positive, FOLDPOS |
+| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | 2026-09-30 Rev A run: the every-frame defect ABSENT (407 of 220,000 frames); cells NOMEAS; the residual reaches only TEST USE limits (ancillary). Stephen decides whether anything further is chased |
 
 **Watch**
 
@@ -2441,8 +2441,9 @@ cadence, not the absent test, and the RC pass's steady readings certify the samp
 
 ### PL-163 -- on a Rev A board below about 2.7 A, the fold-back cut the drive on every driven frame
 
-> **6.0 status (2026-09-30):** AWAITS CERT — fix built (DRIVER_REV 38, 5cecb04; the residual DRIVER_REV 40); certifies on
-> the Rev A platform («#3629», tier `t0-reva`).
+> **6.0 status (2026-09-30, after the Rev A run):** the every-frame defect is ABSENT (MEASURED, below); both cells NOMEAS
+> by their own rules; the residual (FOLD_MIN_MV's noise premise, false on Rev A) is ANCILLARY -- TEST USE limits only,
+> no user can reach it (overlay P5). Not chased for 6.0 unless Stephen asks.
 
 **Found 2026-09-27** by the DRIVER_REV 37 desk review (PL-146's rest-offset work).
 - **DERIVED:** the fold-back threshold at the duty floor is `max(duty_, duty_floor_) * i_limit_k_ >> 16`. Rev A's
@@ -2489,6 +2490,26 @@ threshold, `FOLD_MIN_MV` (a fold needs a 5 mV net reading).
 - **R22-T0-REVA-FOLD:** its PASS (a window rise of 0) still holds. Its record and notes still describe a threshold
   floored to 0 and a 1 mV fold. They need the effective threshold and a positive control before they carry
   certification (see the task report).
+
+**2026-09-30, the Rev A platform run** (`t0-reva`, test_bench_t0 SRC_REV 29, DRIVER_REV 46;
+`DOCs/analyses/bench/2026-09-30/reva/REVA-PLATFORM-EVALUATION.md`, log `debug_260930-155650.log`).
+- **MEASURED, the defect is absent:** the RIGHT Rev A board's unloaded legs folded on `fold_win,407` and `341` of
+  `frames_win,220_000`; the pre-DRIVER_REV 38 compare folds on every frame.
+- **MEASURED, the residual's premise is false on Rev A:** `net_max_mv,7` on both unloaded legs (zero 13 mV, mean 13 mV,
+  792,220 samples), against the ±3 mV that sized FOLD_MIN_MV = 4. So the fold acts on noise, about 75 frames a second,
+  at a 2 A limit. Only `testSetCurrentLimits()` sets such a limit; at the shipped 40 A peak the Rev A threshold at the
+  duty floor is about 15 mV. **Ancillary for 6.0.** If chased: FOLD_MIN_MV per board revision, sized from this reading.
+- **Both cells NOMEAS** by their pre-registered rules (FOLD: PREMISE_NOISE; FOLDPOS: `measured,FALSE`).
+- **FOLDPOS cannot measure as built (SRC_REV 29, harness).** A redesign needs all three: (1) the judged window opens at
+  the speed-up, not after a 3 s lead, because a firm grip latches the protective stop about 1 s after it stalls the
+  wheel (`state_end,7`, `fold_win,0`); (2) no duty gate, since the fold holds the duty below m = 0.2 under a grip
+  (`duty_pk,1_600`); (3) a rate criterion against the unloaded legs' noise-fold rate, with the acceleration's folds
+  separated from the grip's (`fold_ramp,758` mixes them).
+- **Harness gaps, fix with the next Rev A build:** `t0vStart()` reports a refused start's board as `REV_Unknown`
+  ("NONE"), so a start-check refusal reads as "not REV_A"; the hold record prints no stop reason.
+- **The LEFT board did not start:** its start check failed the phase U lead after retries (`healthFailed = $0000_0004`,
+  `error,-1_020`); V and W passed, and the RIGHT Rev A board passed all three. Asked of Stephen (lead open, or a false
+  refusal); a false refusal would be a start-check finding of its own, not PL-163's.
 
 ### PL-164 -- the driver's supported clock range is one point, 270 MHz; users choose their own clock
 
