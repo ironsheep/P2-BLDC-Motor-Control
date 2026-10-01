@@ -1,7 +1,8 @@
 # 6.1.0 — Hold Speed Under Load — sprint plan
 
 **Status:** STARTED 2026-10-01 (§14 records the entry checks).
-**Release:** 6.1.0. The version is settled; the ship call is Stephen's (doctrine overlay P5).
+**Release:** the next release, after this plan and a DocoEng motor qualification (§10); the ship call is Stephen's
+(doctrine overlay P5).
 **Baseline at planning:** tree `54c4a1e` + the planning edits; `DRIVER_REV 46` (`src/isp_bldc_motor.spin2:6796`);
 `test_bench_dual` SRC_REV 70 (`:794`); gates: see §13.
 
@@ -11,10 +12,12 @@
 
 **Goal.** Ship a driver that holds its commanded speed under load with torque, up to the current limit, and gives way
 only at the limit (PL-167, the v6.0.0 Known Issue "spins in place can run up to 43 % slow"). Certify it wheels up and
-on the floor. Correct the floor tests' wrong premises before they run again, and land the release.
+on the floor. Correct the floor tests' wrong premises before they run again.
 
 **Done means:** every section below is built and gated; the one bench visit (§9) has run and its evaluation records
-each cell's verdict; the 6.1.0 CHANGELOG entry is voiced to `central:changelog-voicing`; Stephen tags.
+each cell's verdict; the user documents describe the driver as certified. **The release is not at the end of this
+plan** (STEPHEN 2026-10-01: *"We are completing this plan, but then we're not going to release at the end of this plan.
+We'll probably do the Doco motor qualification too before we release."*) — see §10.
 
 **Scope, in Stephen's words (2026-10-01):** option (a) — the PL-167 fix, PL-168's premises, `DRIVER_BOARDS.md`, PL-67's
 compile-time refusal, the release, with PL-132's coast cell, PL-160's quarter-speed start and PL-169's deadband riding
@@ -53,10 +56,11 @@ The fronts (overlay P12) advance together. The driver front is unblocked from th
 2. §1.1 the desk design of D-5 → Stephen rules on its measure of benefit (the one owner decision this plan schedules).
 3. §1.2 build → §2 wheels-up cells → §3 floor premises and cells (one batch, one gate).
 4. §8 `DRIVER_BOARDS.md` — any time.
-5. §9 the visit: pack, run sheet, `BENCH: READY`.
-6. §10 the release: documentation, CHANGELOG, `VERSION`; Stephen tags.
+5. §9 the visit: pack, run sheet, `BENCH: READY`; then the evaluation.
+6. The documentation (Blast Radius), against the certified behaviour.
 
-**Bench visits remaining to the release: one** (§9), unless its evaluation finds a defect whose fix needs a run.
+**Bench visits remaining in this plan: one** (§9), unless its evaluation finds a defect whose fix needs a run. The
+release follows a later plan (§10).
 
 ### 0.3 Established decisions for dispatch — regenerated
 
@@ -350,17 +354,20 @@ finding. A finding that needs a fix and a run is the only way a second visit is 
 
 ---
 
-## 10. Documentation and the 6.1.0 release
+## 10. The release — not in this plan
 
-**Release mechanics (as built):** `VERSION` → `6.1.0`; a `## v6.1.0 (<date>)` CHANGELOG entry voiced to
-`central:changelog-voicing` (gate: released mode §4.1, length §4.7, exclusions §4.2, read against its own Known
-Issues); `tools/make-release.sh v6.1.0 --preview` before the tag; Stephen pushes the tag, the workflow opens a DRAFT with
-the three archive sets, and he publishes. The archive sets' file lists come from each top's OBJ closure
-(`tools/release_closure.py`), so §8's page and the deletions in §6 change no packaging list.
-
-**Known Issues.** What ships as a Known Issue is Stephen's (P5). The plan brings him, from §9's evidence, each v6.0.0
-Known Issue this sprint touches — the "spins in place ... 43 % slow" line (PL-167), "speed changes arrive late"
-(RAMPARR), "less torque in reserve near top speed" — with what a user would now experience, and the D-5 outcome of §1.1.
+**Revised 2026-10-01 (see the revision history):** the release happens after this plan, following a DocoEng motor
+qualification (Stephen's words in §0). This plan therefore carries no `VERSION` bump, no CHANGELOG entry and no tag;
+the release task was superseded. What this plan leaves for the release, recorded so nothing is lost:
+- **Known Issues evidence.** The evaluation (§9) brings Stephen, for each v6.0.0 Known Issue this sprint touches (the
+  "spins in place ... 43 % slow" line, "speed changes arrive late", "less torque in reserve near top speed"), what a user
+  would now experience, with the D-5 outcome of §1.1. What ships as a Known Issue stays his (P5), decided when the release
+  is planned.
+- **The changelog lines** for this plan's user-visible changes are written at the release, voiced then against the whole
+  release's Known Issues (`central:changelog-voicing` is a gate here).
+- **Release mechanics, as built**, for that plan: `VERSION`, a dated CHANGELOG entry, `tools/make-release.sh --preview`,
+  Stephen's tag opening a DRAFT with the three archive sets. §8's page and §6's deletions change no packaging list (the
+  sets come from each top's OBJ closure).
 
 ---
 
@@ -470,7 +477,7 @@ certified, all 60 bench tiers within the DEBUG footprint; `tools/check_style.sh`
 | §9 | Prepare the visit: pack, run sheet, `BENCH: READY` | «#3658» | 14 |
 | §9 | Evaluate the visit's logs | «#3659» | 15 |
 | Blast Radius | Bring the docs current | «#3660» | 16 |
-| §10 | Release 6.1.0 | «#3661» | 17 |
+| §10 | ~~Release 6.1.0~~ — SUPERSEDED 2026-10-01: the release follows a later plan | «#3661» | — |
 
 **Superseded or closed at generation:** «#3640» (the PL-167 design, phase 1 delivered and approved) completed; «#3636»
 and «#3641» SUPERSEDED by §1 / §3. **The board holds this sprint and nothing else (corrected 2026-10-01 on Stephen's
@@ -499,3 +506,6 @@ the exclusive-resource roster. **Two-phase:** «#3645» (the design returns, the
 ## Revision history
 
 - **2026-10-01** — written.
+- **2026-10-01** — the release moved out of this plan: §0 (done means), §0.2, §10 rewritten; «#3661» superseded; the docs
+  task stays. Cause **1** (an owner ruling not asked for): when the release follows was Stephen's to say, and the plan
+  assumed it.
