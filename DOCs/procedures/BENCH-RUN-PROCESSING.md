@@ -90,6 +90,17 @@ Every cell in `SIGNOFF-DECL` gets `PASS` / `FAIL` / `NOMEAS` from the log.
 Quote log lines; do not paraphrase them. Judge against the expectations and falsifiers the run sheet
 declared in advance, and **never renegotiate them after seeing the result** (D2).
 
+- **A result is "settled" only when the falsifier separates the rival explanation.** If another mechanism predicts
+  the same observation and no reading separates them, write *consistent with*, and name what would separate them.
+- **Before a mechanism is named as a suspect, evaluate the code's arithmetic over its whole input range as a table**,
+  not a reading, and search the steady-state data already on record for the symptom with the suspected trigger absent.
+  (2026-09-22: three records called the servo "18 up / 4 down"; executing the PASM line showed a −1-per-frame relay,
+  and the ladder had shown the hunting with no ramp all along.)
+- **"It never fired" is a symptom, not a build order.** When a record proposes a build to address something that did
+  not happen, the first step is to establish from the logs **why** it did not happen; the build's shape waits on that.
+  (2026-09-22: "0 firings" came with a proposed bench load; the logs showed the detector worked and the stop had never
+  executed, so it became a desk check.)
+
 ### 7 · Findings register — every finding gets an id and a disposition
 
 | Disposition | Means |
