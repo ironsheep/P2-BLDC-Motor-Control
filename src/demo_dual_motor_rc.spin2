@@ -224,7 +224,7 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
                 showLine(@"  Motor CTL enabled")
             bLastIgnoreJoyStks := bIgnoreJoySticks
 
-        if accrate <> 0 and nAccelerationRate <> accrate
+        if accrate <> 0 and bRateMoved(accrate, nAccelerationRate, RC_ACCEL_MIN_MM_S2, RC_ACCEL_MAX_MM_S2)
             nAccelerationRate := accrate
             dbgBegin(@"  Setting Motor Acceleration:")
             dbgText(@"nAccelerationRate = ")
@@ -232,7 +232,7 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
             dbgShow()
             wheels.setAcceleration(nAccelerationRate)
 
-        if decrate <> 0 and nDecelerationRate <> decrate
+        if decrate <> 0 and bRateMoved(decrate, nDecelerationRate, RC_DECEL_MIN_MM_S2, RC_DECEL_MAX_MM_S2)
             nDecelerationRate := decrate
             dbgBegin(@"  Setting Motor Deceleration:")
             dbgText(@"nDecelerationRate = ")
@@ -653,6 +653,11 @@ CON
    '  (about 7 m). Above about 3_000 the ramp's own 250 ms easing sets the stop, so a higher ceiling would not be felt.
    RC_DECEL_MIN_MM_S2 = 1_000
    RC_DECEL_MAX_MM_S2 = 3_000
+   ' a knob's rate is sent again only when it has moved more than this from the rate last sent, mm/s squared. A still
+   '  knob's reading wanders by about 2 counts either way across ~1_567 counts of travel: up to 4 counts, or about 7
+   '  mm/s squared on VRA (2_800 over its travel) and 5 on VRB (2_000), plus 1 for map()'s truncation, so a still knob
+   '  never crosses 10 while a deliberate turn of a few degrees does. A knob turned to either end is always sent.
+   RC_RATE_DEADBAND_MM_S2 = 10
 
 VAR
 
@@ -715,6 +720,24 @@ PRI map(inValue,  inMin,  inMax,  outMin,  outMax) : outValue
         outValue :=  outMax
     else
         outValue := (inValue - inMin) * (outMax - outMin) / (inMax - inMin) + outMin
+
+PRI bRateMoved(newRate, sentRate, rateMin, rateMax) : bSend
+' Decide whether a knob's rate is worth sending: it moved more than RC_RATE_DEADBAND_MM_S2 from the
+'  rate last sent, or it reached an end of its range (so both ends stay reachable however slowly the
+'  knob is turned). A still knob's reading noise sends nothing.
+'
+' @param newRate - the knob's rate as just mapped, mm/s squared
+' @param sentRate - the rate last sent to the wheels (0 before the first)
+' @param rateMin - the low end of the knob's range
+' @param rateMax - the high end of the knob's range
+' @returns bSend - TRUE when {newRate} should be sent
+
+    if newRate == sentRate
+        bSend := FALSE
+    elseif (newRate == rateMin) or (newRate == rateMax)
+        bSend := TRUE
+    else
+        bSend := abs(newRate - sentRate) > RC_RATE_DEADBAND_MM_S2
 
 
 CON { license }

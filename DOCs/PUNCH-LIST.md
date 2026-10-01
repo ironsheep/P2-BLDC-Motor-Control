@@ -53,7 +53,7 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 | PL-172 | The style gate's `--self-test` fails: check T128 has no fixture | DONE 2026-10-01 |
 | PL-23 | Booleans print as numbers in two places still: `test_bench_spin` and `testGetResults()`'s fault flag | FIXED IN THE TREE 2026-10-01; the next `t0` log shows it |
 | PL-37 | Five panel bitmaps and their generator outlived the panel | DONE 2026-10-01 |
-| PL-169 | The FlySky demos re-send the acceleration setting on knob noise | A deadband on both knobs |
+| PL-169 | The FlySky demos re-send the acceleration setting on knob noise | FIXED IN THE TREE 2026-10-01; the `floor-rc` drive certifies it |
 
 **Fixed in the tree; waits for its binary's next run** (no planned run loads these binaries, so nothing is owed)
 
@@ -1763,8 +1763,11 @@ From `FLOOR-RERUN-EVALUATION.md` §4, §2.1, §7:
 
 ### PL-169 -- the FlySky demos re-send the acceleration setting on knob noise
 
-> **Status (2026-10-01):** IN 6.1.0 (a ride-along in the confirmed scope). Harmless today: no visible effect on the
-> ramps. Not yet fixed: both demos still call the setters on every mapped change (`demo_dual_motor_rc.spin2:233, :241`).
+> **Status (2026-10-01): FIXED IN THE TREE** («#3649»); certified by the 6.1.0 visit's FlySky drive (tier `floor-rc`):
+> no repeated rate lines on a still knob. Both demos send a knob's rate only when it moves more than
+> `RC_RATE_DEADBAND_MM_S2` (10) from the rate last sent, or reaches an end of its range (`bRateMoved()`). DERIVED (desk
+> simulation of the demos' integer `map()` over the default 240..1807 calibration): a ±2-count still knob moves the rate
+> at most 8 (VRA) / 6 (VRB) mm/s², so it sends nothing; one-count sweeps reach 200 / 3,000 and 1,000 / 3,000.
 
 The VRA knob's ±2-count noise (raw 1,504 / 1,506) changes the mapped rate by 4 mm/s², and the demo calls
 `setAcceleration()` on every change: about every 250 ms through the last minute of the 2026-09-30 rerun (2,458 / 2,462).
