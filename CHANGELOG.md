@@ -3,7 +3,7 @@
 Changes to the P2-BLDC-Motor-Control objects, newest first. Each release's entry is also its
 GitHub release page.
 
-## v6.0.0 (2026-09-23)
+## v6.0.0 (2026-10-01)
 
 A reworked drive: lower current, a quiet start, built-in protection, and every command reporting its result.
 
