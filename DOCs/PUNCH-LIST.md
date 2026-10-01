@@ -1434,7 +1434,13 @@ the quietest of the re-takes. Either is a desk change certified by one hand run.
 
 ### PL-105 -- the lag limiter holds an overloaded rotor well past its torque peak
 
-> **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (study; needs sub-sector angle)
+> **6.0 status (2026-10-01):** PARTLY TAKEN UP by PL-167's design, D-4: `LAG_HOLD` 100 → 86, conditional on a desk
+> check of the blocked-motor stop on a rocking stand (Stephen 2026-10-01: *"yes A"*). The design's trim fix makes calm
+> running peak at 67-76 instead of 71-89, which is what makes a lower hold possible without a sub-sector angle. The
+> choices, what they trade, and when to reopen are recorded in `DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md` §7 Q1.
+> The full fix, a sub-sector angle, stays out of scope.
+>
+> *Was (2026-09-26 audit):* ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (study; needs sub-sector angle)
 
 **Found 2026-09-22 at «#3589»**, DERIVED from the desk model (`DOCs/plans/servo-model/`). The model is fitted
 to the ladder and START traces, and it puts the voltage at 90° from the magnets when the error is ~56
@@ -2595,6 +2601,12 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 > **6.0 status (2026-10-01):** RELEASE — Stephen, on hearing it: *"is there something we can do to address this to make
 > it more like a professional driver? i'm assuming one wouldn't do this."* Desk work first (Plan A §11).
+>
+> **Design (2026-10-01):** `DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md`. The cause is proven for the quarter-speed
+> contrast (schedule against fixed) and unproven for the slow/medium depth (§3.6). D-1 a calmer trim gain, D-2 a fast
+> slope past `LAG_SOFT`, D-3 the field gives way only at a limiter, and D-4 `LAG_HOLD` 86 (decided (a), conditional:
+> §7 Q1). Phase 2 approved with the slow/medium depth unproven (Stephen 2026-10-01, *"ok A"*; §7 Q3): the desk refit
+> first, stopping to ask if it finds a second mechanism.
 
 **Found 2026-09-30**, the hands-off floor rerun (`DOCs/analyses/bench/2026-09-30/floor2/FLOOR-RERUN-EVALUATION.md` §2.1, log
 `debug_260930-181811.log`).
