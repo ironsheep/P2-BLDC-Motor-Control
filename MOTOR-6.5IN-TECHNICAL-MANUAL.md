@@ -755,8 +755,9 @@ settled on the target; a reversal from +40 × 10⁶ to −40 × 10⁶ passed thr
 reporting STOPPED; stop limits armed at cruise and mid-ramp came to rest within 2 ticks and 3 ms of their
 limits, and the same stop plans repeated to within a millisecond on a second day.
 
-⬚ **Not yet known:** the feel of a start, a speed change and a stop on the floor, the current each draws
-under load, and whether the built-in rates suit a loaded platform (§9).
+**On the floor**, driven by remote control on the 7.7 kg platform, starts, speed changes and stops felt smooth,
+with no clicking and no unusual motor sound. ⬚ **Not yet known:** the current each draws under load, and whether
+the built-in rates suit every loaded platform (§9).
 
 ---
 

@@ -1,5 +1,10 @@
 # Fixed cog shape — phase-1 design («#3513», with «#3512» C-3)
 
+> **6.0.0 sprint closed 2026-10-01: PARTLY IMPLEMENTED, STILL GOVERNS.** The front cog for the one- and two-motor forms
+> shipped in v6.0.0 (the "Nothing is implemented" status below is historical). The roster owner, the N-motor API,
+> `demo_n_motor`, the `nmotor` blocks and the gate classifier are after 6.0.0 by Stephen's ruling: «#3562». Audit:
+> `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 Status: **shape agreed by Stephen 2026-09-15; the product shapes are his ruling below. Nothing is
 implemented.** Two items are flagged for him in §7, neither blocking.
 

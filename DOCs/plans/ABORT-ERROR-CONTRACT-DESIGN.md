@@ -1,5 +1,9 @@
 # Abort and Error Contract -- Design (task «#3538», phase 1)
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED, shipped in v6.0.0.** No `abort` remains in the motor,
+> steering or serial objects; every command returns `NO_ERROR` or an `ERR_*` code. The "DESIGN FOR REVIEW" status below
+> is historical. Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 **Date:** 2026-09-14
 **Status:** DESIGN FOR REVIEW. No source was changed in this phase.
 

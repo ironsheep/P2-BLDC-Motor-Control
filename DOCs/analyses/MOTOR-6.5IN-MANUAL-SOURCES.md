@@ -52,6 +52,7 @@ Paths are under `DOCs/analyses/bench/` unless stated.
 | §6.5 on the floor: blocked-rotor latch 1.0–1.1 s; the rocking obstacle (6 s, no latch) and the fault after ~4 s | `floor/FLOOR-VISIT-EVALUATION.md` §3 (short trial `l_stand,1_143`; coast trial FC_LAG at ~4.3 s); `floor2/FLOOR-RERUN-EVALUATION.md` §4 (brake `r_stand,1_097`; coast NO_LATCH after ~6 s) |
 | §6.5 on the floor: one-sided load 49 % / 47 %, line within 3 % | `floor2/FLOOR-RERUN-EVALUATION.md` §3 (LDPATH `mis_pm,30`, `l_pct,49,r_pct,47`, LDHOLD 276 ms) |
 | §6.5 on the floor: stop from 2.3 m/s; duty 96 % at full speed; pack sag | `floor2/FLOOR-RERUN-EVALUATION.md` §5 (FlySky RC-TEL: 1.2 s / 1.38 m at 2,087; duty 26,476 of 27,648; pack 20,397 → 20,085 mV) |
+| §7.5 ramps on the floor: felt smooth, no clicking or unusual sound | `floor/FLOOR-VISIT-EVALUATION.md` header (Stephen's report of the FlySky run, 2026-09-30); `floor2/FLOOR-RERUN-EVALUATION.md` §5 |
 | §6.5 on the floor and §9: lead table under load (57–94 % vs 100 %; the §9 fix is `DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md`) | `floor2/FLOOR-RERUN-EVALUATION.md` §2.1 (the ten spin legs' `fol_pct`, `path_pm`, `err_pk`) |
 | §6.6 start checks | `VISIT-10-PASS2-EVALUATION.md` §3.1–3.2; `VISIT-10-PASS3-T0-DUALSTART-EVALUATION.md` §2; `VISIT-10-PASS4-EVALUATION.md` §5–6; `VISIT-10-PASS5-EVALUATION.md` §5; rest-zero band: comment at `REST_ZERO_MIN_MV` |
 | §6.6 walk guard, 26 A unguarded | `VISIT-10-PASS2-EVALUATION.md`; `VISIT-10-PASS3-RERUN-EVALUATION.md`; fix certified pass 6 |

@@ -1,5 +1,9 @@
 # Limits reset — moving the limits the old drive set, on purpose
 
+> **6.0.0 sprint closed 2026-10-01: PARTLY IMPLEMENTED.** Steps 1-4 shipped and were confirmed at Visit 9b. Open: L3
+> (the ramp, `ACCEL_MAX`, PL-109), L6 (`duty_min`, PL-110) and step 5 (E5, the loaded margin; the floor runs). L4, the
+> 75 % default top speed, stays as implemented (Stephen 2026-10-01: *"leave it as implemeted"*). Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 **Asked by Stephen, 2026-09-22:** *"look for values that were limits that were put in place before we had the new
 drive technology. Now that we have the new drive technology, I want you to think about where those limits move
 to, and let's move them purposefully"* — and then: *"Identify which limits are in consideration, and then how

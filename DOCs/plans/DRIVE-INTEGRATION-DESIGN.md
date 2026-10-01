@@ -1,6 +1,11 @@
 # Drive integration design — R18.3
 
-**Plan section:** R18.3 of [`BENCH-READINESS-SPRINT-PLAN.md`](BENCH-READINESS-SPRINT-PLAN.md), which
+> **6.0.0 sprint closed 2026-10-01: PARTLY IMPLEMENTED, STILL GOVERNS.** D-1..D-6 and C-A (the dynamic lead) shipped in
+> v6.0.0. §7 (C-B back-EMF, C-C hall interpolation, C-D the torque-peak hold) is deferred by Stephen's ruling to «#3602»
+> and PL-105, and `HOLD-SPEED-UNDER-LOAD-DESIGN.md` (6.1.0) builds on it. Audit:
+> `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
+**Plan section:** R18.3 of [`archive/BENCH-READINESS-SPRINT-PLAN.md`](archive/BENCH-READINESS-SPRINT-PLAN.md), which
 split it by gate on 2026-09-22. This document is the design both halves write into:
 
 - **«#3596», the desk half — sections 1 to 4.** What the drive can sense, the user-visible contract,

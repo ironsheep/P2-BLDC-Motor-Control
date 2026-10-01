@@ -118,4 +118,4 @@ known A (steady) = __________     Ap read at same rung = __________
 ## Closing
 
 - [ ] T0 log confirmed at `DOCs/analyses/bench/<today>/t0.log`
-- [ ] All Part B answers above copied back into `DOCs/plans/BENCH-READINESS-SPRINT-PLAN.md` §8.1 and `DOCs/analyses/BENCH-TEST-PLAN-2026-09-10.md` §2B
+- [ ] All Part B answers above copied back into `DOCs/plans/archive/BENCH-READINESS-SPRINT-PLAN.md` §8.1 and `DOCs/analyses/BENCH-TEST-PLAN-2026-09-10.md` §2B

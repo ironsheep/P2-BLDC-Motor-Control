@@ -1,6 +1,6 @@
 # Visit 7c — run sheet (CLOSED 2026-09-22)
 
-**Plan section:** R18.2f ([`../../plans/BENCH-READINESS-SPRINT-PLAN.md`](../../plans/BENCH-READINESS-SPRINT-PLAN.md)).
+**Plan section:** R18.2f ([`../../plans/archive/BENCH-READINESS-SPRINT-PLAN.md`](../../plans/archive/BENCH-READINESS-SPRINT-PLAN.md)).
 **Task:** «#3594», closed.
 
 **Nothing is left to run under this sheet.** The next pass's loads are carried, with their

@@ -1,5 +1,9 @@
 # Current limiting and stopping from speed — one design
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED, shipped in v6.0.0** (`I_PEAK_A` / `I_CONT_A`,
+> `clearProtectiveStop()`); its PL-55 stop was later superseded by the stop planner (DRIVER_REV 39). Audit:
+> `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 «#3557», phase 1 of 2. Plan §R16.5 (Sprint Revision 2026-09-16). This document changes no source; «#3558»
 builds exactly what it approves.
 

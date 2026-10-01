@@ -155,7 +155,7 @@ Send `getstatus`; the reply is `stat {left} {right}`, one number per wheel:
 | 12 | DS\_HOLDING | stopped, holding position | — |
 | 13 | DS\_OFF | stopped, coasting | — |
 | 14 | **DS\_FAULTED** | the motor could not follow its command, or a hall sensor failed | send a stop or a new power to clear it; if it recurs, reduce the load or the speed |
-| 15 | **DS\_ESTOP** | emergency-stopped | drives are refused until you send `emerclear` |
+| 15 | **DS\_ESTOP** | emergency-stopped, or protectively stopped (a commanded wheel that could not turn) | drives are refused: send `emerclear` after an emergency stop, `protclear` after a protective stop (`getprot` says which) |
 
 A drive command that the P2 refuses tells you why in its reply, for example
 `ERROR drivepwr failed: ERR_EMERGENCY_STOPPED (-1016)`, so your code can read the reason instead of polling for it.

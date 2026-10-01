@@ -1,5 +1,11 @@
 # Window-free bench — sprint plan (Plan A)
 
+> ⛔ **CLOSED 2026-10-01.** v6.0.0 shipped (tag `ccef603`, published). §11 and §12 moved to 6.1.0 by R21. Audit:
+> [`2026-10-01-WINDOW-FREE-BENCH-CLOSEOUT.md`](2026-10-01-WINDOW-FREE-BENCH-CLOSEOUT.md). Read as history. Known stale
+> text, left as written: the Tasks table's §2 and blast-radius rows say "ten" floor tiers (fourteen were built), sections
+> 10-13 have no row (their tasks were «#3637»-«#3642» and «#3516»), and the Exit gate cites R1-R13 (the rulings ran to
+> R21).
+
 **Written 2026-09-30.** Task: «#3576» (the floor visit), whose scope this plan replaces.
 
 **Goal.** Get to the bench and capture driver readings with nothing in the way. Record every result, put the

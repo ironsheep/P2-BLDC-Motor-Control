@@ -1,5 +1,9 @@
 # Bench Readiness — Sprint Plan
 
+> ⛔ **CLOSED 2026-10-01: the 6.0.0 sprint.** v6.0.0 shipped (tag `ccef603`, published). Its floor visit was replaced on
+> 2026-09-30 by Plan A ([`WINDOW-FREE-BENCH-SPRINT-PLAN.md`](WINDOW-FREE-BENCH-SPRINT-PLAN.md)). Audit:
+> [`2026-10-01-BENCH-READINESS-CLOSEOUT.md`](2026-10-01-BENCH-READINESS-CLOSEOUT.md). Read as history.
+
 **Written:** 2026-09-10
 **Entry build:** `VERSION` = 5.0.2 · `main` = `develop` = `a80f8e6`
 **Target build:** ~~5.0.3 (patch)~~ → **6.0.0** *(revised 2026-09-11)*

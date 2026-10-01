@@ -1,5 +1,9 @@
 # Visit Sign-off Mechanism — Design («#3537», phase 1)
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: PARTLY IMPLEMENTED, RETIRED.** The `SIGNOFF` records and cell criteria
+> still compile into the bench binaries; the collation, manifest and per-visit sheet were deleted 2026-09-15. The
+> manifest, host and collation sections are history. Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 > **Partly retired 2026-09-15.** STEPHEN: *"all we need to do is analyze the logs and write an
 > analysis report every time we get a set of logs back. Nothing else."*
 > - **Deleted:** the host collation (`tools/signoff-collate.py`), the manifest

@@ -1,5 +1,9 @@
 # PASM driver memory reduction — design
 
+> **6.0.0 sprint closed 2026-10-01: PARTLY IMPLEMENTED, STILL GOVERNS.** WP1-WP5 shipped (DRIVER_REV 41-45; cog 441 of
+> 496, LUT run image 457 of 512). WP6-WP9 are not built; they are re-evaluated when the space is next needed
+> (Stephen 2026-10-01: *"we can reevaluate what we need when we next need the space"*), not tracked as work. Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 Status: **DESIGN ONLY. No source is changed by this document.** Every line number below is
 `src/isp_bldc_motor.spin2` at tag `mem-reduce-start` (HEAD `2e1215f`, DRIVER_REV 40).
 

@@ -1,6 +1,6 @@
 # The window-free visit — run sheet (your only instructions)
 
-**Plan:** `DOCs/plans/WINDOW-FREE-BENCH-SPRINT-PLAN.md` (Plan A). **Rewritten 2026-09-30** for the window-free tests; the
+**Plan:** `DOCs/plans/archive/WINDOW-FREE-BENCH-SPRINT-PLAN.md` (Plan A, closed 2026-10-01). **Rewritten 2026-09-30** for the window-free tests; the
 countdown-board sheet it replaces is in git history.
 
 Everything you need is on this page. No window opens, nothing is clicked, no key is pressed and no board is moved. Each

@@ -121,7 +121,7 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 
 ### Known Issues
 
-- Under load, spins in place can run up to 40 % slow and speed changes arrive late; both wheels slow together,
+- Under load, spins in place can run up to 43 % slow and speed changes arrive late; both wheels slow together,
   keeping the path
 - Against an obstacle that gives way, a blocked wheel can keep pushing for several seconds before the protective
   stop latches; the push is current-limited

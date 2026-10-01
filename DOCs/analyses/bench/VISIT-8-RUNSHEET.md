@@ -1,6 +1,6 @@
 # Visit 8 — run sheet (the drive change, certified; the lead table, measured)
 
-**Plan section:** R18.5 of [`../../plans/BENCH-READINESS-SPRINT-PLAN.md`](../../plans/BENCH-READINESS-SPRINT-PLAN.md),
+**Plan section:** R18.5 of [`../../plans/archive/BENCH-READINESS-SPRINT-PLAN.md`](../../plans/archive/BENCH-READINESS-SPRINT-PLAN.md),
 with the phasing Stephen set on 2026-09-22 (*dynamic lead in, back-EMF deferred*).
 **Design and acceptance numbers:** [`../../plans/DRIVE-INTEGRATION-DESIGN.md`](../../plans/DRIVE-INTEGRATION-DESIGN.md) §5.5 (A-1 to A-10).
 **Task:** «#3584». The lead table is filled afterwards by «#3601».

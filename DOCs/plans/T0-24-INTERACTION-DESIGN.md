@@ -1,5 +1,9 @@
 # T0-24 — the stop-state hand test, designed as a lesson
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED** (tier `t0-stopmode`; T0-24 10 of 10 PASS). Its panel
+> interaction is retired by Plan A's ruling R1, no debug PLOT windows in testing. Audit:
+> `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 **Task:** «#3619». **Finding:** PL-127. **Supersedes** the interaction half of «#3607»/«#3617». It keeps their
 instrument: re-armed holds, `band_ticks`, forced faults, and the e-stop applied at the band.
 

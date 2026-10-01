@@ -1,12 +1,15 @@
 # DEBUG Channels -- Design (task «#3507», PL-8)
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED** (`MOTOR_DBG_MASK`, `STEER_DBG_MASK`; `useDebug` removed).
+> The record-ceiling measure is deferred as PL-165. Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 **Date:** 2026-09-14
 **Status:** Design reviewed by the arbiter. Phase 2 implements it.
 
 **Governs:**
 - PL-8;
 - plan §2, *DEBUG channels, and remove `useDebug`*;
-- Batch 2 of `BENCH-READINESS-SPRINT-PLAN.md`.
+- Batch 2 of `archive/BENCH-READINESS-SPRINT-PLAN.md`.
 
 **Provenance** follows the project convention:
 - **MEASURED** means a log line or a command's output.

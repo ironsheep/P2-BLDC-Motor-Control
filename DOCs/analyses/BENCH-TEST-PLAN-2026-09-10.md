@@ -8,7 +8,7 @@ and [`DRIVER-SAFETY-AND-CAPABILITY-STUDY-2026-09-09.md`](DRIVER-SAFETY-AND-CAPAB
 
 > **Revised 2026-09-12, after Bench Pass 1 — read before any section below.** The governing
 > record is *Sprint Revision — 2026-09-12* in
-> [`BENCH-READINESS-SPRINT-PLAN.md`](../plans/BENCH-READINESS-SPRINT-PLAN.md). Where this plan
+> [`BENCH-READINESS-SPRINT-PLAN.md`](../plans/archive/BENCH-READINESS-SPRINT-PLAN.md). Where this plan
 > disagrees with it, the revision wins:
 >
 > - **No meter transcription anywhere** (STEPHEN: *"I don't want to do any more meter

@@ -120,7 +120,7 @@ direction of travel from their formula.
 > first.** That reverses the dependency I had assumed: PL-26's measurement can precede PL-26's
 > driver work rather than waiting on it.
 >
-> ⛔ **It does not extend to the 6.5″ hub.** `DOCs/plans/BENCH-READINESS-SPRINT-PLAN.md:190` records
+> ⛔ **It does not extend to the 6.5″ hub.** `DOCs/plans/archive/BENCH-READINESS-SPRINT-PLAN.md:190` records
 > the encoder as *"Unavailable — incompatible with 6.5″ wheels. Hand-rotation ground truth replaces
 > it."* The hub motor is the wheel; there is no free shaft to mount to. That is why T0-12 exists,
 > and it is why the hub's ground truth is 3 hand revolutions at ±1 tick while the Doco's is a

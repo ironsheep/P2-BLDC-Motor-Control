@@ -1,6 +1,9 @@
 # Stop-state design — every stop path delivers the user's `holdAtStop()` selection
 
-**Task:** «#3568», plan §R17.1 (`BENCH-READINESS-SPRINT-PLAN.md`, *Sprint Revision — 2026-09-17 (night)*).
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED, shipped in v6.0.0** (`holdAtStop()`, `SM_FLOAT` /
+> `SM_BRAKE`). Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
+**Task:** «#3568», plan §R17.1 (`archive/BENCH-READINESS-SPRINT-PLAN.md`, *Sprint Revision — 2026-09-17 (night)*).
 **Phase:** 2 of 2 — **implemented 2026-09-17** as designed, with the §3 mapping as recommended (Stephen raised no
 objection; the two judgement rows are one-line changes in `.faultBridge` and the e-stop entry if he wants either
 flipped). Added during implementation: the bridge comes up COASTING at driver start (§3's invariant also covers

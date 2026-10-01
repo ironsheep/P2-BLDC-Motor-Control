@@ -1,5 +1,8 @@
 # Front cog: implementation plan (R16.3, phase 1)
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED, shipped in v6.0.0** (`startOwned()`, the `front*()`
+> routines). Its §6.3 "deliberately not built" feeds «#3562». Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 **Date:** 2026-09-16
 **Status:** APPROVED WITH AMENDMENTS (arbiter review, 2026-09-16). No source file was changed in this phase.
 

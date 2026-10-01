@@ -1,7 +1,11 @@
 # Driver Reporting — design for R20.1 («#3621», phase 1)
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED, shipped in v6.0.0** (`getStopReason()`, `getEvent()`, the
+> start refusal). The "Ready to build" status below is historical. Audit:
+> `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 **Status:** reviewed and ruled, 2026-09-25 (§10). Ready to build.
-**Scope:** Stephen's five API rulings of 2026-09-25 (plan R20, `BENCH-READINESS-SPRINT-PLAN.md` §R20), in
+**Scope:** Stephen's five API rulings of 2026-09-25 (plan R20, `archive/BENCH-READINESS-SPRINT-PLAN.md` §R20), in
 `isp_bldc_motor`, `isp_steering_2wheel` and `isp_steering_serial`.
 **Provenance marks:** MEASURED (log or file:line), DERIVED (my reasoning, from the lines cited), STEPHEN (his words).
 Unless a section says otherwise, line numbers are in `src/isp_bldc_motor.spin2` (**M**) and `src/isp_steering_2wheel.spin2` (**S**) at `ebea690`.

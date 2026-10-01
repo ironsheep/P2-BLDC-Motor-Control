@@ -1,5 +1,8 @@
 # Cog lifecycle and lock rules -- design («#3543», PL-41, PL-85)
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED** (`src/isp_bench_log.spin2` `cogEventBegin`,
+> `countFreeCogs`; style check T41). Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 **Status:** approved by Stephen 2026-09-18 ("yes let's do it") and implemented the same day. §7 records
 what implementation changed or added.
 

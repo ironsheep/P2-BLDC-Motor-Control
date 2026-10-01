@@ -1,5 +1,9 @@
 # Motion Harness -- Design (task «#3508», phase 1)
 
+> **CLOSED 2026-10-01 with the 6.0.0 sprint: IMPLEMENTED** (`src/test_bench_dual.spin2`, `src/isp_bench_log.spin2`).
+> §5.3's analyser verdicts were withdrawn 2026-09-15; the window-free floor tiers are Plan A's. Audit:
+> `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.
+
 **Status:** DESIGN, for arbiter review. Phase 2 implements it. No source, tool or manifest file is
 changed by this document.
 
@@ -674,7 +678,7 @@ every existing `BS-`/`BC-`/`BD-` record by construction.
 ### 7.3 `src/test_dual_motor.spin2`
 
 Left untouched. It is not a bench binary (it reads the user config, has no records, watchdog or
-sign-off), none of its code is reused, and the plan's "extension" wording (`BENCH-READINESS-SPRINT-PLAN.md:760-764`)
+sign-off), none of its code is reused, and the plan's "extension" wording (`archive/BENCH-READINESS-SPRINT-PLAN.md:760-764`)
 predates the three-binary split. Two defects noticed: its header names itself `demo_dual_motor.spin2`
 (`src/test_dual_motor.spin2:3`), and everything after the `repeat` at `:78` is unreachable. Listed in
 DEVIATIONS as out of scope.

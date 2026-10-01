@@ -1,7 +1,7 @@
 # Visit 7b — run sheet (two unattended loads, one binary, two offset legs)
 
 **Plan section:** R18.2c, *Sprint Revision — 2026-09-21: phasing is corrected BEFORE the drive is
-designed* ([`../../plans/BENCH-READINESS-SPRINT-PLAN.md`](../../plans/BENCH-READINESS-SPRINT-PLAN.md)).
+designed* ([`../../plans/archive/BENCH-READINESS-SPRINT-PLAN.md`](../../plans/archive/BENCH-READINESS-SPRINT-PLAN.md)).
 
 ---
 

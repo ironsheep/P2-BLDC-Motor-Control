@@ -197,7 +197,7 @@ README names 270 MHz as the tested clock).
 
 This block was never run, and it is not to be run as written: it asked for a board to be moved between platforms, and
 boards are never moved (STEPHEN 2026-09-30: *"we would never swap the rev A and B boards"*). PL-163 now certifies on
-the Rev A platform, which carries two Rev A boards, wheels up, with no window (`DOCs/plans/WINDOW-FREE-BENCH-SPRINT-PLAN.md`
+the Rev A platform, which carries two Rev A boards, wheels up, with no window (`DOCs/plans/archive/WINDOW-FREE-BENCH-SPRINT-PLAN.md`
 §3, «#3629»). The instructions for that run are in `DOCs/analyses/bench/VISIT-6B-FLOOR-RUNSHEET.md`.
 
 | | |

@@ -83,11 +83,15 @@ locktry lockrel lockchk regexec regload call debug"
 
 # ---- ORPHAN ------------------------------------------------------------
 # A doc that writes `someMethod()` in backticks is asserting that method exists.
+# Docs under tools/ document the desk tooling (Python, shell): their `name()` spans are
+# functions of that tooling, not Spin2 methods, so they are skipped here (they stay in
+# the DUPLICATE and COUNT checks).
 echo
 echo "-- ORPHAN: documented methods absent from src/ --"
 ORPHANS=0
 while IFS= read -r doc; do
     [ -z "$doc" ] && continue
+    case "$doc" in tools/*) continue ;; esac
     # pull `name(` occurrences out of inline code spans
     grep -o '`[a-z][A-Za-z0-9_]*(' "$doc" 2>/dev/null \
       | tr -d '`(' | sort -u | while IFS= read -r m; do
