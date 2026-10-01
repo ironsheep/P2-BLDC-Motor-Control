@@ -482,9 +482,18 @@ order shown, no collision.
 «#3654», «#3656», «#3657») share `src/test_bench_dual.spin2`, and «#3655» holds `src/isp_bldc_motor.spin2`, both on
 the exclusive-resource roster. **Two-phase:** «#3645» (the design returns, the arbiter reviews, Stephen rules) and
 «#3655» (the D-2 routine first, reviewed, then the rest). **Gates:** batch A («#3646»-«#3651», «#3654») is gated once in
-«#3652»; batch B («#3655»-«#3657») once in «#3657»; «#3653» and the docs touch no compiled source. **Ordering edges:** the
-premises task follows the build because the coast bound follows whatever D-5 does to the blocked count; the docs follow
-the visit's evaluation (certified behaviour); the release follows the docs.
+«#3652»; batch B («#3655»-«#3657») once in «#3657»; «#3653» and the docs touch no compiled source. **Rework pass (`plan-to-tasks` §3a), run 2026-10-01 on the live order — no conflict:**
+- *Standards before application:* the style-gate fix (2) precedes every task that writes Spin2; the token self-check
+  with enum-derived counts (7) precedes every task that adds a token, a cell or a banner field to `test_bench_dual`
+  (8, 9, 12, 13), so each is born checked.
+- *Discovery before use:* the D-5 design (1) precedes the build (11) and the premises task (12), whose coast bound
+  follows what D-5 does to the blocked count.
+- *Foundation before building:* the build (11) precedes the floor cells (13) that read the counters D-3 gates on.
+- *Audit at its gate:* batch A's gate in 9 follows 2-8; batch B's in 13 follows 11-12; 10 compiles nothing.
+- *Change before capture:* the visit (14-15) follows every behaviour change; the docs (16) follow the evaluation; the
+  release (17) is last.
+- *Same file, several tasks* (`test_bench_dual` / `test_bench_t0` records and banners: 3, 7, 8, 9): each ends compiling
+  and none undoes another, so no atomic green-unit is needed.
 
 ## Revision history
 
