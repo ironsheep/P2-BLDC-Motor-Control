@@ -50,6 +50,7 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 | Entry | What it is | What closes it |
 | --- | --- | --- |
 | PL-12 | The style gate's C4 check can flag a PRI code line carrying a trailing `''` | One condition: the line's code portion is blank |
+| PL-172 | The style gate's `--self-test` fails: check T128 has no fixture | A `T128.spin2` fixture; the self-test exits 0 |
 | PL-23 | Booleans print as numbers in two places still: `test_bench_spin` and `testGetResults()`'s fault flag | Print the word; return TRUE/FALSE |
 | PL-37 | Five panel bitmaps and their generator outlived the panel | Delete them (no consumer in the tree, checked 2026-10-01); the note two other generators point at moves with them. Supersedes the 2026-09-14 "leave them for now" |
 | PL-169 | The FlySky demos re-send the acceleration setting on knob noise | A deadband on both knobs |
@@ -82,7 +83,7 @@ characterisation plan takes up the scan.
 **Watch** — each run carries what would make it actionable, at no extra load: PL-43 and PL-126 (silent stops, one
 instance each since the supply repair), PL-120 (the right board's high side; no refusal in the 69 Rev B program loads
 logged since 2026-09-27, 35 of them naming the right wheel, after the 2026-09-26 header reseat), PL-136 (the PREFLT diagnostics, which certify themselves on a wheel's first failure), PL-139
-(the at-rest band, crossed once on each board).
+(the at-rest band, crossed once on each board), PL-171 (loader checksum refusals on the Pi).
 
 **Ancillary, recorded and not chased:** PL-60, PL-63, PL-103, PL-105, PL-108, PL-109, PL-110, PL-119, PL-135, PL-170.
 
@@ -672,9 +673,10 @@ next attended log's `BM-PLAN`.
 
 ### PL-68 -- no bench log names the commit it was built from, so a visit ran on an older commit unnoticed
 
-> **Status (2026-10-01):** IN 6.1.0, harness work for this plan's runs (STEPHEN 2026-10-01). Still open: no line of
-> `tools/bench-run.sh` reads the commit. The runner fronts Stephen's tools, so the design goes to him before it is
-> built (overlay P2).
+> **Status (2026-10-01):** IN 6.1.0, harness work for this plan's runs. **Design RULED (STEPHEN 2026-10-01, "re pl68
+> yes A"):** the pack builder writes a tiny object holding the commit into its temporary `git archive` copy (never this
+> tree), and every harness banner prints it; a tracked default copy reads "not a pack", so a build from the tree says
+> so; the runner also echoes `git rev-parse HEAD` and the tree's clean state before any source-tree compile.
 >
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench provenance tooling)
 
@@ -753,6 +755,13 @@ An archive file is never re-edited. If an archived item must be reopened, it com
 > compile time."* Two motor pin groups that overlap are a configuration error the compiler can see (both bases are
 > constants in `isp_bldc_motor_userconfig.spin2`), so the build is refused, and `tools/build-check.sh` proves the refusal
 > the way it proves a build with no `CFG_*` selected. The runtime `GATE_OVERLAP` skip in `test_bench_detect` stays as it is.
+>
+> **Shape (2026-10-01, plan research).** The preprocessor cannot compare numbers (p2kb `p2kbSpin2PreprocessorOverview`: no
+> `#IF`, no expression evaluation), so the refusal is a CON constant that divides by "the bases are legal and clear";
+> pnut-ts refuses it with `Divide by zero (m145)` at that line and a non-zero exit (prototyped). Legal enums alone do not
+> prevent an overlap: bases 0/8, 8/16 and 32/40 share pins, and equal bases are one group (Stephen asked 2026-10-01). So
+> the config checks both membership in the legal set and the pair's separation (`|L - R| >= 16`). At run time `start()`
+> already refuses both (`ERR_BAD_PIN_GROUP`, `ERR_PIN_GROUP_IN_USE`, `isp_bldc_motor.spin2:4107, :4122-4125`).
 >
 > *Was (2026-09-26 audit):* ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (detection harness gap)
 
@@ -1769,6 +1778,30 @@ fold therefore acts on noise, about 75 frames a second, and the LEFT board's pow
   separates the acceleration's folds from the grip's.
 - **Two harness gaps:** `t0vStart()` reports a refused start's board as `REV_Unknown`, so a start-check refusal reads as
   "not REV_A"; the hold record prints no stop reason.
+
+### PL-172 -- the style gate's self-test fails: check T128 has no fixture
+
+> **Status (2026-10-01):** IN 6.1.0, a simple fix (it rides with PL-12 in the same file).
+
+**MEASURED 2026-10-01:** `tools/check_style.sh --self-test` exits 1 and ends `SELF-TEST FAIL: no fixture exercises:
+['T128']`. T128 (no parenthesis in display text, PL-128) joined `ALL_CHECK_IDS` (`tools/check_style.sh:1151`) in
+`13495a7` with no `tools/fixtures/style/T128.spin2`, so since then the self-test cannot prove that every check fires.
+The gate itself (`tools/check_style.sh` without `--self-test`) is unaffected. **Fix:** a `T128.spin2` fixture on which
+T128 fires, and only T128.
+
+### PL-171 -- four program loads in two floor visits failed the loader's checksum on the Pi
+
+> **Status (2026-10-01):** WATCH. Filed from the floor rerun's findings register (N15), where it was recorded but never
+> carried here.
+
+**MEASURED** (`analyses/bench/2026-09-30/floor2/FLOOR-RERUN-EVALUATION.md` §0 and §8 N15): two loads failed the loader's
+checksum and were refused before running (`floor-auto` 18:17:48, `floor-rc` 18:26:26); each rerun loaded clean. With
+the first floor visit's two, that is four refused loads in two visits, all on the Pi. The loader caught every one, so no
+corrupted image ran.
+
+**What it costs:** a rerun each time, at the bench. **What would make it actionable:** a refusal rate that grows, or a
+refusal the rerun does not clear. The tools are Stephen's and are presumed correct (overlay P7); if it is chased, the
+first question is the Pi's USB path, not the loader.
 
 ---
 
