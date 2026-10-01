@@ -476,8 +476,12 @@ def text_width(d, text, fnt):
 
 
 def fit(d, text, size, max_w):
-    """Largest font at or below `size` whose rendered text fits max_w. Measured, not guessed --
-    see gen_bench_char_assets.py's own note on why a guessed size clips at the panel edge."""
+    """Largest font at or below `size` whose rendered text fits max_w.
+
+    A point size guessed and checked by eye is how text gets clipped at the panel edge; the
+    first render of the earlier characterisation panel's generator did exactly that. So the
+    width is measured (text_width(), a textbbox call per try) at build time.
+    """
     while size > 8:
         f = font(size)
         if text_width(d, text, f) <= max_w:

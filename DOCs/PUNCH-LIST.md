@@ -52,7 +52,7 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 | PL-12 | The style gate's C4 check can flag a PRI code line carrying a trailing `''` | DONE 2026-10-01 (also A4, A5) |
 | PL-172 | The style gate's `--self-test` fails: check T128 has no fixture | DONE 2026-10-01 |
 | PL-23 | Booleans print as numbers in two places still: `test_bench_spin` and `testGetResults()`'s fault flag | FIXED IN THE TREE 2026-10-01; the next `t0` log shows it |
-| PL-37 | Five panel bitmaps and their generator outlived the panel | Delete them (no consumer in the tree, checked 2026-10-01); the note two other generators point at moves with them. Supersedes the 2026-09-14 "leave them for now" |
+| PL-37 | Five panel bitmaps and their generator outlived the panel | DONE 2026-10-01 |
 | PL-169 | The FlySky demos re-send the acceleration setting on knob noise | A deadband on both knobs |
 
 **Fixed in the tree; waits for its binary's next run** (no planned run loads these binaries, so nothing is owed)
@@ -222,11 +222,10 @@ board read as Rev A after any stop and restart (MEASURED 2026-09-12). Two conseq
 
 ### PL-37 -- the meter-panel assets outlived the panel they drew
 
-> **Status (2026-10-01):** IN 6.1.0, a simple fix. STEPHEN 2026-10-01, *"pull in the simple changes/fixes"*, which
-> supersedes his 2026-09-14 *"leave them for now"*. The tree-wide search is done: nothing consumes the five bitmaps
-> or the generator. Only comments point at the generator's note on sizing text (`tools/gen_t0hand_assets.py:6, :99`,
-> `tools/gen_dual_assets.py:480`, `src/test_bench_t0.spin2:6036`); that note moves into them in the same change.
-> PL-19, which mentioned the generator, is archived.
+> **Status (2026-10-01): DONE** («#3648»). The five `bc_*.bmp` and `tools/gen_bench_char_assets.py` are removed
+> (`git rm`); the note on measuring text width now lives in the `fit()` of `tools/gen_t0hand_assets.py` and
+> `tools/gen_dual_assets.py`, and the two "same discipline" pointers name `tools/gen_dual_assets.py`. MEASURED: no
+> reference outside `DOCs/` remains; both generators import; `test_bench_t0` (`t0-hand`) compiles.
 >
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (unused bench panel assets)
 

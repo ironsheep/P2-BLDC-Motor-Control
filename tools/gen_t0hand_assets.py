@@ -3,8 +3,7 @@
 (-D T0_HAND, bench-run.sh tier t0-hand).
 
 Follows the crop-and-overlay technique in DOCs/REF-NO-COMMIT/dbg-display-theory/, the same
-discipline tools/gen_bench_char_assets.py used for the (since-removed) characterisation panel:
-layers are loaded once with LAYER; a frame is composed by blitting opaque cells with CROP and
+discipline tools/gen_dual_assets.py follows for test_bench_dual's panels: layers are loaded once with LAYER; a frame is composed by blitting opaque cells with CROP and
 then one UPDATE. The layout constants below are the SINGLE SOURCE OF TRUTH -- this script draws
 the BMPs from them and prints a ready-to-paste Spin2 CON block of the same numbers, so the
 artwork and the code cannot drift. The T0H_* block already pasted into test_bench_t0.spin2 was
@@ -95,8 +94,12 @@ def font(size):
 
 
 def fit(d, text, size, max_w):
-    """Largest font at or below `size` whose rendered text fits max_w. Measured, not guessed --
-    see gen_bench_char_assets.py's own note on why a guessed size clips at the panel edge."""
+    """Largest font at or below `size` whose rendered text fits max_w.
+
+    A point size guessed and checked by eye is how text gets clipped at the panel edge; the
+    first render of the earlier characterisation panel's generator did exactly that. So the
+    width is measured, at the cost of a few textbbox calls at build time.
+    """
     while size > 8:
         f = font(size)
         l, _, r, _ = d.textbbox((0, 0), text, font=f)
