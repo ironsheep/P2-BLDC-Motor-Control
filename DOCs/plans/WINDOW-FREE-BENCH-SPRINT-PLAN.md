@@ -71,6 +71,9 @@ All are Stephen's, from 2026-09-30 unless dated otherwise.
 | R11 | **Pack voltage with no sensor: leave the driver as it is.** Documenting it is Plan B. | *"yes leave as is"* |
 | R12 | **Every record and document agrees with the tree and the logs. Any disagreement is fixed on sight, never asked about.** | *"If you see issues with this consistency, they need to be fixed immediately because that inconsistency keeps leading us down bad paths, such as testing three or four times only because we forgot to record the results."* |
 | R14 | **Both grips are held until the program stops the motion:** one start cue, and no let-go count. | *"ok A"*, to option (a), "hold until it stops" |
+| R15 | **R4 refined (2026-09-30, after the floor visit): a command may chain many checks when none needs him in between.** One action per command was only because he had to act at each one. | *"As long as you don't need me interceding, running multiple checks per command is just fine. The only reason we did that single check per command is because you needed me at each one."* |
+| R17 | **A hands-off floor run stays inside a 2 m × 2 m square; he can reset the platform to a fixed start within it before each run.** | *"As long as you keep the robot in a 2 m by 2 m square area, it can run independently."* *"If you need me to reset it to a fixed location before each run, I can do that as well within the 2 m area."* |
+| R16 | **FlySky ramps on independent knobs: VRA acceleration 200–3,000 mm/s², VRB deceleration 1,000–3,000 mm/s² (safety first).** | *"let's think safety first. A sounds about right"* |
 | R13 | **Earlier, still in force:** incline postponed (2026-09-29); every mid-run stop is his own and physical (2026-09-29); floor motion limits of 1 m straight and one turn in place (2026-09-27); the fault return run uses `testForceFault()` (2026-09-28). | quoted in `DOCs/analyses/bench/VISIT-6B-FLOOR-RUNSHEET.md` |
 
 ---
@@ -293,6 +296,40 @@ benefit before it is built (overlay P5).
 **Verify.** No finding is left without one of: fixed, certified, or ruled on by Stephen.
 
 ---
+
+## 10. The hands-off rerun (added 2026-09-30, after the first visit; R15, R16, R17)
+
+**Why.** The first visit (`DOCs/analyses/bench/2026-09-30/floor/FLOOR-VISIT-EVALUATION.md`) ran everything but left
+Q1–Q8 of that report open: the schedule spins and the fault run lost their steady windows to a harness premise (H1),
+the coast trial met a lag fault, the grab was held too firmly, and the Rev A left board was refused. Stephen asked for
+the next runs to need him as little as possible; one action per command existed only because he had to act at each
+(R15). **Design rule: move every check out of his hands that can be, then group what is left by physical setup, one
+command per setup; every session starts at his fixed start point and returns to it; he resets only between sessions.**
+
+**The sessions:**
+
+| # | Setup | Command | Content | Stephen |
+|---|---|---|---|---|
+| 1 | Rev A platform, bench, wheels up | `t0-reva` | both boards, the probe readings on a refusal, the unloaded legs, and a hard speed-up as the fold-back's positive control (no grip) | the continuity check first |
+| 2 | Rev B, the 2 m square, at the start | `floor-auto` | the ten spins back to back (alternating direction; event log on), the fault run, and the ramp legs (out and back at three acceleration and three deceleration settings) | reset, stand by |
+| 3 | Rev B, the square, a fixed object 0.3–0.8 m ahead | `floor-obstacle` | the coast trial, its checks, an armed drive back to the start; the brake trial, its checks, back | place the object, stand by |
+| 4 | Rev B, the square | `floor-grab` | one straight drive under a steady one-sided load (about half speed) | the load |
+| 5 | optional | `floor-rc` | FlySky: VRA acceleration, VRB deceleration (R16), swB as his marker | drive |
+
+**Safety inside the square (R17):** the start point about 0.5 m in from one edge, centred, facing across; straight
+legs at most 1 m and always out and back; a software fence (the platform's position from both wheels' hall counts)
+refuses any leg whose planned travel would leave the square, and prints why; the existing caps stay (each leg armed,
+the e-stop 35 mm past a limit, the 10 A abort). **A failed action** prints its own result; the session continues only
+from a known position (spins, in place, continue; after a failed straight the remaining straight actions are skipped,
+and it says so).
+
+**Also in this build:** the harness fixes H1–H7 (built, SRC_REV 70); `test_bench_t0` SRC_REV 30 (built: the probe
+readings and the refusal wording); the FlySky controls in both the demos and `test_bench_rc`; `test_bench_rc`'s
+telemetry gains the raw controls (built), each wheel's live acceleration, the ramp limits read back, the pack voltage,
+swB and swC, and a banner line with the duty and feed-forward ceilings.
+
+**Verify.** Every tier compiles in its bench form; the fence refuses a leg planned past the square (a desk case in the
+source's own derivation); the run sheet walks against the code; one gate over the batch.
 
 ## Documentation blast radius
 

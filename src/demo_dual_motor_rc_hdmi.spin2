@@ -154,7 +154,7 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, basePin, detectMode
 
     showLine(@"* DONE")
 
-PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, accRngMin, accRngMax
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, accRngMin, accRngMax, decrate, decRngMin, decRngMax
 '' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
 ''
 
@@ -167,6 +167,9 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
 ' @local accrate - the acceleration the VRA knob selects, mm/s squared
 ' @local accRngMin - the VRA knob's lowest recorded reading
 ' @local accRngMax - the VRA knob's highest recorded reading
+' @local decrate - the deceleration the VRB knob selects, mm/s squared
+' @local decRngMin - the VRB knob's lowest recorded reading
+' @local decRngMax - the VRB knob's highest recorded reading
 
     waitms(500)    ' wait for 1/2 sec for backend to catch up
 
@@ -180,6 +183,7 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
     showLine(@"* swC DN     - end control")
     showLine(@"* swD DN     - emer cutoff; back UP releases it and any protective stop")
     showLine(@"* VRA        - acceleration")
+    showLine(@"* VRB        - deceleration")
     showLine(@"------")
 
     bLastShowState := VALUE_NOT_SET ' value can't happen
@@ -200,6 +204,8 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
         ' setAcceleration() takes mm/s squared, so the knob's travel is mapped onto a range in those units
         accRngMin, accRngMax := remoteCtl.chanMinMax(remoteCtl.CTL_VRA)
         accrate := map(remoteCtl.readchannel(remoteCtl.CTL_VRA), accRngMin, accRngMax, RC_ACCEL_MIN_MM_S2, RC_ACCEL_MAX_MM_S2)
+        decRngMin, decRngMax := remoteCtl.chanMinMax(remoteCtl.CTL_VRB)
+        decrate := map(remoteCtl.readchannel(remoteCtl.CTL_VRB), decRngMin, decRngMax, RC_DECEL_MIN_MM_S2, RC_DECEL_MAX_MM_S2)
 
         if bLastShowDriveStates <> bShowDriveStates
             if bShowDriveStates
@@ -242,6 +248,14 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
             dbgSdec(nAccelerationRate)
             dbgShow()
             wheels.setAcceleration(nAccelerationRate)
+
+        if decrate <> 0 and nDecelerationRate <> decrate
+            nDecelerationRate := decrate
+            dbgBegin(@"  Setting Motor Deceleration:")
+            dbgText(@"nDecelerationRate = ")
+            dbgSdec(nDecelerationRate)
+            dbgShow()
+            wheels.setDeceleration(nDecelerationRate)
 
         if (not bEmerCutoff) and (remoteCtl.hasSignal() == FALSE)
             ' no transmitter -- the stick values are stale or the receiver's failsafe defaults, so
@@ -701,6 +715,11 @@ CON
    ' the VRA knob's travel maps onto this acceleration range, mm/s squared (setAcceleration())
    RC_ACCEL_MIN_MM_S2 = 200
    RC_ACCEL_MAX_MM_S2 = 3_000
+   ' the VRB knob's travel maps onto this deceleration range, mm/s squared (setDeceleration()). Its floor is a safety
+   '  limit: at 1_000 a stop from about 1.9 m/s (the fastest seen on the floor) rolls about 2 m; the driver accepts 250
+   '  (about 7 m). Above about 3_000 the ramp's own 250 ms easing sets the stop, so a higher ceiling would not be felt.
+   RC_DECEL_MIN_MM_S2 = 1_000
+   RC_DECEL_MAX_MM_S2 = 3_000
 
 VAR
 
@@ -718,6 +737,7 @@ VAR
     long    bLastIgnoreJoyStks
     long    bLastShowDriveStates
     long    nAccelerationRate
+    long    nDecelerationRate
 
 PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
 ' Read both joysticks and scale them to a drive speed and direction.

@@ -21,6 +21,17 @@
 ''                              swA-swD and reads any other channel as OFF, so with the sticks disabled the loop drove
 ''                              one wheel rotation on its own, once. The menu line, the read, the branch,
 ''                              nDoingOneRotation and doOneRotation() are gone; no record changes.
+''               30 Sep 2026 -- SRC_REV=4, FMT 2: RC-TEL gains the raw left-stick vertical (lt_vt) and the VRA and
+''                              VRB knob channels (vra, vrb), read as the demo reads its controls. The first floor-rc
+''                              run printed one acceleration setting for the whole drive, at the knob's top, while
+''                              Stephen reported moving the control he expected to set it; with the raw channels the
+''                              log shows what each control did (FLOOR-VISIT-EVALUATION.md, 2026-09-30 section 8).
+''                              With the demo (Stephen, 2026-09-30, "A sounds about right": safety first), VRB now
+''                              sets deceleration, 1_000-3_000 mm/s^2, beside VRA's acceleration, 200-3_000 -- the
+''                              same controls in both programs. RC-TEL also gains the pack voltage, the two rates the
+''                              drive is using (read back), swB and swC (swB is his marker: he flips it when something
+''                              feels or sounds odd) and each wheel's live acceleration; RC-DRIVE prints each
+''                              driver's duty and feed-forward ceilings once; RC-ENUM names the switch states.
 ''
 '' =================================================================================================
 
@@ -28,8 +39,8 @@
 
   THE CONTROL LOOP IS THE DEMO'S, UNCHANGED IN BEHAVIOUR. Everything from the CON block titled timing through map() is
   copied from src/demo_dual_motor_rc.spin2 at its 30 Sep 2026 revision (its header reads "Updated.... 30 Sep 2026";
-  sha256 of the file copied from: 03aafb802000e22ba51a8168018a5265b27a20fd1de739cc402f17541b8ad227): the same start
-  (setStartChecks(true), waitUntilMotorReady()), the same stick mapping, the same swA / swB / swC / swD / VRA
+  sha256 of the file copied from: bfd184fcbe670c6dceb997eb24abb7368935f78d31ff1fb3d8f1cc72022a2fb1): the same start
+  (setStartChecks(true), waitUntilMotorReady()), the same stick mapping, the same swA / swB / swC / swD / VRA / VRB
   handling, the same event and stop printing. To review, diff the two files. The ONLY differences in the demo's part:
    - lines marked "' RC:" in main() -- the banner, the logger's start and stop, RC-END, DEBUG_END_SESSION, and the
      cog-event quiet window (benchLog.cogEventBegin() / cogEventEnd(), PL-41 / PL-85) around each cog start and
@@ -92,25 +103,29 @@
      isp_flysky_rx passes neither through; the demo reads the channels the same way.
 
   RATE (LOG_RATE_HZ = 25, one RC-TEL each 40 ms).
-   - worst-case RC-TEL: 6 bytes of "CogN  " + 77 bytes of platform fields (tag, seq 9, ms 10, the stick and switch
-     fields, path 5, late 5, 13 commas) + 2 x 72 bytes of wheel fields (pos 10, ci/fi 8 each, ma 7, duty 6, 13 commas
-     each) + CR LF = 229 bytes; a typical record is about 150.
-   - the link: 2 Mbaud 8N1 = 200_000 bytes/s. 25 x 229 = 5_725 bytes/s worst, 2.9 % of the link (typical 1.9 %).
+   - worst-case RC-TEL: 6 bytes of "CogN  " + 114 bytes of platform fields (tag, seq 9, ms 10, the stick, knob and
+     switch fields, path 5, late 5, pack_mv 6, acc_set 5, dec_set 5, sw_b 1, sw_c 1, 21 commas; SRC_REV 4 added lt_vt,
+     vra, vrb and the last five) + 2 x 80 bytes of wheel fields (pos 10, ci/fi 8 each, ma 7, duty 6, acc 7, 14 commas
+     each) + CR LF = 282 bytes; a typical record is about 190.
+   - the link: 2 Mbaud 8N1 = 200_000 bytes/s. 25 x 282 = 7_050 bytes/s worst, 3.5 % of the link (typical 2.4 %).
      RC-EVT records are sporadic, at most LOG_EVENTS_PER_PASS (4) a pass, each under 90 bytes.
-   - the logger: a record is on the wire 229 x 5 us = 1.15 ms worst; with its reads (about 20 getter calls), the
+   - the logger: a record is on the wire 282 x 5 us = 1.41 ms worst; with its reads (about 25 getter calls), the
      line's formatting and a full event drain (4 x 0.45 ms) a pass is a few ms of its 40 ms period, so it cannot fall
      behind. RC-TEL's late field and RC-END's late / skipped / max_late_us / max_pass_us measure that on the floor.
    - why 25 and not 50: at 25 Hz one hall tick in a period is 25 ticks/s of tps; 50 Hz would double that coarseness
      for crawling speeds and double the stream (5.7 % of the link), for handling changes that take ~100 ms. RC-TEL
      carries each wheel's raw hall position (pos) too, so any rate can be re-derived over any window afterwards.
 
-  RECORDS (FMT 1). One debug() line each, tag first, comma-separated, positional after RC-FIELDS names them.
+  RECORDS (FMT 2). One debug() line each, tag first, comma-separated, positional after RC-FIELDS names them.
    RC-BANNER  file,src_rev,fmt,drv_rev,cfg_id,clkfreq,quiet,mdbg,sdbg,log_hz,mirrors -- labelled pairs
    RC-FIELDS  the field names of RC-TEL, then of RC-EVT (printed once, before the logger starts)
-   RC-ENUM    the dcs and hs values with their names, from the library's own constants
+   RC-ENUM    the dcs, hs and switch (SST_*) values with their names, from the library's own constants
+   RC-DRIVE   l_duty_max,r_duty_max,l_ff_ceiling,r_ff_ceiling -- each driver's duty and feed-forward ceilings, once
    RC-LOG     started,<TRUE|FALSE>,cog,<id>,hz,<rate>,free_cogs,<n>
-   RC-TEL     seq,ms,sig,rt_vt,lt_hz,spd,dir,estop,sticks_off,cmd_spd,cmd_dir,path_pm,late, then per wheel, left
-              (l_) then right (r_): pwr,ci_k,fi_k,pos,tps,ma,dcs,err,duty,short,fol_pct,hs,flt
+   RC-TEL     seq,ms,sig,rt_vt,lt_hz,lt_vt,vra,vrb,spd,dir,estop,sticks_off,cmd_spd,cmd_dir,path_pm,late,pack_mv,acc_set,
+              dec_set,sw_b,sw_c, then per wheel, left (l_) then right (r_):
+              pwr,ci_k,fi_k,pos,tps,ma,dcs,err,duty,short,fol_pct,hs,flt,acc (acc: the generator's acceleration,
+              increment per drive pass per pass, testGetAccelNow())
    RC-EVT     seq,ms,wheel,kind,value -- wheel LEFT|RIGHT|PLATFORM, kind the EV_* name, value the SR_* name for
               EV_STOP, else the number
    RC-END     records,late,skipped,max_late_us,max_pass_us,acked -- labelled pairs, once, at the natural end
@@ -275,7 +290,7 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detec
     emitEnd()                                                   ' RC: the logger's totals
     debug("DEBUG_END_SESSION")                                  ' RC: QUOTED -- a backtick would make it a display command
 
-PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, accRngMin, accRngMax
+PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCutoff, bShowDriveStates, accrate, accRngMin, accRngMax, decrate, decRngMin, decRngMax
 '' Listen to FlySky and control motor, get status based on Switch/Joystick inputs
 ''
 
@@ -288,6 +303,9 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
 ' @local accrate - the acceleration the VRA knob selects, mm/s squared
 ' @local accRngMin - the VRA knob's lowest recorded reading
 ' @local accRngMax - the VRA knob's highest recorded reading
+' @local decrate - the deceleration the VRB knob selects, mm/s squared
+' @local decRngMin - the VRB knob's lowest recorded reading
+' @local decRngMax - the VRB knob's highest recorded reading
 
     waitms(500)    ' wait for 1/2 sec for backend to catch up
 
@@ -301,6 +319,7 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
     showLine(@"* swC DN     - end control")
     showLine(@"* swD DN     - emer cutoff; back UP releases it and any protective stop")
     showLine(@"* VRA        - acceleration")
+    showLine(@"* VRB        - deceleration")
     showLine(@"------")
 
     bLastShowState := RC_VALUE_NOT_SET ' value can't happen
@@ -321,6 +340,8 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
         ' setAcceleration() takes mm/s squared, so the knob's travel is mapped onto a range in those units
         accRngMin, accRngMax := remoteCtl.chanMinMax(remoteCtl.CTL_VRA)
         accrate := map(remoteCtl.readchannel(remoteCtl.CTL_VRA), accRngMin, accRngMax, RC_ACCEL_MIN_MM_S2, RC_ACCEL_MAX_MM_S2)
+        decRngMin, decRngMax := remoteCtl.chanMinMax(remoteCtl.CTL_VRB)
+        decrate := map(remoteCtl.readchannel(remoteCtl.CTL_VRB), decRngMin, decRngMax, RC_DECEL_MIN_MM_S2, RC_DECEL_MAX_MM_S2)
 
         if bLastShowDriveStates <> bShowDriveStates
             if bShowDriveStates
@@ -363,6 +384,14 @@ PUB remoteControlMotor() | bIgnoreJoySticks, bDoneTesting, bShowState, bEmerCuto
             dbgSdec(nAccelerationRate)
             dbgShow()
             wheels.setAcceleration(nAccelerationRate)
+
+        if decrate <> 0 and nDecelerationRate <> decrate
+            nDecelerationRate := decrate
+            dbgBegin(@"  Setting Motor Deceleration:")
+            dbgText(@"nDecelerationRate = ")
+            dbgSdec(nDecelerationRate)
+            dbgShow()
+            wheels.setDeceleration(nDecelerationRate)
 
         if (not bEmerCutoff) and (remoteCtl.hasSignal() == FALSE)
             ' no transmitter -- the stick values are stale or the receiver's failsafe defaults, so
@@ -773,6 +802,11 @@ CON
    ' the VRA knob's travel maps onto this acceleration range, mm/s squared (setAcceleration())
    RC_ACCEL_MIN_MM_S2 = 200
    RC_ACCEL_MAX_MM_S2 = 3_000
+   ' the VRB knob's travel maps onto this deceleration range, mm/s squared (setDeceleration()). Its floor is a safety
+   '  limit: at 1_000 a stop from about 1.9 m/s (the fastest seen on the floor) rolls about 2 m; the driver accepts 250
+   '  (about 7 m). Above about 3_000 the ramp's own 250 ms easing sets the stop, so a higher ceiling would not be felt.
+   RC_DECEL_MIN_MM_S2 = 1_000
+   RC_DECEL_MAX_MM_S2 = 3_000
 
 VAR
 
@@ -790,6 +824,7 @@ VAR
     long    bLastIgnoreJoyStks
     long    bLastShowDriveStates
     long    nAccelerationRate
+    long    nDecelerationRate
 
 PRI updPosnBothJoy(): speed, direction | rawSpeed, rawDirection, rngMin, rngMax
 ' Read both joysticks and scale them to a drive speed and direction.
@@ -839,8 +874,8 @@ CON { --- the logger: everything below is test_bench_rc's own; nothing above cal
 
 CON { build identity }
 
-    SRC_REV     = 3                                            ' hand-bumped whenever this file changes; printed in RC-BANNER
-    FMT_VERSION = 1                                             ' RC- record-format version: bumped when a record changes shape
+    SRC_REV     = 4                                           ' hand-bumped whenever this file changes; printed in RC-BANNER
+    FMT_VERSION = 2                                            ' RC- record-format version: bumped when a record changes shape
 
 CON { logger cog }
 
@@ -859,9 +894,13 @@ CON { logger cog }
     INCR_PER_K          = 1_000                                 ' ci_k and fi_k are increments / 1_000
     TENTHS_MA_PER_MA    = 10                                    ' getCurrent() reports 0.1 mA
     FOLLOW_NOT_VALID    = -1                                    ' fol_pct while the rpm window is not valid
-    ' the RC-TEL line: 221 bytes worst (the header's RATE section, less "CogN  " and CR LF); anything past the buffer
+    ' the RC-TEL line: 276 bytes worst (the header's RATE section, less "CogN  " and CR LF); anything past the buffer
     '  is dropped, so a line can come out short but never overrun. Numbers are clamped to benchLog.LIM_BIG, 12 bytes.
-    LINE_BUF_BYTES      = 256
+    LINE_BUF_BYTES      = 320
+    ' RC-DRIVE: each driver's parameter run, by its hub order (isp_bldc_motor VAR offset_fwd, offset_rev, duty_min,
+    '  duty_max, servo_shift, ff_ceiling, ...): the ABI, read-only here
+    PAR_DUTY_MAX        = 3
+    PAR_FF_CEILING      = 5
     ' the quiet debug masks (isp_bldc_motor_userconfig_bench.spin2 under -D BENCH_QUIET)
     QUIET_DBG_MASK      = DECOD user.DBGCH_ERROR | DECOD user.DBGCH_WARNING
 
@@ -902,6 +941,9 @@ VAR { logger scratch -- written and read by the logger cog only (keeps its stack
     LONG    lgSig
     LONG    lgRawVt
     LONG    lgRawHz
+    LONG    lgRawLtVt                                       ' SRC_REV 4: the left stick's vertical channel, raw
+    LONG    lgRawVra                                        ' ...the VRA knob's, raw (the demo's acceleration)
+    LONG    lgRawVrb                                        ' ...the VRB knob's, raw
     LONG    lgSpd
     LONG    lgDir
     LONG    lgEstop
@@ -909,6 +951,11 @@ VAR { logger scratch -- written and read by the logger cog only (keeps its stack
     LONG    lgCmdSpd
     LONG    lgCmdDir
     LONG    lgPath
+    LONG    lgPackMv                                        ' SRC_REV 4: the pack voltage, mV (0 when the sensor reads none)
+    LONG    lgAccSet                                        ' ...the speed-up rate the drive is using, mm/s squared
+    LONG    lgDecSet                                        ' ...the slow-down rate, mm/s squared
+    LONG    lgSwB                                           ' ...swB's position (SST_*): his marker
+    LONG    lgSwC                                           ' ...swC's position (SST_*)
     LONG    lgLastCt                                        ' getct() at the previous sample
     LONG    lgPwr[LOG_SLOTS]
     LONG    lgCi[LOG_SLOTS]
@@ -924,14 +971,16 @@ VAR { logger scratch -- written and read by the logger cog only (keeps its stack
     LONG    lgFol[LOG_SLOTS]
     LONG    lgHs[LOG_SLOTS]
     LONG    lgFlt[LOG_SLOTS]
+    LONG    lgAcc[LOG_SLOTS]                                ' SRC_REV 4: the trajectory generator's acceleration, increment per pass per pass
     LONG    lgLineLen                                       ' bytes in lgLine, excluding its terminator
     BYTE    lgLine[LINE_BUF_BYTES]                          ' the RC-TEL line under assembly
 
 DAT { record text -- hub strings, emitted with zstr_() (DBG-2) }
 
-sFieldsTel      BYTE    "RC-FIELDS,RC-TEL,seq,ms,sig,rt_vt,lt_hz,spd,dir,estop,sticks_off,cmd_spd,cmd_dir,path_pm,late,"
-                BYTE    "l_pwr,l_ci_k,l_fi_k,l_pos,l_tps,l_ma,l_dcs,l_err,l_duty,l_short,l_fol_pct,l_hs,l_flt,"
-                BYTE    "r_pwr,r_ci_k,r_fi_k,r_pos,r_tps,r_ma,r_dcs,r_err,r_duty,r_short,r_fol_pct,r_hs,r_flt", 0
+sFieldsTel      BYTE    "RC-FIELDS,RC-TEL,seq,ms,sig,rt_vt,lt_hz,lt_vt,vra,vrb,spd,dir,estop,sticks_off,cmd_spd,cmd_dir,path_pm,late,"
+                BYTE    "pack_mv,acc_set,dec_set,sw_b,sw_c,"
+                BYTE    "l_pwr,l_ci_k,l_fi_k,l_pos,l_tps,l_ma,l_dcs,l_err,l_duty,l_short,l_fol_pct,l_hs,l_flt,l_acc,"
+                BYTE    "r_pwr,r_ci_k,r_fi_k,r_pos,r_tps,r_ma,r_dcs,r_err,r_duty,r_short,r_fol_pct,r_hs,r_flt,r_acc", 0
 sFieldsEvt      BYTE    "RC-FIELDS,RC-EVT,seq,ms,wheel,kind,value", 0
 #ifdef BENCH_CFG
 sCfgId          BYTE    "BENCH", 0
@@ -967,10 +1016,24 @@ PRI loggerStart()
     debug(zstr_(@sFieldsEvt))
     debug("RC-ENUM,dcs,", udec_(wheels.DCS_Unknown), ",DCS_Unknown,", udec_(wheels.DCS_STOPPED), ",DCS_STOPPED,", udec_(wheels.DCS_SPIN_UP), ",DCS_SPIN_UP,", udec_(wheels.DCS_AT_SPEED), ",DCS_AT_SPEED,", udec_(wheels.DCS_SPIN_DN), ",DCS_SPIN_DN,", udec_(wheels.DCS_SLOW_TO_CHG), ",DCS_SLOW_TO_CHG,", udec_(wheels.DCS_FAULTED), ",DCS_FAULTED,", udec_(wheels.DCS_ESTOP), ",DCS_ESTOP,", udec_(wheels.DCS_RELEASED), ",DCS_RELEASED")
     debug("RC-ENUM,hs,", udec_(wheels.HS_OFF), ",HS_OFF,", udec_(wheels.HS_HOLDING), ",HS_HOLDING,", udec_(wheels.HS_SLIPPED), ",HS_SLIPPED,", udec_(wheels.HS_LIMITED), ",HS_LIMITED")
+    debug("RC-ENUM,sw,", udec_(remoteCtl.SST_OFF), ",SST_OFF,", udec_(remoteCtl.SST_MID), ",SST_MID,", udec_(remoteCtl.SST_ON), ",SST_ON")
+    emitDriveLimits()
     benchLog.cogEventBegin()
     logCogId := cogspin(NEWCOG, logger(), @logStack)
     benchLog.cogEventEnd()
     debug("RC-LOG,started,", zstr_(boolToken(logCogId >= 0)), ",cog,", sdec_(logCogId), ",hz,", udec_(LOG_RATE_HZ), ",free_cogs,", udec_(benchLog.countFreeCogs()))
+
+PRI emitDriveLimits() | pLeftParams, pRightParams
+' RC-DRIVE (SRC_REV 4): each driver's duty ceiling and feed-forward ceiling, read once from its parameter run (hub,
+' after start(): both are loaded at start), so a duty in RC-TEL can be read against the ceiling it runs under.
+'
+' Local Variables:
+' @local pLeftParams - the left driver's parameter run (@offset_fwd), testLeftGetAbiAddrs()
+' @local pRightParams - the right driver's
+
+    _, _, pLeftParams := wheels.testLeftGetAbiAddrs()
+    _, _, pRightParams := wheels.testRightGetAbiAddrs()
+    debug("RC-DRIVE,l_duty_max,", udec_(long[pLeftParams][PAR_DUTY_MAX]), ",r_duty_max,", udec_(long[pRightParams][PAR_DUTY_MAX]), ",l_ff_ceiling,", udec_(long[pLeftParams][PAR_FF_CEILING]), ",r_ff_ceiling,", udec_(long[pRightParams][PAR_FF_CEILING]))
 
 PRI loggerStop() | startMs
 ' Stop the logger cooperatively: command EXIT, wait (bounded) for it to acknowledge from its park, then cogstop it.
@@ -1090,10 +1153,18 @@ PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPc
     lgRawHz := remoteCtl.readChannel(remoteCtl.CTL_LT_JOY_HZ)
     rngMin, rngMax := remoteCtl.chanMinMax(remoteCtl.CTL_LT_JOY_HZ)
     lgDir := map(lgRawHz, rngMin, rngMax, -100, +100)
+    lgRawLtVt := remoteCtl.readChannel(remoteCtl.CTL_LT_JOY_VT)                ' SRC_REV 4: read raw, acted on by nothing
+    lgRawVra := remoteCtl.readChannel(remoteCtl.CTL_VRA)                       '  the demo maps VRA to setAcceleration()
+    lgRawVrb := remoteCtl.readChannel(remoteCtl.CTL_VRB)
     lgEstop := flagDigit(remoteCtl.isSwitchOff(remoteCtl.CTL_SW_D))
     lgIgnore := flagDigit(remoteCtl.isSwitchOn(remoteCtl.CTL_SW_A))
     lgCmdSpd := priorSpeed                                      ' the demo's last command, one long each
     lgCmdDir := priorDirection
+    lgSwB := remoteCtl.readSwitch(remoteCtl.CTL_SW_B)          ' SRC_REV 4: his marker, and swC's position
+    lgSwC := remoteCtl.readSwitch(remoteCtl.CTL_SW_C)
+    lgAccSet := wheels.getAcceleration()                        ' the rates the drive is using, mm/s squared
+    lgDecSet := wheels.getDeceleration()
+    _, lgPackMv := wheels.getPackVoltage()
 
     ' 2. each wheel: the telemetry group first (it carries the gate), then the rest
     lgDuty[SLOT_LEFT], lgErr[SLOT_LEFT], _, _, _, _, lgDcs[SLOT_LEFT], bFault := wheels.testLeftGetTelemetry()
@@ -1113,6 +1184,7 @@ PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPc
     lgMa[SLOT_RIGHT] := nTenthsR / TENTHS_MA_PER_MA
     lgHs[SLOT_LEFT], _, lgHs[SLOT_RIGHT], _ := wheels.getHoldStatus()
     lgPath := wheels.testGetPathScale()
+    lgAcc[SLOT_LEFT], lgAcc[SLOT_RIGHT] := wheels.testGetAccelNow()
 
     ' 3. the rates, and the I3 gate: a wheel whose driver is not running reports dcs 0 and nothing else
     periodTicks := nowCt - lgLastCt
@@ -1130,9 +1202,9 @@ PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPc
         if lgDcs[slotIdx] == wheels.DCS_Unknown
             lgPwr[slotIdx] := lgCi[slotIdx] := lgFi[slotIdx] := lgPos[slotIdx] := lgTps[slotIdx] := 0
             lgMa[slotIdx] := lgErr[slotIdx] := lgDuty[slotIdx] := lgShort[slotIdx] := lgFol[slotIdx] := 0
-            lgHs[slotIdx] := lgFlt[slotIdx] := 0
+            lgHs[slotIdx] := lgFlt[slotIdx] := lgAcc[slotIdx] := 0
 
-    ' 4. one line, built here and sent with ONE zstr_(): a debug() takes at most 31 expressions and RC-TEL carries 39
+    ' 4. one line, built here and sent with ONE zstr_(): a debug() takes at most 31 expressions and RC-TEL carries 49
     logSeq++
     lineBegin(@"RC-TEL")
     lineNum(logSeq)
@@ -1140,6 +1212,9 @@ PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPc
     lineNum(lgSig)
     lineNum(lgRawVt)
     lineNum(lgRawHz)
+    lineNum(lgRawLtVt)
+    lineNum(lgRawVra)
+    lineNum(lgRawVrb)
     lineNum(lgSpd)
     lineNum(lgDir)
     lineNum(lgEstop)
@@ -1148,6 +1223,11 @@ PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPc
     lineNum(lgCmdDir)
     lineNum(lgPath)
     lineNum(logLate)
+    lineNum(lgPackMv)
+    lineNum(lgAccSet)
+    lineNum(lgDecSet)
+    lineNum(lgSwB)
+    lineNum(lgSwC)
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         lineNum(lgPwr[slotIdx])
         lineNum(lgCi[slotIdx])
@@ -1162,6 +1242,7 @@ PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPc
         lineNum(lgFol[slotIdx])
         lineNum(lgHs[slotIdx])
         lineNum(lgFlt[slotIdx])
+        lineNum(lgAcc[slotIdx])
     debug(zstr_(@lgLine))
 
 PRI logEvents() | eKind, nMs, eWheel, nValue, nRead

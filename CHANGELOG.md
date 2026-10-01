@@ -65,6 +65,7 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 - Serial: commands are handled about 1 ms after they arrive; a refused command replies
   `ERROR {cmd} failed: {ERR_NAME} ({code})`, and a parameter that is not a decimal integer is refused
 - Serial: the Python demo sends hold as -1 / 0, and has a wrapper for every command
+- The FlySky demos set deceleration from the VrB knob (1,000 to 3,000 mm/s²) beside acceleration on VrA
 - New documents: [TECHNIQUES.md](TECHNIQUES.md), the
   [6.5″ motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md), and
   [ADDING_MOTOR.md](ADDING_MOTOR.md) rewritten as a characterization procedure

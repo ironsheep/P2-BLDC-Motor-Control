@@ -65,26 +65,26 @@ do the right thing, and then we can call them done without having to test on the
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | The floor's OBSTACLE runs, `floor-obstacle-coast` and `floor-obstacle-short` («#3628»): the wheels driven into an obstacle must latch SR_BLOCKED |
-| PL-150 | The floor run has no cells for the path limiter or the overload hold under load | The floor run (cells built, SRC_REV 58-61); it now also carries HOLDSET/NOTFOL's question (RC F4) |
-| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Wheels-up half CERTIFIED 2026-09-28 (Block A: RAMP-SHAPE, -REVERSE, -UNWIND PASS); remaining: the feel under load on the floor (owner questions all ruled: Q4 → PL-102, Q5 → PL-166, both after 6.0) |
+| PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | **CERTIFIED 2026-09-30 on the floor** (floor-obstacle-short: BLKSTOP PASS, `l_stand,1_143` in 988-1,168, SR_BLOCKED + SR_PARTNER). The coast trial took a lag fault first (Watch, below) |
+| PL-150 | The floor run has no cells for the path limiter or the overload hold under load | 2026-09-30: the overload hold **CERTIFIED** (LDHOLD PASS, 284 ms gap, no fault); the path limiter's "both slow together" (LDPATH) NOMEAS — the hold slowed the wheels to 11 % / 29 %, under the 30-tick minimum. Rerun floor-grab with a lighter hold |
+| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Wheels-up half CERTIFIED 2026-09-28; **the feel under load CERTIFIED 2026-09-30** by Stephen's first FlySky drive: *"very responsive... no clicking, no unusual motor movement or sounds. Its ramps are pretty good."* The FlySky telemetry agrees (smooth speed-ups, stops and a continuous reversal through zero). The schedule spins' SPINSTRT / SPINPEAK remain for the rerun |
 
 **Awaits certification** (fix built, not yet run)
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-93 | After a fault and recovery, the next drive drew 3-4x current | The loaded floor run |
-| PL-95 | The drive ran saturated above mid-range and still reported AT_SPEED | The kick (PL-87) and the loaded floor run |
-| PL-111 | A serial host could not clear a protective stop | A provoked protective stop (PL-106) |
-| PL-132 | The blocked-wheel stop shorted the phases even under coast | The floor run |
-| PL-144 | The two-wheel path limiter cycled the platform between crawl and full | The floor run (R21-DUAL-LDPATH-P): PATH-HUNT's precondition, a wheel falling behind, never arises wheels up (RC pass NOMEAS, as pass 7) |
-| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | 2026-09-30 Rev A run: the every-frame defect ABSENT (407 of 220,000 frames); cells NOMEAS; the residual reaches only TEST USE limits (ancillary). Stephen decides whether anything further is chased |
+| PL-93 | After a fault and recovery, the next drive drew 3-4x current | floor-faultrun rerun: the 2026-09-30 run never requested its fault (the harness's stop-begun test, H1 of FLOOR-VISIT-EVALUATION.md) |
+| PL-95 | The drive ran saturated above mid-range and still reported AT_SPEED | **CERTIFIED 2026-09-30**: HELDATSPD 0 bad over every OBSTACLE drive and the GRAB window (443 + 547 + 254 samples); the kick certified at the RC pass |
+| PL-111 | A serial host could not clear a protective stop | API half **CERTIFIED 2026-09-30** (PROTCLR PASS: refused, `clearEmergency()` held, `clearProtectiveStop()` cleared, next drive taken); the serial half is not in this release |
+| PL-132 | The blocked-wheel stop shorted the phases even under coast | Control **PASS** 2026-09-30 (BLKSHORT 14 mV both); the COAST cell NOMEAS — a lag fault pre-empted the latch. Rerun floor-obstacle-coast |
+| PL-144 | The two-wheel path limiter cycled the platform between crawl and full | 2026-09-30: LDHUNT **FAIL, 3 of 1** — two engages in the free start-up (released in 0.6-0.7 s), one held through the hold; no cycling under the hold. The cell counted the whole lifetime (harness scope, H3). Rerun floor-grab with LDHUNT judging transitions inside the hold's window || PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | 2026-09-30 Rev A run: the every-frame defect ABSENT (407 of 220,000 frames); cells NOMEAS; the residual reaches only TEST USE limits (ancillary). Stephen decides whether anything further is chased |
 
 **Watch**
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
 | PL-120 | The right board's high side sometimes delivers no voltage; the start check refuses it correctly | Pass 7 times its recovery; evidence so far points at the board, not the driver |
+| PL-106 (coast) | 2026-09-30 coast trial: the RIGHT wheel took a lag fault (FC_LAG) against the obstacle 0.65 s into the LEFT's stand, before the latch | Rerun floor-obstacle-coast with both wheels' lag in the trace (H2); if it recurs, root-cause the lag past the hold at the desk |
 
 Ancillary, recorded but not chased for 6.0: PL-7, PL-12, PL-16, PL-19, PL-20, PL-21, PL-23, PL-27, PL-31, PL-37,
 PL-43, PL-44, PL-46, PL-53, PL-54, PL-60, PL-63, PL-64, PL-65, PL-67, PL-68, PL-71, PL-96, PL-97, PL-98, PL-102,
@@ -1016,7 +1016,8 @@ a review before its first run, not a slot before a bench session.
 
 ### PL-95 -- the drive does not integrate hall and current: above mid-range it runs saturated, field parked, and calls it AT_SPEED
 
-> **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: the kick (PL-87) and the floor run remain.
+> **6.0 status (2026-09-30):** ✅ CERTIFIED — the kick at the RC pass; on the floor, R21-DUAL-HELDATSPD-P 0 bad over
+> every OBSTACLE drive and the GRAB window (443 + 547 + 254 samples; FLOOR-VISIT-EVALUATION.md §3-§4).
 
 > ## THE INSTRUMENT HALF IS LANDED 2026-09-20 («#3580» R18.1); THE DRIVE IS UNCHANGED
 >
@@ -1167,7 +1168,8 @@ AT_SPEED while the field is parked.
 
 ### PL-93 -- after a real fault and a successful recovery, the next drive-up draws 3-4x current and aborts
 
-> **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: the loaded case needs the floor run.
+> **6.0 status (2026-09-30):** AWAITS CERT — the floor run's fault was never requested (harness H1,
+> `DOCs/analyses/bench/2026-09-30/floor/FLOOR-VISIT-EVALUATION.md` §2); floor-faultrun reruns after the fix.
 
 **Found 2026-09-19 at Visit 6a.** A new defect class, and it was unreachable until this visit: the
 fault provocation had never actually faulted before (PL-86), so nothing downstream of a real fault had
@@ -1449,7 +1451,9 @@ it:** a sub-sector angle -- hall-timing interpolation or back-EMF -- against whi
 
 ### PL-106 -- the blocked-motor protective stop cannot be provoked on a lifted rig, so no driver change to it is certified
 
-> **6.0 status (2026-09-26 audit):** RELEASE — the protective stop (and SR_BLOCKED) has never been measured on a blocked wheel; it fired once on a dead bridge (2026-09-24, before DRIVER_REV 20). (2026-09-30) The blocked-wheel cells are the floor's OBSTACLE runs, `floor-obstacle-coast` and `floor-obstacle-short` («#3628», run at «#3634»).
+> **6.0 status (2026-09-30):** ✅ CERTIFIED on the floor — floor-obstacle-short latched SR_BLOCKED after the LEFT stood
+> 1,143 ms (band 988-1,168), the RIGHT SR_PARTNER (R21-DUAL-BLKSTOP-P PASS; FLOOR-VISIT-EVALUATION.md §3). Watch: the coast
+> trial took a lag fault (FC_LAG, RIGHT) 0.65 s into the stand, before the latch; rerun with both wheels' lag traced.
 
 **Found 2026-09-22 at Visit 8** ([evaluation](analyses/bench/2026-09-22/VISIT-8-EVALUATION.md) §3.4, F-3).
 `R16-DUAL-BLOCKED-D` has read NOMEAS (`why,NOT_BLOCKED`) in **every** part-D log on record: 2026-09-17 twice,
@@ -1540,7 +1544,8 @@ not a battery one.
 
 ### PL-111 -- a serial host cannot clear a protective stop
 
-> **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: needs a provoked protective stop (PL-106).
+> **6.0 status (2026-09-30):** ✅ API half CERTIFIED — R21-DUAL-PROTCLR-P PASS on floor-obstacle-short (refused −2,001;
+> `clearEmergency()` held; `clearProtectiveStop()` 0; the next drive taken). The serial half is not in this release.
 
 **Found 2026-09-23 in «#3515»**, writing the serial interface table from `src/isp_steering_serial.spin2`.
 
@@ -1814,7 +1819,8 @@ observation, makes it actionable. Owner: each visit's log analysis (now «#3634�
 
 ### PL-132 -- the blocked-wheel protective stop shorts the phases even when the user chose coast
 
-> **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: the floor run.
+> **6.0 status (2026-09-30):** AWAITS CERT — the control PASSed (BLKSHORT 14 mV both, bridge SHORT); the COAST cell is
+> NOMEAS, a lag fault having pre-empted the latch. Rerun floor-obstacle-coast.
 
 **Found 2026-09-23** as fault study F-5, and **filed 2026-09-25** («#3609» phase 3). `frontProtectiveStop()` secures
 the motor with `frontEStop(TRUE)`. The PASM e-stop takes `.shortBridge` "whatever the stop mode"
@@ -1944,7 +1950,11 @@ rotor rocking inside one hall sector — never from these readings.
 
 ### PL-144 -- the path limiter hunts: a wheel that cannot sustain its command cycles the platform between 8 % and 100 %
 
-> **6.0 status (2026-09-26 audit):** AWAITS CERT — fix built, not yet run: pass 7 dual-d PATH-HUNT = 1.
+> **6.0 status (2026-09-30):** AWAITS CERT — floor R21-DUAL-LDHUNT-P **FAIL, 3 engages of 1**: two in the free start-up
+> (LEFT 713 ‰ released after 0.57 s, RIGHT 771 ‰ after 0.71 s), then one held through the hold to the stop; no cycling under
+> the hold. The cell counted the whole lifetime, a scope written for wheels-up starts that never engage (harness H3:
+> it now counts the limiter's transitions inside the judged window, PASS 0 with the limiter engaged -- the pre-fix
+> cycling gives >= 3 in 2.5 s; the start-up engages still printed). Rerun floor-grab.
 
 **Found 2026-09-26** at Visit 10 pass 6 ([evaluation](analyses/bench/2026-09-26/VISIT-10-PASS6-EVALUATION.md) §5).
 - **MEASURED** (`dual-d`, BLOCK step at a 1 A limit, the left weaker than the right): five cycles in 4 s.
@@ -2095,7 +2105,9 @@ joins.
 
 ### PL-150 -- the floor run has no cells for two load-dependent 6.0 claims
 
-> **6.0 status (2026-09-26 audit):** RELEASE — the claims are certified wheels-up only.
+> **6.0 status (2026-09-30):** RELEASE — the overload hold ✅ CERTIFIED on the floor (R21-DUAL-LDHOLD-P PASS, longest
+> tick gap 284 ms, no fault); "both slow together" (R21-DUAL-LDPATH-P) NOMEAS: the hold slowed the wheels to 11 % / 29 %,
+> 20 ticks against the 30 the cell needs. Rerun floor-grab with a lighter hold.
 
 **Found 2026-09-26** by the release audit. The floor run's sheet (`VISIT-6B-FLOOR-RUNSHEET.md`, «#3576») carries
 SPINSTOP, SPINSTRT, SPINPEAK, SPINSYM, SPINCTL, SPINLEAD, SPINPLAT and the CREEP cells. It carries nothing for:
@@ -2153,7 +2165,9 @@ measured speed right now"*); `getPower()` reports what was commanded.
 
 ### PL-160 -- a user cannot shape the ramp for their robot: deceleration is fixed, settings are lost on start(), and every ramp starts and ends with a torque step
 
-> **6.0 status (2026-09-26 audit):** RELEASE — found by Stephen reviewing the acceleration API.
+> **6.0 status (2026-09-30):** RELEASE — wheels-up half certified 2026-09-28; the feel under load ✅ CERTIFIED by
+> Stephen's first FlySky drive (*"very responsive... no clicking, no unusual motor movement or sounds. Its ramps are
+> pretty good."*), which the telemetry agrees with. SPINSTRT / SPINPEAK on the schedule spins remain (rerun).
 
 **Found 2026-09-26.** `setAcceleration(rate)` sets only speeding up. Every slow-down and stop runs at a fixed
 `ramp_down` of about 1,470 mm/s², which only the raw `setRampingValues()` can change. `start()` discards the setting

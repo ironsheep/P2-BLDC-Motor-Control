@@ -161,6 +161,7 @@ The R/C demo uses the following controls:
 | SwD            | Emergency Cutoff: Up - disabled, Down - Immediately stop motors! Moving it back Up releases the emergency stop and any protective stop (a blocked wheel) |
 |                | **KNOBS**                                                                                                                 |
 | VrA            | Acceleration: the knob's travel sets `setAcceleration()` from 200 to 3000 mm/s^2                                          |
+| VrB            | Deceleration: the knob's travel sets `setDeceleration()` from 1000 to 3000 mm/s^2 (from full speed, about 2 m to stop at the gentle end) |
 |                | **JOYSTICKS**                                                                                                             |
 | Left Joystick  | Steering: Left - turn to left (slow left motor), Right - turn to right (slow down right motor)                            |
 | Right Joystick | Speed: Up - go forward, Down - go backward (speed controlled by joystick center is stopped, at extremes is fastest)       |

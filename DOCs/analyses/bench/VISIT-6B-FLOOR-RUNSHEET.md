@@ -10,6 +10,45 @@ terminal prints a `LEAD-IN` line and **nothing moves for 10 seconds**. Every flo
 
 ---
 
+## ⭐ THE HANDS-OFF RERUN (after the 2026-09-30 visit) — do this, and only this
+
+**Five commands, one per setup. Four need nothing from you but the setup and standing by; one (the grab) needs your
+hand.** Every command starts with the 10 s lead-in; the floor ones print a few progress lines and end with one
+`RESULT:` line. Why each check is rerun: `DOCs/analyses/bench/2026-09-30/floor/FLOOR-VISIT-EVALUATION.md`.
+
+**The square and the start point (all floor runs).** A clear 2 m × 2 m square on a hard floor. **The start point:** the
+platform's wheel axle about **0.5 m in from one edge, centred on it, facing across the square**, tether slack from above
+the centre. The program estimates where the platform is from its wheels and refuses any straight drive that would take
+it outside the square (a `FENCE:` line says so). It assumes the platform is about 0.5 m long; if yours is longer, start
+it that much further in. Every session ends back at (or near) the start point.
+
+| # | Setup | Command | What happens | You |
+|---|---|---|---|---|
+| 1 | **Rev A platform**, bench, wheels up | `tools/bench-run.sh t0-reva` | about 50 s: both motors start (if a side is refused, the lines after the FINDING show what each lead read); each wheel turns slowly twice, then **speeds up hard once** and stops | **before it:** check the LEFT motor's leads are seated and continuous. Then hands off |
+| 2 | **Rev B, the square, at the start point** | `tools/bench-run.sh floor-auto` | about 3 min in three parts. **(1) Ten spins in place**, one turn each, clockwise then counter-clockwise in pairs, slow to fast. **(2) The fault run:** 1 m forward; `STAND CLEAR` (5 s); back, and a second later the LEFT wheel is faulted on purpose, both wheels stop within half a second; it recovers; `STAND CLEAR` (5 s); it drives on to the start. **(3) Four ramp legs**, 1 m out and back twice, each at a different speed-up and slow-down setting (the first speeds up very gently, about 2 s) | reset it to the start point; stand outside the square |
+| 3 | **Rev B, the square, at the start point, a fixed object (a box, a wall) 0.3–0.8 m straight ahead** that cannot move | `tools/bench-run.sh floor-obstacle` | about 50 s: it creeps forward into the object and **stops itself about a second after it is blocked** (the wheels then roll freely); checks; `STAND CLEAR` (5 s); it drives back to the start. Then the same again, but after it stops the wheels are held braked; checks; back to the start | place the object; stand clear |
+| 4 | **Rev B, the square, at the start point** | `tools/bench-run.sh floor-grab` | it drives 1 m straight at a slow walk and stops itself at 1 m | **about 3 s after it starts rolling, take hold of its LEFT side and hold steadily until it stops: slow it to about half speed, NOT nearly to a stop** (last time the hold slowed it to about a tenth, too firm to judge) |
+| 5 | optional: **Rev B, floor** | `tools/bench-run.sh floor-rc` | your FlySky drive | drive it. **VRA** sets the speed-up (200–3,000 mm/s²), **VRB** the slow-down (1,000–3,000; at the gentle end a stop from full speed rolls about 2 m): try each end of each. **Flip swB whenever anything feels or sounds odd**; the log records the moment |
+
+**The RESULT lines to expect:**
+- `floor-auto`: `RESULT: AUTO SESSION -- spins: 10 of 10 ended at their turn limit; fault run: fault seen and recovered:
+  the drive on to the start drew normal current; ramp legs: 4 of 4 ran to their limit; the platform ended at x …, y …,
+  heading … from where it began`.
+- `floor-obstacle`: `RESULT: OBSTACLE SESSION -- COAST: the platform stopped itself on the obstacle (the protective stop
+  latched), then drove back to its start; BRAKE: …`.
+- `floor-grab`: `RESULT: GRAB -- judged: the hold was read`. If it says `too firm`, `stalled` or `too light`, rerun it
+  as it says.
+- Anything that did not run says so in plain words; a `SKIPPED:` line means a straight drive was not made because the
+  platform's position was not known.
+
+**Banners:** `t0-reva` `src_rev 30`; `floor-*` `BM-BANNER,...,src_rev,70,fmt,45,...`; `floor-rc`
+`RC-BANNER,...,src_rev,4,fmt,2,...`. **A stop is yours:** lift the wheels and disconnect the battery. Send back the
+logs, and any notes on how the FlySky ramps felt.
+
+The sections below describe the first visit's single-action commands, kept for a targeted rerun of one action.
+
+---
+
 ## 1. Get the tests onto the Pi
 
 Use one of these, not both.
@@ -24,9 +63,9 @@ Use one of these, not both.
 
 | Test | The banner line must read |
 |---|---|
-| `t0-reva` | `* test_bench_t0 -- T0-27 Rev A fold-back, Rev A platform: ... -- src_rev 29` |
-| every `floor-*` except `floor-rc` | `BM-BANNER,...,src_rev,69,fmt,43,part,SPIN,...,action,<the action>`; `BM-PLAN` lists that one action only |
-| `floor-rc` | `RC-BANNER,...,src_rev,3,...` |
+| `t0-reva` | `* test_bench_t0 -- T0-27 Rev A fold-back, Rev A platform: ... -- src_rev 30` (the first visit ran 29) |
+| every `floor-*` except `floor-rc` | `BM-BANNER,...,src_rev,70,fmt,45,part,SPIN,...,action,<the action>` (the first visit ran 69 / 43); `BM-PLAN` lists that one action only |
+| `floor-rc` | `RC-BANNER,...,src_rev,4,fmt,2,...` (the first visit ran 3 / 1) |
 
 An older number means an old tree or pack: stop and tell me.
 
@@ -36,7 +75,7 @@ An older number means an old tree or pack: stop and tell me.
 |---|---|
 | **Purpose** | **Certification** on the release-candidate driver (DRIVER_REV 46): the Rev A current fold-back (Rev A platform, wheels up), then every claim that needs a load (Rev B platform, on the floor), then your drive of the new ramps with the FlySky |
 | **Hardware risk** | Rev A: wheels up, current limited to 2 A, power 20 at most. Floor: **wheels down, you present.** Every drive is armed with its own limit before it moves: straight drives at most 1 m, spins at most one platform turn; the program stops any drive 35 mm (6 hall ticks) past its limit; the 10 A abort applies. Speeds: a slow walk (0.16–0.23 m/s) and spins up to a quarter of full speed. **There is no stop button: to stop a run, lift the wheels and disconnect the battery.** |
-| **Who acts** | You. Rev A: one grip. Floor: you are (or place) the obstacle, you hold the platform back in `floor-grab`, you put the platform back by hand between runs, and you drive `floor-rc` |
+| **Who acts** | You, as little as possible. Rev A: nothing (after the lead check). Floor, the rerun: you set each scene and stand by; you hold the platform back in `floor-grab`, and you drive `floor-rc` |
 | **Runs that carry state** | None. Each run starts and stops its own motors; a changed setting is restored before its run ends |
 | **Run length** | About 50 s for Rev A; 20–65 s for each floor run, with the terminal's start and load before it; `floor-rc` as long as you drive. With set-up between runs, about 30–40 minutes for the day |
 | **Repeatability** | Every run is repeatable and independent: rerun any command whenever its result line says to, or whenever you want |
@@ -55,15 +94,13 @@ tools/bench-run.sh t0-reva
 | From Enter | What happens | What you do |
 |---|---|---|
 | a few seconds | the terminal starts and loads the program; its first lines are records | nothing |
-| 10 s | `LEAD-IN` line: nothing moves | stand where you can reach the **RIGHT** tyre |
-| ~3 s | both motors start (a faint pulse, nothing turns); it prints which board each side read | nothing. If a side prints **FINDING**, it did not read as Rev A and is not driven: note it |
-| ~16 s | the **LEFT** wheel turns slowly, stops, turns more slowly, stops | nothing |
-| ~14 s | the **RIGHT** wheel does the same, but its second slow turn **does not stop: it speeds up**, and the terminal says **GRIP** | **grip the RIGHT tyre firmly at once, and keep holding** (it may slow or stop against your hand; that is expected) |
-| ~7 s | the program stops the wheel and says to let go | let go |
+| 10 s | `LEAD-IN` line: nothing moves | stand clear of the wheels |
+| ~3 s | both motors start (a faint pulse, nothing turns); it prints which board each side read, and what each motor lead read | nothing. If a side prints **FINDING**, its start check refused it and it is not driven: note it |
+| ~20 s | the **LEFT** wheel turns slowly, stops, turns more slowly, stops, then **speeds up hard once** and stops | nothing |
+| ~20 s | the **RIGHT** wheel does the same | nothing |
 
 **It decides:** the Rev A fold-back no longer cuts the drive on an unloaded wheel (the four slow turns), and it still
-cuts in under your grip. If your grip came late or was light, the log says so and I will tell you; you do not need to
-judge it.
+cuts in when a hard speed-up loads it. You do nothing; the log carries both.
 
 Then: battery off, the Rev B platform onto the floor.
 

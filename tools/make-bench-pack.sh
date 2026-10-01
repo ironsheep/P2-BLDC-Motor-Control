@@ -9,8 +9,10 @@
 # Usage:  tools/make-bench-pack.sh [<tier> ...]
 #
 #   <tier>  bench tiers to include, by the names tools/bench-run.sh knows. With none, the next visit's set: the
-#           window-free visit's t0-reva, the fourteen floor-* single-action tiers and floor-rc (STEPHEN 2026-09-30, R9:
-#           "I have no reason why you'd carry anything that's done in the pack").
+#           hands-off rerun after FLOOR-VISIT-EVALUATION.md (2026-09-30; Plan A section 10) -- one command per physical
+#           setup: t0-reva (Rev A, bench), floor-auto (spins, fault run, ramp legs), floor-obstacle (coast and brake
+#           trials), floor-grab (the one attended load) and floor-rc (STEPHEN 2026-09-30, R9: "I have no reason why you'd
+#           carry anything that's done in the pack"; R15: several checks per command when none needs him).
 #
 # Builds from the COMMITTED tree (git archive of HEAD), never the working directory, so the zip is exactly a commit.
 # Each tier is compiled by that tree's own tools/bench-run.sh (BENCH_PACK_DIR mode): the same one -l -d compile, with
@@ -37,12 +39,7 @@ cd "$ROOT"
 run() { echo "+ $*"; "$@"; }
 
 TIERS=("$@")
-[ ${#TIERS[@]} -eq 0 ] && TIERS=(t0-reva
-    floor-obstacle-coast floor-obstacle-short floor-grab floor-faultrun
-    floor-spin-slow-left floor-spin-slow-right floor-spin-med-left floor-spin-med-right
-    floor-spin-fast-left floor-spin-fast-right floor-spin-legacy-left floor-spin-legacy-right
-    floor-spin-fixed-left floor-spin-fixed-right
-    floor-rc)
+[ ${#TIERS[@]} -eq 0 ] && TIERS=(t0-reva floor-auto floor-obstacle floor-grab floor-rc)
 
 REF="${BENCH_PACK_REF:-HEAD}"                             # a commit other than HEAD: for testing this script only
 if [ "$REF" = "HEAD" ] && ! git diff --quiet HEAD -- src tools; then
