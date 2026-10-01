@@ -78,7 +78,7 @@ characterisation plan takes up the scan.
 - **After v6.0.0:** PL-102 (a "following" getter), PL-164 (clock range), PL-165 (the DEBUG footprint measure), PL-166
   (the inertia term).
 - **Moved here from the task board at 6.1.0 start (2026-10-01)**, so the board carries only the sprint's work:
-  PL-173 (external measurement front end), PL-174 (vibration study), PL-175 (N-motor shape), PL-176 (motor-adoption
+  PL-174 (vibration study), PL-175 (N-motor shape), PL-176 (motor-adoption
   tool), PL-177 (back-EMF delta release).
 
 **Ships as a Known Issue:** PL-118 (phase-short braking is not current-limited; ruling 1 A).
@@ -86,7 +86,7 @@ characterisation plan takes up the scan.
 **Watch** — each run carries what would make it actionable, at no extra load: PL-43 and PL-126 (silent stops, one
 instance each since the supply repair), PL-120 (the right board's high side; no refusal in the 69 Rev B program loads
 logged since 2026-09-27, 35 of them naming the right wheel, after the 2026-09-26 header reseat), PL-136 (the PREFLT diagnostics, which certify themselves on a wheel's first failure), PL-139
-(the at-rest band, crossed once on each board), PL-171 (loader checksum refusals on the Pi).
+(the at-rest band, crossed once on each board).
 
 **Ancillary, recorded and not chased:** PL-60, PL-63, PL-103, PL-105, PL-108, PL-109, PL-110, PL-119, PL-135, PL-170.
 
@@ -1782,18 +1782,6 @@ fold therefore acts on noise, about 75 frames a second, and the LEFT board's pow
 - **Two harness gaps:** `t0vStart()` reports a refused start's board as `REV_Unknown`, so a start-check refusal reads as
   "not REV_A"; the hold record prints no stop reason.
 
-### PL-173 -- an external measurement front end for the bench (ACS758, bus divider, FET NTC)
-
-> **Status (2026-10-01):** DEFERRED by Stephen's rulings; moved here from task «#3506» at 6.1.0 start (the board carries
-> only the sprint's work). STEPHEN 2026-09-14: *"we are not doing any external measurement that was a plan left behind
-> for the moment we are not going forward with that for now"*; 2026-09-17: *"no those three are not in"*. Do not design
-> other work around it: every current reading comes from the driver's own calibrated sense channel (150 mV/A).
-
-**What it was (kept so it can be revived):** an ACS758 Hall current sensor in one board's positive lead, a bus-voltage
-divider and a FET NTC on P50-P52, with clamps -- for regen visibility, a thermal record and a current trace through a
-fault. BOM and placement: `DOCs/plans/archive/BENCH-READINESS-SPRINT-PLAN.md` §2A. It is also the only way to measure a
-phase short's current (PL-118).
-
 ### PL-174 -- STUDY: characterise the vibration seen at some speeds
 
 > **Status (2026-10-01):** DEFERRED; moved here from task «#3532» at 6.1.0 start. Starts when Stephen calls it and the
@@ -1863,23 +1851,14 @@ works on where the held field sits at the limit; if it lands, it changes this en
 The gate itself (`tools/check_style.sh` without `--self-test`) is unaffected. **Fix:** a `T128.spin2` fixture on which
 T128 fires, and only T128.
 
-### PL-171 -- four program loads in two floor visits failed the loader's checksum on the Pi
-
-> **Status (2026-10-01):** WATCH. Filed from the floor rerun's findings register (N15), where it was recorded but never
-> carried here.
-
-**MEASURED** (`analyses/bench/2026-09-30/floor2/FLOOR-RERUN-EVALUATION.md` §0 and §8 N15): two loads failed the loader's
-checksum and were refused before running (`floor-auto` 18:17:48, `floor-rc` 18:26:26); each rerun loaded clean. With
-the first floor visit's two, that is four refused loads in two visits, all on the Pi. The loader caught every one, so no
-corrupted image ran.
-
-**What it costs:** a rerun each time, at the bench. **What would make it actionable:** a refusal rate that grows, or a
-refusal the rerun does not clear. The tools are Stephen's and are presumed correct (overlay P7); if it is chased, the
-first question is the Pi's USB path, not the loader.
-
 ---
 
 ## Removed from this list
+
+**Killed by Stephen, 2026-10-01** (*"if we are not doing something by decision why put it in punch list? kill PL173,
+PL171."*): **PL-173**, the external measurement front end (decided against 2026-09-14; its design stays in
+`DOCs/plans/archive/BENCH-READINESS-SPRINT-PLAN.md` §2A), and **PL-171**, the watch on the Pi's loader checksum refusals.
+Neither is raised again; their numbers are not reused.
 
 **Legacy sync scripts** (`src/chk`, `src/get`, `scripts/get`, `scripts/getKS`,
 `scripts/diffSrc`). Tracked here briefly on 2026-09-09, then removed at
