@@ -325,6 +325,9 @@
 ''               T0-27,begin loses power_hold and grip_lead_ms, gains power_kick, kick_win_ms, kick_mean_mv and
 ''               pos_rate_x100; T0-27,hold / holdsense become T0-27,kick / kicksense (rate_x100, ref_x100,
 ''               net_mean_mv, driven_ms, stop_reason; no duty_gate, fold_ramp or grip fields).
+''               01 Oct 2026 -- SRC_REV 31: booleans print as words (PL-23). T0-20's rev_b and the T0-24 try row's
+''               in_band, band_entered, shorted and estop_latched print TRUE/FALSE; its measured prints TRUE, FALSE or
+''               CUT (a DONE / ABORT cut the try).
 ''
 '' =================================================================================================
 
@@ -446,7 +449,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 30                                     ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 31                                     ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -994,7 +997,7 @@ CON { stop-state hand test (T0-24, -D T0_STOPMODE only) }
     T0_24_TRY_ENTERED   = 7                                     ' a span reached the band (a coast) rather than stopping inside one
     T0_24_TRY_SHORTED   = 8                                     ' the e-stop row applied emergencyCutoff() at the band
     T0_24_TRY_LATCHED   = 9                                     ' isEmergency() after the try
-    T0_24_TRY_MEASURED  = 10                                    ' 1 a reading, 0 not, T0_24_TRY_CUT when DONE / ABORT cut it
+    T0_24_TRY_MEASURED  = 10                                    ' 1 a reading, 0 not, T0_24_TRY_CUT when DONE / ABORT cut it (printed TRUE / FALSE / CUT)
     T0_24_TRY_CUT       = 2
 
 ' A hold row's 10 ms samples, buffered in a ring by the measure cog and printed by cog 0 after the step
@@ -2819,7 +2822,7 @@ PRI testT0_20() | baseIdx, pinBase, pMotorTok, startResult, sampleIdx, ampsSum, 
                 ampsSum += amps
             meanAmps := ampsSum / REST_SAMPLES
             pVerdict := ((meanAmps >= SF_REST_LO) and (meanAmps <= SF_REST_HI)) ? @"PASS" : @"FAIL"
-            debug("T0-20,base,", udec_(pinBase), ",mean_amps_x10k,", sdec_(meanAmps), ",rev_b,", sdec_(motor.getBoardType() == motor.REV_B))
+            debug("T0-20,base,", udec_(pinBase), ",mean_amps_x10k,", sdec_(meanAmps), ",rev_b,", zstr_((motor.getBoardType() == motor.REV_B) ? @"TRUE" : @"FALSE"))
             ' the band is derived for Rev B only (see SF_REST_LO): any other board is NOMEAS, never a false FAIL
             emitCellNum(@"R16-T0-RESTZERO", @"3556", pMotorTok, @"REST_AMPS_X10K", motor.getBoardType() == motor.REV_B, meanAmps, SF_REST_LO, SF_REST_HI, @"AMPS_X10K", REST_SAMPLES, pVerdict)
         else
@@ -6514,7 +6517,8 @@ PRI t0sPrintRow(rowIdx, seqNum, runNum) | tryIdx, pTry, sampleIdx, firstIdx, pSa
                 keptCount := t0wTryCount <# T0_24_TRY_MAX
                 repeat tryIdx from 0 to keptCount - 1
                     pTry := @t0wTries[tryIdx * T0_24_TRY_LONGS]
-                    debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",try,", udec_(tryIdx + 1), ",hand_ticks,", udec_(long[pTry][T0_24_TRY_HAND]), ",release_span_ms,", udec_(long[pTry][T0_24_TRY_SPAN]), ",after_ticks,", udec_(long[pTry][T0_24_TRY_AFTER]), ",after_ms,", udec_(long[pTry][T0_24_TRY_AFTER_MS]), ",band_ticks,", udec_(long[pTry][T0_24_TRY_BAND]), ",band_ms,", udec_(long[pTry][T0_24_TRY_BAND_MS]), ",in_band,", udec_(long[pTry][T0_24_TRY_IN_BAND]), ",band_entered,", udec_(long[pTry][T0_24_TRY_ENTERED]), ",shorted,", udec_(long[pTry][T0_24_TRY_SHORTED]), ",estop_latched,", udec_(long[pTry][T0_24_TRY_LATCHED]), ",measured,", udec_(long[pTry][T0_24_TRY_MEASURED]))
+                    ' worst case 260 bytes: 150 of labels, row and try <= 2 digits, run < 1_000, six counts at 13, the flags 5 each
+                    debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",try,", udec_(tryIdx + 1), ",hand_ticks,", udec_(long[pTry][T0_24_TRY_HAND]), ",release_span_ms,", udec_(long[pTry][T0_24_TRY_SPAN]), ",after_ticks,", udec_(long[pTry][T0_24_TRY_AFTER]), ",after_ms,", udec_(long[pTry][T0_24_TRY_AFTER_MS]), ",band_ticks,", udec_(long[pTry][T0_24_TRY_BAND]), ",band_ms,", udec_(long[pTry][T0_24_TRY_BAND_MS]), ",in_band,", zstr_(long[pTry][T0_24_TRY_IN_BAND] ? @"TRUE" : @"FALSE"), ",band_entered,", zstr_(long[pTry][T0_24_TRY_ENTERED] ? @"TRUE" : @"FALSE"), ",shorted,", zstr_(long[pTry][T0_24_TRY_SHORTED] ? @"TRUE" : @"FALSE"), ",estop_latched,", zstr_(long[pTry][T0_24_TRY_LATCHED] ? @"TRUE" : @"FALSE"), ",measured,", zstr_((long[pTry][T0_24_TRY_MEASURED] == T0_24_TRY_CUT) ? @"CUT" : (long[pTry][T0_24_TRY_MEASURED] ? @"TRUE" : @"FALSE")))
                 debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",tries,", udec_(t0wTryCount), ",printed,", udec_(keptCount))
             debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",set_up,TRUE,hand_ticks,", udec_(t0sHandTicks[rowIdx]), ",after_ticks,", udec_(t0sAfterTicks[rowIdx]), ",after_ms,", udec_(t0sAfterMs[rowIdx]), ",band_ticks,", udec_(t0sBandTicks[rowIdx]), ",band_ms,", udec_(t0sBandMs[rowIdx]), ",in_band,", zstr_(bT0sInBand[rowIdx] ? @"TRUE" : @"FALSE"), ",release_span_ms,", udec_(t0sReleaseSpan[rowIdx]), ",still_faulted,", zstr_(bT0sStillFaulted[rowIdx] ? @"TRUE" : @"FALSE"), ",protective,", sdec_(t0wProtCode), ",measured,", zstr_(bT0sRowMeasured[rowIdx] ? @"TRUE" : @"FALSE"))
 

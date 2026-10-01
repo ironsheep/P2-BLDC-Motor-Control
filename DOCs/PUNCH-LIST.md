@@ -51,7 +51,7 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 | --- | --- | --- |
 | PL-12 | The style gate's C4 check can flag a PRI code line carrying a trailing `''` | DONE 2026-10-01 (also A4, A5) |
 | PL-172 | The style gate's `--self-test` fails: check T128 has no fixture | DONE 2026-10-01 |
-| PL-23 | Booleans print as numbers in two places still: `test_bench_spin` and `testGetResults()`'s fault flag | Print the word; return TRUE/FALSE |
+| PL-23 | Booleans print as numbers in two places still: `test_bench_spin` and `testGetResults()`'s fault flag | FIXED IN THE TREE 2026-10-01; the next `t0` log shows it |
 | PL-37 | Five panel bitmaps and their generator outlived the panel | Delete them (no consumer in the tree, checked 2026-10-01); the note two other generators point at moves with them. Supersedes the 2026-09-14 "leave them for now" |
 | PL-169 | The FlySky demos re-send the acceleration setting on knob noise | A deadband on both knobs |
 
@@ -171,10 +171,13 @@ or report the sense fields as `NOMEAS` when no cog is running.
 
 ### PL-23 -- bench binaries print booleans as numbers
 
-> **Status (2026-10-01):** IN 6.1.0, a simple fix (STEPHEN 2026-10-01). The sites table below is aged: the `char`,
-> `t0` and `detect` sites were reworked since. Still printing a number on 2026-10-01: `test_bench_spin.spin2:125`
-> (`udec_(okL <> 0)`), `testGetResults()`'s `bDidFault` (the raw `fault` long), and 0/1 `measured` fields such as
-> `test_bench_t0.spin2:7620`. The fix sweeps the tree for the class, not only these.
+> **Status (2026-10-01): FIXED IN THE TREE** («#3647»); the run-time half is the next `t0` log printing `rev_b` as a
+> word (formatting only, no dedicated cell). Fixed: `test_bench_spin`'s SP-READY and SP-PHASE fault fields;
+> `test_bench_t0`'s T0-20 `rev_b` and the T0-24 try row (four flags as TRUE/FALSE, `measured` as TRUE/FALSE/CUT,
+> worst case 260 bytes); `testGetResults()` now returns TRUE/FALSE and its six print sites print the word. The class
+> sweep over `src/` found two more, both fixed: the driver's wiring-walk line (`isp_bldc_motor`) and the steering
+> object's platform-fault line. The `test_bench_t0` 0/1 count at the `n` field stays a count. The sites table below
+> is history.
 >
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench record formatting)
 
