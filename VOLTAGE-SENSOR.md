@@ -1,9 +1,5 @@
 # P2-BLDC-Motor-Control - Adding a battery voltage sensor
 
-> **DRAFT, 2026-09-23.** These are the values and construction notes for a sensor that has not been built
-> yet. The driver does not read it yet either: that support is being added and this page will say when it
-> lands. Build it now if you like; until then it only reads on a meter.
-
 This page shows how to build a small voltage sensor, so the P2 can read your robot's battery pack voltage on
 one pin. The motor driver boards cannot do this themselves: their four sense channels measure phase
 **current**, not voltage. The sensor is four resistors and a capacitor, with an optional fifth part.
@@ -18,6 +14,11 @@ A resistor divider scales the pack voltage down into the P2 pin's 0-3.3 V range,
 the motors' switching noise. It is sized for a **5S lithium pack** (18.5 V nominal, 21.0 V fully charged),
 the pack this project is developed on and the one most hoverboard-motor platforms use. The same sensor also
 reads 4S, 3S and 2S packs; see [Other pack sizes](#other-pack-sizes).
+
+The driver reads it for you: set it up in `isp_bldc_motor_userconfig.spin2` ([Calibration](#calibration)), and
+`getPackVoltage()` returns the pack voltage in millivolts. `getHealth()` reports a sensor configured as fitted
+that reads no pack, and the event log records the pack being connected or disconnected. The drive itself does
+not use the reading yet: `getCurrent()`'s watts and the speed table still assume the configured `DRIVE_VOLTAGE`.
 
 ## Schematic
 
@@ -114,6 +115,8 @@ overshoot or the bus rising while the motors brake.
   **P56-P63** (on a P2 Edge: the LEDs, the boot flash and the serial/debug pins).
 - Pick a pin that is, if possible, **alone in its group of four** (P0-P3, P4-P7, ...). The ADC measures
   against its own group's supply rails, so a quiet group gives a cleaner reading.
+- The HDMI demos use **P0-P7** for the display. If you use HDMI there, choose a pin outside that range.
+- The driver refuses a pin inside any started motor's pin group: it warns, and does not read it.
 
 ## Test before plugging into the P2
 
@@ -132,14 +135,35 @@ R4's loading alone is about 1 %: R4 sits in parallel with R2 through R3, so with
 multiplier is about 7.89, not 7.81. Expect a calibration value near 1010 before any tolerance.
 
 1. In `isp_bldc_motor_userconfig.spin2`, set `PACK_SENSOR_FITTED = TRUE` and `PACK_SENSE_PIN` to your pin.
-2. Run your program and read `getPackVoltage()`. At the same moment, read the pack with a meter.
+   `start()` begins reading the sensor; on a two-wheel platform the steering object reads it once, for both.
+2. Run your program and read `getPackVoltage()`: it returns a status, which should be `PACK_PRESENT`, and the
+   voltage in millivolts, averaged over about 64 ms. At the same moment, read the pack with a meter. Do this
+   with the motors stopped, so the pack is steady.
 3. Set `PACK_SENSE_CAL_PERMILLE` to 1000 × meter ÷ `getPackVoltage()`. For example, if the meter reads 18.62 V
    and the driver reads 18.50 V, set 1006.
+
+One calibration point is enough. It folds the ADC's small offset into the gain, which leaves a calculated error
+of about 25 mV at the bottom of a 5S pack's range: far finer than a battery gauge needs.
 
 With `PACK_SENSOR_FITTED = TRUE`, a sensor that is not wired to `PACK_SENSE_PIN`, or whose lead is broken, reads as
 `PACK_ABSENT`, never as a voltage: a wiring or configuration mismatch. (With the default `FALSE` the pin is never read
 and the status is `PACK_NOT_FITTED`.) `getHealth()` reports the mismatch as
 `HLT_PACK`.
+
+## The unit as built
+
+The sensor on this project's platform was built to this page with the listed parts. Measured with a meter:
+
+| Part | Specified | Measured |
+|---|---|---|
+| R1 | 68.1 kΩ | 68.0 kΩ |
+| R2 | 10.0 kΩ | 9.99 kΩ |
+| R3 | 1.0 kΩ | 0.999 kΩ |
+| R4 | 1 MΩ | 1.003 MΩ |
+
+It reads on **P0**. Against a meter reading of 20.74 V on a charged 5S pack, it
+calibrated at **1012**, as the [Calibration](#calibration) section predicts. A later check against the same
+meter agreed within 7 mV. Unplugged, it reads as `PACK_ABSENT`, never as a voltage.
 
 ## Other pack sizes
 

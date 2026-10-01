@@ -72,6 +72,7 @@ Additional pages:
 - [The 6.5" motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - The 6.5" motor as measured: geometry, commutation, speed and current envelope, stopping and holding
 - [Techniques](TECHNIQUES.md) - How we measured the motor and built the driver, written so you can reuse the methods
 - [Adding support for a new motor](ADDING_MOTOR.md) - Characterize your motor and add it to the driver
+- [Adding a battery voltage sensor](VOLTAGE-SENSOR.md) - Build a five-part sensor so the driver can read your pack's voltage on one P2 pin
 - [Use RPi or Arduino to control your platform](SERIAL-CONTROL.md) - Walks thru configuration and setup of RPi control system (extrapolate to Arduino)
 - [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
 - [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
