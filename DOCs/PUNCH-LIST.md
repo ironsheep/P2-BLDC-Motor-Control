@@ -1434,7 +1434,12 @@ the quietest of the re-takes. Either is a desk change certified by one hand run.
 
 ### PL-105 -- the lag limiter holds an overloaded rotor well past its torque peak
 
-> **6.0 status (2026-10-01):** PARTLY TAKEN UP by PL-167's design, D-4: `LAG_HOLD` 100 → 86, conditional on a desk
+> **Status (2026-10-01, phase 2):** **NOT taken up.** PL-167's D-4 (`LAG_HOLD` 100 → 86) failed its desk condition: a
+> wheel held at 86 and pushed back one hall sector reads 86 + 42.7, which the 8-bit error wraps to about -127 and the
+> fault test (125) trips, so a rocking obstacle turned 9-10 of 16 modelled stands into lag faults (1-4 at 100). The
+> fallback, option (c), was part of Stephen's decision. `LAG_HOLD` stays 100; PL-105 stays open for a sub-sector angle.
+>
+> *Was (2026-10-01):* PARTLY TAKEN UP by PL-167's design, D-4: `LAG_HOLD` 100 → 86, conditional on a desk
 > check of the blocked-motor stop on a rocking stand (Stephen 2026-10-01: *"yes A"*). The design's trim fix makes calm
 > running peak at 67-76 instead of 71-89, which is what makes a lower hold possible without a sub-sector angle. The
 > choices, what they trade, and when to reopen are recorded in `DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md` §7 Q1.

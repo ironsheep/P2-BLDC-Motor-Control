@@ -1,11 +1,14 @@
 # Hold speed under load — design (PL-167, «#3640», phase 1 of 2)
 
-**Status:** DESIGN ONLY, for Stephen's decision. No driver code is changed by this document (phase 1).
+**Status:** DESIGN, approved (§7). No driver code is changed by this document. **Release: 6.1.0** (R21: 6.0.0 ships
+first with PL-167 as a Known Issue).
+**Phase 2, desk steps (2026-10-01):** the H-a refit (§3.6) and D-4's condition (§7 Q1) are recorded. H-a did not
+reproduce the slow/medium depth and revealed no second mechanism; D-4's condition failed, so `LAG_HOLD` stays 100.
 **Driver:** `src/isp_bldc_motor.spin2` at DRIVER_REV 46 (`:6796`; PASM image unchanged since 45, `:7011-7020`).
 **Evidence:** `DOCs/analyses/bench/2026-09-30/floor2/` (`debug_260930-181811.log` floor-auto, `…-182135.log`
 obstacle, `…-182653.log` FlySky) and `FLOOR-RERUN-EVALUATION.md` §2.1, §2.3, §5.
-**Desk model:** two scratch scripts built on `DOCs/plans/servo-model/sim_servo.py` (§3.3, §9). They are not in the
-repository (Q2).
+**Desk model:** `DOCs/plans/servo-model/spin_model.py` (one wheel) and `spin2_model.py` (two wheels), built on
+`sim_servo.py` beside them, and `logscan.py` for the logs (§3.3, §9). Moved into the repository in phase 2 (Q2).
 **Doctrine:** P10 (design the cause out; no re-measuring), P5 (benefit priced before anything is built), P13 (cog/LUT
 headroom counted), P14 (degrade gracefully).
 
@@ -28,13 +31,14 @@ headroom counted), P14 (degrade gracefully).
   the schedule leg's signature and not the fixed pair's, with only the offsets changed. It also loses the signature
   on every leg when only the trim's gain is quartered. For the slow and medium legs it reproduces the oscillation and
   its absence on the legacy pair, but **not the depth of the speed loss** (modelled 94-100 % against the logged
-  57-94 %). That part is not proven (§3.6).
+  57-94 %). That part is not proven (§3.6). The phase 2 refit to the torque wall (H-a) did not prove it either, and it
+  makes the BRISK contrast depend on the parameters (§3.6).
 - **The design (D-1..D-3, plus D-4 for Stephen).**
   - **D-1:** a calm trim gain sized for the platform, `SERVO_ACC_SHIFT` 14 → 16 (a constant).
   - **D-2:** a fast trim slope only while the lag is past `LAG_SOFT`, so a real load gets torque at once.
   - **D-3:** the hold decay acts only when a limiter has the duty, so the field gives way only at the limit.
   - **D-4 (candidate):** lower `LAG_HOLD` 100 → 86, so that at the limit the held field sits near the torque peak
-    instead of past it (PL-105).
+    instead of past it (PL-105). **Phase 2: its condition failed. `LAG_HOLD` stays 100, option (c) (§7 Q1).**
   - The placement (the lead schedule) is untouched, so **the unloaded current is unchanged by construction**.
 - **Benefit (modelled).**
   - Every spin leg at 99.6-100 % of command, against 57-94 % logged, with no hold and no path limiting.
@@ -257,9 +261,18 @@ The margins at the servo's point (`err_` 48), from the model's parameters (`spin
 
 ### 3.3 The desk model
 
-`spin_model.py` (one wheel) and `spin2_model.py` (two wheels) are scratch scripts at
-`/tmp/claude-1000/-workspaces-P2-BLDC-Motor-Control/07a48803-e4c4-4a8e-80ac-746b73820ff3/scratchpad/`. They extend
-`DOCs/plans/servo-model/sim_servo.py` (its motor, its fitted e90 = 56 at L = 18, its friction).
+`spin_model.py` (one wheel) and `spin2_model.py` (two wheels) are in `DOCs/plans/servo-model/`, beside the
+`sim_servo.py` they extend (its motor, its fitted e90 = 56 at L = 18, its friction). `logscan.py` there reads the
+floor2 logs.
+
+**One correction in phase 2.** The driver's `err_` is an 8-bit angle: `(angle_ − table) SAR 24` of a 32-bit
+difference, so it wraps at ±128, and the fault test reads the wrapped value (`:7926-7930`). The phase 1 runs did not
+wrap it. The models now do (`wrap=1`, the default; `wrap=0` reproduces phase 1). Nothing changes while `|err_|` stays
+under 128: `legs`, `design`, `step` (today and D-1..D-3) and `release` (D-1..D-3, with and without
+`lag_hold=86`) re-ran digit for digit. One phase 1 claim changes: D-3 without D-2 at
+4 N·m is a slowdown to 76.3 % with 526 held passes, not a lag fault (`step acc_shift=16 dC=1`; §4.2, R5). A rotor
+pushed back past the held field now reads a wrapped error, as it does on the floor (the obstacle trace's `e 115` to
+`e −98`, `logscan.py obst`).
 
 - **Driver arithmetic, ported line by line:** the frame trim, clamps and anti-windup (`:7986-8014`); the pass's
   `lag_s`, `jerkStep` with `xStar` and the lag gate, `.justIncr`'s hold and `holdDecay`, `feedForward`; the front cog's
@@ -280,6 +293,7 @@ The margins at the servo's point (`err_` 48), from the model's parameters (`spin
 | Winding L | 0.5 mH | NOT MEASURED. Bracketed 0.37-0.74 mH by the wheels-up torque wall: at the quarter, L −2° still holds; at the eighth it does not (manual §6.2) |
 | Yaw inertia Iz | 0.26 kg m² (J per wheel 0.030 spin, 0.032 straight) | NOT MEASURED. Estimated from the build (0.22-0.35) |
 | Coulomb scrub Tc | 0.45 N·m per wheel | FITTED to one number: the legacy leg 5 duty, model 4,175 against logged 4,181 / 4,051 |
+| **Refit (phase 2, H-a):** e90 at L = 18, winding L | **52 counts, 0.85 mH** | FITTED jointly to the torque wall (§3.6). The wall pins a valley, not a point: (53, 0.65 mH) and (54, 0.55 mH) fit nearly as well. The phase 1 bracket for the winding L (0.37-0.74 mH) came from the model's softer wall and is superseded |
 
 **Checks the model must also pass**, wheels up (`spin_model.py checks`):
 
@@ -300,7 +314,7 @@ legs', with only the offsets changed.
 
 | Contrast (same model, only offsets differ) | Schedule legs, model | Legacy / fixed legs, model | Verdict |
 |---|---|---|---|
-| **BRISK, leg 7 against 9/10** (`spin2_model.py legs`) | fol 92.1 / 89.7 %, err_pk 101, swing 1,958 / 1,799, holds 2 / 10, **path limiter engaged 880 ‰** (logged 861) | fol 98.0-101.7 %, err_pk 78-81, swing 411-537, no hold, path 1,000 | **REPRODUCED.** Holds for every Iz from 0.18 to 0.35 (`jscan`); fixed first holds at Iz 0.42 |
+| **BRISK, leg 7 against 9/10** (`spin2_model.py legs`) | fol 92.1 / 89.7 %, err_pk 101, swing 1,958 / 1,799, holds 2 / 10, **path limiter engaged 880 ‰** (logged 861) | fol 98.0-101.7 %, err_pk 78-81, swing 411-537, no hold, path 1,000 | **REPRODUCED** at the central parameters. Holds for every Iz from 0.18 to 0.35 (`jscan`); fixed first holds at Iz 0.42. **At the phase 2 refit it does not hold up** (§3.6) |
 | **SLOW / MED, legs 1-4 against 5/6**, central parameters | swing 451-1,060, err_pk 82-97, no hold, fol 98.8-100.3 % | swing 69-103, err_pk 69 | **PARTIAL.** Oscillation and contrast reproduced; holds and speed loss not |
 | SLOW / MED at the bracket's edge (`legs e90_L18=53 Tnoise=0.4 Iz=0.30`) | holds on all four, err_pk 99-100, swing 1,193-1,616, path limiter on legs 1-2 (894, 813), **fol 94.4-98.9 %** | clean: err_pk 71-74, swing 136-193; fixed err_pk 93-97, swing 1,333-1,707 (logged 80-94 / 834-1,474) | **PARTIAL.** Signature present, depth short (logged 57-94 %) |
 | **The gain alone:** `SERVO_ACC_SHIFT` 14 → 16, nothing else (`design acc_shift=16`) | every schedule leg clean: err_pk 69-70, swing 57-184, fol 99.6-99.8 % | unchanged, clean | **The mechanism is load-bearing:** removing the gain excess removes the signature on every leg |
@@ -333,8 +347,71 @@ addresses.
 | H-c: platform yaw dynamics or caster scrub beyond the mass matrix couple the wheels. | Compare the model's left/right phase against a **traced** slow schedule spin; none exists (only legs 7/8 were traced). |
 | H-d: the harness's window rule (250 ms after AT_SPEED) catches the cycle at its worst. | Apply the harness's exact window and AT_SPEED rule in the model. |
 
+**H-a outcome (phase 2, 2026-10-01): NOT PROVEN, and no second mechanism.** The refit fits the wall and the model's
+other checks. It reproduces the size of the slow/medium oscillation, but not the depth of the speed loss.
+
+**The refit** (`spin_model.py wall`, then `wall fine=1`; MODELLED against MEASURED targets, wheels up):
+
+| Reading | MEASURED (manual §6.2; `VISIT-8B-EVALUATION.md` §3.6) | Central (e90 56, 0.50 mH) | **Refit (e90 52, 0.85 mH)** |
+|---|---|---|---|
+| Eighth, L 3° | 91 % | 101.4 % | **90.7 %** |
+| Eighth, L −2° | 51 % | 75.2 % | **48.1 %** |
+| Eighth, L −7° | never steady | 44.7 %, 488 held passes | **26.8 %, 396 held passes** |
+| Eighth, L 8° | held | 100.3 % | 100.6 % |
+| Quarter, L 8° / 3° / −2° | held (flat) | 100.0 / 100.0 / 99.9 % | 100.0 / 100.0 / 99.8 % |
+| Wall score (squared misses) | — | 714 | **9** |
+
+The wall pins a valley rather than a point: (53, 0.65 mH) scores 21 and (54, 0.55 mH) 49.
+
+**The other checks, at the refit (MODELLED):**
+- **Ladder** (`ladder`; wheels up, L 18, the old duty clip). 169.3 / 165.9 / 167.7 / 171.2 / 175.7 duty per 10⁶ at 20-100×10⁶,
+  against MEASURED 167-174. Mean err 48.0-48.1. Central: 165.6-174.4.
+- **START** (`start`). Duty drop 0.010, against MEASURED 0.01-0.03. Current peak over settled 1.05, against MEASURED 1.15-1.53
+  (the model's current is a proxy). Central: 0.039 / 1.23.
+- **Wheels-up schedule** (`checks`). Calm: swing 34-84, err_pk 69-70, as at central.
+- **The R-only `sim_servo.py`**, the old servo the START fit was made on (`sim_servo.py ladder e90=52.0`). At 20×10⁶:
+  duty 4,196, peak 6,059, err_pk 90 (MEASURED 3,850, 5,300-5,580, 87-89). Its 120×10⁶ rung pins at the clip, where
+  the bench held mean err 48. e90 52 sits at the edge of that fit's bracket (52-60). That model has no winding
+  inductance to offset it, so this reading is weak.
+- **Floor duties** (`spin2_model.py legs e90_L18=52 Lh=0.00085`). Legacy leg 5: 4,152 / 4,125 against logged 4,181 /
+  4,051 (Tc not refitted). Schedule MED 3,688-3,913 and SLOW 2,276-2,436: about 5 % above the logged ranges' tops
+  (3,742 and 2,287).
+
+**Today's drive on the refit** (`spin2_model.py legs e90_L18=52 Lh=0.00085`, MODELLED):
+
+| Legs | Logged (MEASURED) | Refit |
+|---|---|---|
+| Schedule SLOW / MED (1-4) | fol 57-94 %, err_pk 84-113, swing 910-1,647, path 629-810 | **fol 97.9-101.8 %**, err_pk 88-100, swing 916-1,497. Holds on leg 1 (11 / 4) and leg 2 (4 / 0); the path limiter engaged on leg 1 only (866 ‰) |
+| Schedule BRISK (7) | fol 84 / 88 %, err_pk 97 / 91, path 861 | fol 100.7 / 104.2 %, err_pk 97 / 99, holds 1 / 0, no path limiting in the window |
+| Legacy (5, 6) | fol 100 %, err_pk 72, swing 95-238 | fol 99.9-100 %, err_pk 69-70, swing 78-116: clean |
+| Fixed (9, 10) | fol 100-101 %, err_pk 80-94, swing 834-1,474 | fol 97.4-101.2 %, err_pk 84-89, swing 749-1,030, no hold |
+
+**Along the valley:**
+- At (53, 0.65 mH): SLOW/MED fol 98.4-100.3 %; BRISK 96.5 / 96.7 % with holds 2 / 6 and no path limiting.
+- At (54, 0.55 mH): SLOW/MED 98.6-99.7 %; BRISK 97.8 / 94.2 % with holds 0 / 13 and the path limiter at 894 ‰.
+- With ±40 % scrub on the refit (`Tnoise=0.4`): both SLOW legs hold, and the path limiter engages at 852-895 ‰. Fol is
+  still 97.4-98.7 %.
+- `jscan` on the refit:
+  - SLOW leg 1 carries the full signature from Iz 0.30, and leg 2 from 0.35.
+  - BRISK carries it only at Iz 0.22.
+  - The fixed pair is no longer clean from Iz 0.30.
+
+**What it means:**
+1. **H-a is not proven.** The refit gets the oscillation's size right: swing and err_pk now sit inside the logged ranges
+   on more legs than at central, and holds appear at SLOW. The speed given up stays at 0-2 %, against 6-43 % logged. A
+   smaller low-speed margin is part of the picture. It is not the depth.
+2. **The BRISK contrast of §3.4 depends on the parameters.** At the better-fitted wall it weakens (at 53 and 54) or
+   vanishes (at 52). The mechanism test that survives at every parameter set is the gain test. `design acc_shift=16`
+   on the refit cleans every leg: fol 99.6-100 %, err_pk 67-70.
+3. **No second mechanism is revealed.** The design (`design acc_shift=16 dB=1 boost_shift=10 dC=1`) cleans every leg at
+   all three valley points: fol 99.6-100.0 %, err_pk 67-70, swing 20-157, no hold, no path limiting. On the refit,
+   `lag_hold=86` gives the identical result.
+4. **What carries the depth is still unidentified.** H-b, H-c and H-d are untested. The model also lacks cogging,
+   non-uniform hall sectors and the PL-55 ceiling. SPINRATE (§6) is the floor's catch for it.
+
 None of these changes the design. The only mechanism the model shows is the gain-against-margin one, and removing it
-cleans every leg at every parameter set tried (§5). The certification cells (§6) would catch a second mechanism.
+cleans every leg at every parameter set tried (§5), the phase 2 refit included. The certification cells (§6) would
+catch a second mechanism.
 
 ---
 
@@ -389,8 +466,9 @@ In the driver's terms:
 - A hold below the limit is then a pause of the field, a few tens of milliseconds while D-2 lifts the duty. It is not a
   permanent loss of speed, and the shortfall the steering object reads stays at the command.
 - **D-3 never ships without D-2.** Without the fast slope, a long hold below the limit leaves the partner unscaled. In
-  the model (gain/4 + D-3, no boost) the platform's pivot then dragged the held wheel back into a lag fault at 4 N·m
-  (`step acc_shift=16 dC=1`: `FAULT`, err 143).
+  the model (gain/4 + D-3, no boost) the platform's pivot then drags the held wheel back at 4 N·m: 76.3 % with 526
+  held passes (`step acc_shift=16 dC=1`), against 99.6 % with D-2. Phase 1 read this as a lag fault (err 143). That
+  was the unwrapped error; the driver's wrapped `err_` reads −113 there and does not fault (§3.3).
 
 **D-4 · CANDIDATE (Q1): `LAG_HOLD` 100 → 86, so that the field held at the limit sits near the torque peak.**
 - D-1 makes calm running peak at 67-76 (sawtooth top), which leaves room for a hold at 86. Today's servo peaked at
@@ -399,6 +477,9 @@ In the driver's terms:
 - **It narrows the blocked-rotor test's margin.** `bFrontProtect()` counts `|err| ≥ LAG_SOFT` with no tick (`:2899`).
   A stalled wheel then stands at ~86 instead of ~100, so a rocking stand dips under 80 more often and restarts the
   count. The obstacle behaviour accepted for 6.0 (R18) could get worse. That is Stephen's call, not this document's.
+- **Phase 2: NOT TAKEN.** Its desk condition failed (§7 Q1). A wheel held at 86 that the load pushes back one hall
+  sector reads 86 + 42.7 = 128.7, which wraps to −127 and trips the fault test at 125. On a rocking obstacle that
+  replaced the protective stop with a lag fault in most of the modelled contacts.
 
 ### 4.3 Why each is correct by construction
 
@@ -445,9 +526,9 @@ public "torque-limited" signal (Q4) would be an API addition mirrored in `isp_st
 |---|---|---|
 | R1 | The calm loop's margin is modelled, not measured: Iz and winding L are unmeasured | Clean across Iz 0.18-0.42, e90 53-60, winding L 0.37-0.74 mH, ±40 % scrub (`jscan`, corners) |
 | R2 | Calm-running peaks reach 80 and trigger D-2 in running | Model 67-76 (a few hundred boost frames per leg only at the adverse corner, harmless there). The bench measured 76-86 at 10/20×10⁶ **under today's gain** (manual §6.4). A-3's err_pk ≤ 76 is the guard |
-| R3 | A load step's current overshoots into the fold-back; D-3 reads that as "at the limit" | The modelled 4 N·m early step does this. With the hold past the peak it stalls (40 % after release, against 84 % today). **D-4 removes it (99.9 %).** Without D-4 this is a modelled regression in one case |
-| R4 | Obstacle behaviour (R18) | D-1..D-3: same logic, same fold-back limit, reached sooner. The obstacle stands already reach it today (14 `FOLDBACK` events in `…-182135.log`). D-4 narrows the blocked test's margin (Q1) |
-| R5 | Fault interaction | Fault test unchanged (125). No fault in any modelled case with D-2 present. D-3 alone faulted (§4.2): **they ship together** |
+| R3 | A load step's current overshoots into the fold-back; D-3 reads that as "at the limit" | The modelled 4 N·m early step does this. With the hold past the peak it stalls (40 % after release, against 84 % today). D-4 would remove it (99.9 %), but **D-4 is not taken (§7 Q1), so this modelled regression in one case stands** (PL-105) |
+| R4 | Obstacle behaviour (R18) | D-1..D-3: same logic, same fold-back limit, reached sooner. The obstacle stands already reach it today (14 `FOLDBACK` events in `…-182135.log`). Modelled at `LAG_HOLD` 100 (`block`, §7 Q1): latch times as today's, a solid object 987-1,102 ms after contact against today's 1,004-1,620 |
+| R5 | Fault interaction | Fault test unchanged (125). On the load steps, no fault with D-2 present. D-3 alone slowed to 76 % at 4 N·m (§4.2): **they ship together**. On an obstacle a lag fault stays possible, as today: 1-2 of 16 modelled contacts at central parameters, today and D-1..D-3 alike; 4 of 16 on the rocking obstacle at the refit, against today's 1 |
 | R6 | Unloaded behaviour | Current identical wheels up (0.04 / 0.09 / 0.13 A at 10 / 20 / 37×10⁶). Low-speed duty swing 56-61 → 148-154, under A-3's 400 |
 | R7 | Rev A (5 mV/A) resolves the fold-back coarser (PL-163), so D-3's "at the limit" may come later | Not modelled. Rev A is not certified by this design |
 | R8 | The grab cells' premise | A hand load below the current limit (~11 N·m per wheel at 27 A, ~135 N at the tyre) no longer slows the wheels, so LDPATH / LDHUNT see no path limiting: a PL-168-type premise correction before the next run |
@@ -460,7 +541,7 @@ public "torque-limited" signal (Q4) would be an API addition mirrored in `isp_st
 | A proportional term on the lag sampled at each hall edge (sawtooth-free) | Modelled. It clears the holds, but leaves its own oscillation (swing to 914; to 3,176 at twice the gain), and fails BRISK at the adverse corner (`design dA=1`, `design dA=1 dC=1 kp_shift=2`). Its once-per-tick sampling adds the lag it is meant to remove |
 | The gain alone (D-1 without D-2 / D-3) | Clean spins, but a 1 N·m one-sided load drops the platform to 21 % (`step acc_shift=16`): the slower trim reaches the hold, and the decay and the limiter do the rest |
 | Load-dependent lead (more L under load) | Buys margin by spending circulating current exactly when the motor is working, and moves the placement the unloaded saving rests on. D-1 gets the margin without either |
-| Lifting the decay without a fast slope (D-3 alone) | Lag fault at 4 N·m in the model (§4.2) |
+| Lifting the decay without a fast slope (D-3 alone) | 76 % with 526 held passes at 4 N·m in the model, against 99.6 % with D-2 (§4.2; phase 1 read it as a lag fault) |
 | A sub-sector angle (hall-time interpolation or back-EMF) to place the hold at the peak | The real fix for PL-105, and out of scope. D-4 gets most of it with a constant |
 
 ### 4.8 How a user would notice
@@ -486,13 +567,13 @@ logged 0.087-0.141 A), so **only current ratios are claimed**.
 | Duty swing / err_pk while spinning | 803-1,647 / 84-113 (MEASURED) | 15-184 / 67-70 (central); 53-544 / 67-76 at the adverse corner | MODELLED |
 | Current, spinning at the medium command, schedule against legacy **at equal speed** | Not comparable: SPINCTL's 1.89× / 2.40× compares 88-94 % against 100 % (MEASURED) | Schedule 0.16-0.17 A against legacy 0.41-0.70 A (model units): **2.5-4.4× less** | MODELLED (ratio) |
 | Unloaded current (the schedule's 8-25× saving) | MEASURED (manual §7.3) | **Unchanged by construction**: placement untouched. Model wheels up 0.04 / 0.09 / 0.13 A before and after | DERIVED + MODELLED |
-| One-sided load on a straight drive at power 13, applied in steady running, LEFT / RIGHT speed | 1 N·m: 98.6 / 99.3 %. **2 N·m (24 N at the tyre): 61.8 / 61.5 % with 7.4 A phase, no limit.** 4 N·m: 7.8 / 12.1 % | 1 N·m: 99.0 / 100 %. 2 N·m: 99.4 / 100 %. **4 N·m (48 N): 99.6 / 100 % at 12.4 A.** (+D-4: 99.7 / 99.6 / 99.3 %, partner 100 %) | MODELLED (`step`) |
-| Where the field gives way | Wherever the cycle reaches the hold: at 0.05-0.14 A (MEASURED) | 8 N·m (97 N): 25 % at the 27 A limit, 1,050 limit frames in the window. +D-4: 83 %, phase 21.5 A, peak 24.3 A | MODELLED |
-| A 4 N·m load 0.45 s after arrival, then released: speed after release | 83.9 / 82.9 % | **D-1..D-3: 40.4 / 41.0 % (stalls at the limit, §3.5).** +D-4: 99.9 / 100 % | MODELLED (`release`). D-4 decides this row |
+| One-sided load on a straight drive at power 13, applied in steady running, LEFT / RIGHT speed | 1 N·m: 98.6 / 99.3 %. **2 N·m (24 N at the tyre): 61.8 / 61.5 % with 7.4 A phase, no limit.** 4 N·m: 7.8 / 12.1 % | 1 N·m: 99.0 / 100 %. 2 N·m: 99.4 / 100 %. **4 N·m (48 N): 99.6 / 100 % at 12.4 A.** (+D-4, not taken: 99.7 / 99.6 / 99.3 %, partner 100 %) | MODELLED (`step`; D-1..D-3 re-run in phase 2, unchanged) |
+| Where the field gives way | Wherever the cycle reaches the hold: at 0.05-0.14 A (MEASURED) | 8 N·m (97 N): 25 % at the 27 A limit, 1,050 limit frames in the window. (+D-4, not taken: 83 %, phase 21.5 A, peak 24.3 A) | MODELLED |
+| A 4 N·m load 0.45 s after arrival, then released: speed after release | 83.9 / 82.9 % | **D-1..D-3: 40.4 / 41.0 % (stalls at the limit, §3.5).** +D-4 would give 99.9 / 100 %, but D-4 is not taken (§7 Q1): **40.4 / 41.0 % stands** | MODELLED (`release`; re-run in phase 2 with the wrapped error, unchanged) |
 | Ramp leg at 3,000 mm/s², arrival / prediction | 696 / 320 ms (MEASURED); model 612 / 321 with the path limiter engaged | 322 / 321 ms, no hold | MODELLED |
 | Ramp leg at 200 mm/s² and the FlySky gentle speed-up | 2,846 / 1,790 ms; half the set rate (MEASURED) | **Unknown.** The model does not reproduce today's failure here (arrives on time today) | UNKNOWN |
 | SPINSYM RIGHT 1.36 | MEASURED, at unequal speeds | Re-judged at equal speed | UNKNOWN |
-| Obstacle, blocked stop | MEASURED: latches 1.0-1.1 s on a solid object; rocks without latching on a yielding one (accepted, R18) | D-1..D-3: unchanged logic and limit. D-4: margin 20 → 6 counts (Q1) | DERIVED; floor cells guard it |
+| Obstacle, blocked stop | MEASURED: latches 1.0-1.1 s on a solid object; rocks without latching on a yielding one (accepted, R18) | D-1..D-3 at `LAG_HOLD` 100: solid object latched 14 of 16, 987-1,102 ms after contact; rocking one 8 latched, 7 rocked 7.7 s, 1 fault (today: 10 / 5 / 1). D-4 at 86 would turn 9-10 of 16 rocking contacts into lag faults, so it is not taken (§7 Q1) | MODELLED (`block`); BLKLIMIT and the latch-time comparison guard it on the floor |
 
 ---
 
@@ -522,7 +603,7 @@ POSTFLT, SPINPLAT, BLKSTOP, PROTCLR, BLKSHORT.
 
 **Re-premised before the run (R8):** LDPATH / LDHUNT / LDHOLD need a load past the current limit, or they read NOMEAS.
 
-**If D-4 is taken:** the coast and brake trials' latch times are compared against today's on the same obstacle. The
+**If D-4 is taken** (it is not: §7 Q1)**:** the coast and brake trials' latch times are compared against today's on the same obstacle. The
 harness's `BLK_STAND_HI_MS` (derived from the lag at the hold, PL-168) is re-derived for a hold at 86.
 
 ---
@@ -566,6 +647,61 @@ Asked one at a time. Q2 and Q4 were design-internal and are decided by the revie
 > - **Reopen if:** the desk check fails; BLKLIMIT or the latch-time comparison fails on the floor; calm running
 >   peaks reach 86 (A-3's err_pk ≤ 76 is the guard, R2); or a sub-sector angle (§4.7) is taken up, which places the
 >   hold at the peak properly and makes the constant moot.
+>
+> **CONDITION OUTCOME (phase 2 desk check, 2026-10-01): FAIL. Fall back to (c): `LAG_HOLD` stays 100 for the fix's release (6.1.0, R21).**
+>
+> - **How it was modelled.**
+>   - `spin2_model.py block` runs a straight drive at power 7 (SLOW) under the obstacle session's 2 A limit
+>     (`BM-BLKBUILD limit_a,2`) into a one-sided spring at each tyre.
+>   - `bFrontProtect()` is ported line for line (`:2898-2904`). It counts each 1 ms front pass with `|err| ≥ LAG_SOFT`,
+>     no hall tick, a non-zero command and a driving state, and latches at `BLOCKED_PASSES` 1,000 (`:7245`).
+>   - Each case runs 16 contacts, spread over one hall sector.
+>   - The solid object is 50,000 N/m. The rocking object is 1,000 N/m (and 3,000 N/m): the stiffnesses at which
+>     `blockcal` shows today's drive giving both of the session's outcomes. The stiffness is chosen, not measured.
+> - **Today's drive against the session (the calibration, MODELLED against MEASURED).**
+>   - **Solid object:** 15 of 16 latched, 1,000-1,048 ms after the last tick. MEASURED: the band is 988-1,168 ms and the
+>     BRAKE trial latched at 1,097 ms.
+>   - **Rocking object, 10 of 16 latched:** 1,055-1,157 ms after contact, 1,022-1,034 ms after the last tick.
+>   - **Rocking object, 5 of 16 rocked for the whole 7.7 s without latching:** ±14-22 hall ticks back and forth, err_pk
+>     114-122, no fault. MEASURED (the COAST trial): about 6 s of rocking, err peaks 114-120, no fault.
+>   - **Rocking object, 1 of 16 took a lag fault**, as the first visit's FC_LAG did.
+>   - So one modelled obstacle gives both trials' outcomes, as the session's one obstacle did.
+>   - **Where the model differs:** its lag returns to 80 within 0-48 ms of a tick (stands 1,000-1,048 ms). The session
+>     took about 97 ms on the latched RIGHT and about 640 ms on its partner (`logscan.py obst`; BM-TS samples are
+>     4 ms). So the model's stands run 49-97 ms short of the BRAKE trial's 1,097 ms.
+> - **The comparison (MODELLED).** Each cell is latched / rocked 7.7 s without a latch / lag fault, then the
+>   contact-to-latch median and range in ms:
+>
+>   | Obstacle | Parameters | Today (100) | D-1..D-3 at 100 | D-1..D-3 at 86 |
+>   |---|---|---|---|---|
+>   | Solid, 50,000 N/m | central | 15 / 0 / 1; 1,023 (1,004-1,620) | 14 / 0 / 2; 1,005 (987-1,102) | 12 / 0 / 4; 1,019 (1,006-1,030) |
+>   | Solid, 50,000 N/m | refit (§3.6) | — | 14 / 1 / 1; 1,030 (1,021-1,139) | 15 / 0 / 1; 1,028 (1,016-1,092) |
+>   | Rocking, 1,000 N/m | central | 10 / 5 / 1; 1,072 (1,055-1,157) | 8 / 7 / 1; 1,062 (1,045-1,124) | 7 / 0 / **9**; 1,083 (1,075-1,100) |
+>   | Rocking, 1,000 N/m | refit | 9 / 6 / 1; 1,093 (1,081-3,563) | 6 / 6 / 4; 1,082 (1,075-1,450) | 6 / 0 / **10**; 1,086 (1,076-1,098) |
+>   | Rocking, 3,000 N/m | central | — | 10 / 5 / 1; 1,025 (1,010-1,975) | 6 / 0 / **10**; 1,043 (1,037-1,047) |
+>
+> - **Verdict.**
+>   - **Taken literally, the latch lengthens at 86, but only marginally.** Against 100 the medians move +14 to +21 ms
+>     at the central parameters and −2 / +4 ms at the refit, all inside the solid-object band.
+>   - **The decisive change: at 86 a rocking stand ends in a lag fault, not a latch.** 9-10 of 16 contacts fault at
+>     86, against 1-4 at 100, and none rocks on. The protective stop that BLKSTOP, BLKLIMIT and the latch-time
+>     comparison expect is replaced, not delayed. That is the R18 risk the condition exists to keep off the floor, so
+>     the condition fails on either reading.
+>   - **Why it faults (DERIVED, not only modelled).** Take a field held at 86-88 that the load pushes back one hall
+>     sector (42.7 counts). The lag then reads 128.7-130.7. The 8-bit `err_` wraps that to −127..−125, which trips the
+>     fault test (`|err_| ≥ 125`, `:7929-7930`). Any backward tick from a lag of 82.3-88.3 faults this way. At 100 the
+>     same tick reads −113 and does not fault.
+> - **What stands as a result.** PL-105, and the one modelled regression of §3.5 (40.4 / 41.0 % after a 4 N·m early
+>   load is released, R3), are carried into 6.0.
+> - **Not checked.**
+>   - The default 27 A limit: every run used the session's 2 A.
+>   - Non-uniform hall sectors: the model's are 42.7 counts each, and real ones move the 82.3-88.3 window per sector.
+>   - The PL-55 duty ceiling in SPIN_DN, and the driver's phase-current estimate (the model folds back on the true phase
+>     current).
+>   - A wheel-by-wheel contact geometry: both tyres meet the spring.
+>   - The obstacle's stiffness, which is unmeasured.
+>   - Option (b): one informational run only, not part of this decision. `LAG_HOLD` 90 on the 1,000 N/m rocking
+>     object gave 11 / 3 / 2, median 1,086 ms (1,066-4,142). Its held lag sits 1.7 counts above the fault window.
 
 **Q2 — keep the desk model in the repository?**
 - The design's numbers come from `spin_model.py` / `spin2_model.py`, which sit in this session's scratch directory.
@@ -579,6 +715,7 @@ Asked one at a time. Q2 and Q4 were design-internal and are decided by the revie
 > **DECIDED 2026-10-01 (reviewer, a design-internal choice, P3): (a).** The numbers are only as good as their
 > reproducibility (P10). Phase 2 adds `spin_model.py`, `spin2_model.py` and `logscan.py` beside `sim_servo.py`.
 > The alternative, (b), was rejected because every figure in §3-§5 would become unrecheckable.
+> **Done 2026-10-01 (phase 2):** all three are in `DOCs/plans/servo-model/`, and §9 runs them from there.
 
 **Q3 — proceed with the slow/medium depth unproven?**
 - Options:
@@ -620,11 +757,13 @@ Asked one at a time. Q2 and Q4 were design-internal and are decided by the revie
 
 ## 9. Reproduce
 
-`S=/tmp/claude-1000/-workspaces-P2-BLDC-Motor-Control/07a48803-e4c4-4a8e-80ac-746b73820ff3/scratchpad` (scratch: see Q2).
+`S=DOCs/plans/servo-model` (from the repository root; the scripts run from any directory). Every run uses the wrapped
+`err_` (§3.3); add `wrap=0` to reproduce a phase 1 number exactly.
 
 ```
 python3 $S/logscan.py trace                     # leg 7's BM-TS limit cycle (1.1)
 python3 $S/logscan.py rc                        # the FlySky 200 mm/s^2 speed-up (1.1)
+python3 $S/logscan.py obst                      # the obstacle session's stand traces, ticks and |err| 80 crossings (7 Q1)
 python3 $S/spin_model.py checks                 # wheels-up negatives (3.3)
 python3 $S/spin_model.py legs                   # one wheel, the ten legs (1.3, 3.4)
 python3 $S/spin_model.py legs J=0.045
@@ -652,6 +791,33 @@ python3 $S/spin2_model.py wheelsup
 python3 $S/spin2_model.py wheelsup acc_shift=16 dB=1 boost_shift=10 dC=1
 python3 $S/spin2_model.py design dA=1           # rejected: edge-sampled P term (4.7)
 python3 $S/spin2_model.py design dA=1 dC=1 kp_shift=2
+# phase 2: H-a, the refit (3.3, 3.6)
+python3 $S/spin_model.py wall                   # the torque wall over (e90_L18, Lh); then the fine grid
+python3 $S/spin_model.py wall fine=1
+python3 $S/spin_model.py checks e90_L18=52 Lh=0.00085
+python3 $S/spin_model.py ladder e90_L18=52 Lh=0.00085
+python3 $S/spin_model.py start e90_L18=52 Lh=0.00085
+python3 $S/sim_servo.py ladder e90=52.0
+python3 $S/spin2_model.py legs e90_L18=52 Lh=0.00085
+python3 $S/spin2_model.py legs e90_L18=53 Lh=0.00065
+python3 $S/spin2_model.py legs e90_L18=54 Lh=0.00055
+python3 $S/spin2_model.py legs e90_L18=52 Lh=0.00085 Tnoise=0.4
+python3 $S/spin2_model.py jscan e90_L18=52 Lh=0.00085
+python3 $S/spin2_model.py design acc_shift=16 e90_L18=52 Lh=0.00085
+python3 $S/spin2_model.py design acc_shift=16 dB=1 boost_shift=10 dC=1 e90_L18=52 Lh=0.00085   # also =53/0.00065, =54/0.00055
+python3 $S/spin2_model.py design acc_shift=16 dB=1 boost_shift=10 dC=1 lag_hold=86 e90_L18=52 Lh=0.00085
+python3 $S/spin2_model.py step acc_shift=16 dC=1                 # D-3 without D-2: 76 % (wrap=0: the phase 1 'fault')
+# phase 2: D-4's condition (7 Q1); add e90_L18=52 Lh=0.00085 for the refit rows
+python3 $S/spin2_model.py blockcal ob_n=8                         # the obstacle's calibration grid, today's drive
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000                # solid, today
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000                 # rocking, today
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000 acc_shift=16 dB=1 boost_shift=10 dC=1
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000 acc_shift=16 dB=1 boost_shift=10 dC=1 lag_hold=86
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1 lag_hold=86
+python3 $S/spin2_model.py block ob_n=16 ob_k=3000 acc_shift=16 dB=1 boost_shift=10 dC=1
+python3 $S/spin2_model.py block ob_n=16 ob_k=3000 acc_shift=16 dB=1 boost_shift=10 dC=1 lag_hold=86
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1 lag_hold=90   # informational
 ```
 
-Each `spin2_model.py` leg run takes one to three minutes.
+Run times depend on the machine; independent runs can go in parallel.
