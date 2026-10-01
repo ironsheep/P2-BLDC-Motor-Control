@@ -15,6 +15,8 @@
 #   3. The config refuses a build that selects no configuration, with its
 #      message (the negative case: a silent fallback would drive a motor with
 #      another motor's settings).
+#      The config refuses an illegal or overlapping motor pin group: copies of it with
+#      one bad choice each must stop at the CHECK_ line that names the mistake (3a).
 #      Every PNut-TS-only directive (#PRAGMA, #ERROR, #WARN, #INCLUDE) sits directly inside
 #      #IFDEF __PNUT_TS__, so PNut can still build the sources.
 #   4. RELEASE CERTIFICATION: both flagship demos -- demo_single_motor and
@@ -212,6 +214,37 @@ else
     echo "FAIL: $CONFIG compiled with no configuration selected, or refused without '$NO_CFG_MESSAGE'"
     RC=1
 fi
+
+# 3a. the pin-group checks: a copy of the config (in a temporary directory, never src/) with one bad
+#     pin choice must refuse with "Divide by zero" AT the CHECK_ line that names the mistake; the swapped
+#     legal pair must compile. Each copy differs from the config only in the line the sed sets.
+PIN_TMP=$(mktemp -d)
+pin_case() {    # $1 symbol, $2 sed expression for the copy, $3 expected CHECK_ name or "compiles"
+    sed -e "$2" "$CONFIG" > "$PIN_TMP/$CONFIG"
+    if cmp -s "$CONFIG" "$PIN_TMP/$CONFIG"; then
+        echo "FAIL: pin-group case '$2' changed nothing in the copy"; RC=1; return
+    fi
+    echo "+ $PNUT -q -D $1 $CONFIG   (copy in $PIN_TMP: $2)"
+    local out rc line
+    out=$(cd "$PIN_TMP" && "$PNUT" -q -D "$1" "$CONFIG" 2>&1); rc=$?
+    if [ "$3" = "compiles" ]; then
+        if [ $rc -eq 0 ]; then echo "    compiles (as it must)"; else
+            echo "FAIL: a legal pin choice was refused: $(printf '%s\n' "$out" | grep -m1 -i error)"; RC=1; fi
+        return
+    fi
+    line=$(printf '%s\n' "$out" | sed -n "s/^$CONFIG:\([0-9][0-9]*\):error:Divide by zero.*/\1/p" | head -1)
+    if [ $rc -ne 0 ] && [ -n "$line" ] && sed -n "${line}p" "$PIN_TMP/$CONFIG" | grep -q "^ *$3 = "; then
+        echo "    refused at line $line, $3 (as it must be)"
+    else
+        echo "FAIL: expected a refusal at $3; got exit $rc: $(printf '%s\n' "$out" | grep -m1 -i error)"; RC=1
+    fi
+}
+pin_case CFG_DUAL_MOTOR 's/^\(    RIGHT_MOTOR_BASE = \).*/\1PINS_NO_USE_P24_P39/;s/^\(    LEFT_MOTOR_BASE = \).*/\1PINS_P16_P31/' CHECK_RIGHT_PIN_GROUP
+pin_case CFG_DUAL_MOTOR 's/^\(    LEFT_MOTOR_BASE = \).*/\1PINS_P16_P31/;s/^\(    RIGHT_MOTOR_BASE = \).*/\1PINS_P8_P23/' CHECK_GROUPS_APART
+pin_case CFG_DUAL_MOTOR 's/^\(    LEFT_MOTOR_BASE = \).*/\1PINS_P32_P47/;s/^\(    RIGHT_MOTOR_BASE = \).*/\1PINS_P32_P47/' CHECK_GROUPS_APART
+pin_case CFG_SINGLE_MOTOR 's/^\(    ONLY_MOTOR_BASE = \).*/\1PINS_NO_USE_P24_P39/' CHECK_ONLY_PIN_GROUP
+pin_case CFG_DUAL_MOTOR 's/^\(    LEFT_MOTOR_BASE = \).*/\1PINS_P32_P47/;s/^\(    RIGHT_MOTOR_BASE = \).*/\1PINS_P16_P31/' compiles
+rm -rf "$PIN_TMP"
 
 # 3b. PNut stays able to build the sources: every PNut-TS-only directive (#PRAGMA, #ERROR, #WARN,
 #     #INCLUDE) must sit directly inside #IFDEF __PNUT_TS__, the symbol only PNut-TS defines (DEVELOP.md,

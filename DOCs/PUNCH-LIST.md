@@ -36,7 +36,7 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 | PL-168 | Floor-test premises the runs proved wrong | Corrected in `test_bench_dual` before any rerun |
 | PL-132 | The blocked-wheel stop shorted the phases under coast (fixed DRIVER_REV 20) | Its COAST cell, rerun once PL-168 corrects the no-latch bound |
 | PL-160 | The quarter-speed start under load is unmeasured (all else certified) | Two-turn quarter spins (PL-168) |
-| PL-67 | Two motor pin groups that overlap are not refused | A compile-time refusal, proved by `tools/build-check.sh` |
+| PL-67 | Two motor pin groups that overlap are not refused | DONE 2026-10-01: refused at compile time, proved by `tools/build-check.sh` step 3a |
 
 **In 6.1.0 — harness work for the tests this plan runs**
 
@@ -762,7 +762,14 @@ An archive file is never re-edited. If an archived item must be reopened, it com
 
 ### PL-67 -- `R2-DETECT-OVERLAP` is owed to a motors-unplugged session, but no build can produce it
 
-> **Status (2026-10-01, closeout): 6.1.0 work, by Stephen's ruling.** *"it can be produced and should be failed at
+> **Status (2026-10-01): DONE** («#3650»). Both configurations of `isp_bldc_motor_userconfig.spin2`, and the bench
+> config, carry `CHECK_` constants that divide by "the base is a legal group" and (dual) "the bases are 16 or more
+> apart"; each check line's comment tells the user what to change. `tools/build-check.sh` step 3a compiles temporary
+> copies with a right base of 24, an overlapping 16/8, an equal 32/32 and a single base of 24, and requires each to
+> refuse at its named `CHECK_` line; the swapped legal pair 32/16 must compile. MEASURED: all five behave; with the
+> checks disarmed in a scratch copy the step fails all four refusals. `DEVELOP.md` says what the refusal looks like.
+>
+> **Earlier status (2026-10-01, closeout): 6.1.0 work, by Stephen's ruling.** *"it can be produced and should be failed at
 > compile time."* Two motor pin groups that overlap are a configuration error the compiler can see (both bases are
 > constants in `isp_bldc_motor_userconfig.spin2`), so the build is refused, and `tools/build-check.sh` proves the refusal
 > the way it proves a build with no `CFG_*` selected. The runtime `GATE_OVERLAP` skip in `test_bench_detect` stays as it is.

@@ -85,6 +85,14 @@ and the board detection, one of:
 - `ONLY_BOARD_TYPE` = &nbsp; {detectModeConstant}  &nbsp;  -OR-
 - `LEFT_BOARD_TYPE` = &nbsp; {detectModeConstant} and `RIGHT_BOARD_TYPE` = {detectModeConstant}
 
+A motor board uses its base pin and the 15 pins above it, so the two motors of a two-wheel platform need pin groups that do not overlap (for example `PINS_P16_P31` and `PINS_P32_P47`, or `PINS_P0_P15` and `PINS_P16_P31`). The configuration checks this when you compile. A base that is not one of the `PINS_*` groups, or two groups that share pins, stops the compile with an error like:
+
+```
+isp_bldc_motor_userconfig.spin2:190:error:Divide by zero (m145)
+```
+
+The line it names is a `CHECK_` line below your settings, and the comment on that line says what to change.
+
 Use `BRD_AUTO_DET` unless you have a reason not to. With it, `start()` refuses a pin group where it cannot detect a board, because without the board's revision the driver has no current limit for it. `BRD_REV_A` or `BRD_REV_B` forces a revision; forcing one that does not match your hardware will cause the driver to not work.
 
 As shipped, the single-motor configuration is:
