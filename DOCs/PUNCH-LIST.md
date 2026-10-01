@@ -77,6 +77,9 @@ characterisation plan takes up the scan.
   DocoEng motor starts and cannot be checked without that motor, so it stays with the DocoEng work.
 - **After v6.0.0:** PL-102 (a "following" getter), PL-164 (clock range), PL-165 (the DEBUG footprint measure), PL-166
   (the inertia term).
+- **Moved here from the task board at 6.1.0 start (2026-10-01)**, so the board carries only the sprint's work:
+  PL-173 (external measurement front end), PL-174 (vibration study), PL-175 (N-motor shape), PL-176 (motor-adoption
+  tool), PL-177 (back-EMF delta release).
 
 **Ships as a Known Issue:** PL-118 (phase-short braking is not current-limited; ruling 1 A).
 
@@ -1778,6 +1781,77 @@ fold therefore acts on noise, about 75 frames a second, and the LEFT board's pow
   separates the acceleration's folds from the grip's.
 - **Two harness gaps:** `t0vStart()` reports a refused start's board as `REV_Unknown`, so a start-check refusal reads as
   "not REV_A"; the hold record prints no stop reason.
+
+### PL-173 -- an external measurement front end for the bench (ACS758, bus divider, FET NTC)
+
+> **Status (2026-10-01):** DEFERRED by Stephen's rulings; moved here from task «#3506» at 6.1.0 start (the board carries
+> only the sprint's work). STEPHEN 2026-09-14: *"we are not doing any external measurement that was a plan left behind
+> for the moment we are not going forward with that for now"*; 2026-09-17: *"no those three are not in"*. Do not design
+> other work around it: every current reading comes from the driver's own calibrated sense channel (150 mV/A).
+
+**What it was (kept so it can be revived):** an ACS758 Hall current sensor in one board's positive lead, a bus-voltage
+divider and a FET NTC on P50-P52, with clamps -- for regen visibility, a thermal record and a current trace through a
+fault. BOM and placement: `DOCs/plans/archive/BENCH-READINESS-SPRINT-PLAN.md` §2A. It is also the only way to measure a
+phase short's current (PL-118).
+
+### PL-174 -- STUDY: characterise the vibration seen at some speeds
+
+> **Status (2026-10-01):** DEFERRED; moved here from task «#3532» at 6.1.0 start. Starts when Stephen calls it and the
+> piezo hardware has arrived; he sets the scope. STEPHEN 2026-09-13: *"some speeds? show significant vibration... in a
+> couple of days i'd like to characterise the cause so note this as an upcoming study."*; 2026-09-17: *"no those three
+> are not in"*.
+
+**Instrument (STEPHEN 2026-09-13):** two amplified piezo discs on the Rev B platform read by P2 ADC smart pins with
+GIO/VIO calibration. Carry into the sensor code: discard settling samples after every GIO/VIO switch and average (PL-32,
+p2kb `p2kbAppNoteP2an001SinglePinInstrumentationAdc`); pins clear of P40-P49 and inside one power group; log on the
+driver status timebase. **Pointers, not conclusions:** unequal hall sectors; duty-servo hunting (the 6.1.0 servo change,
+PL-167, alters this); mechanical resonance; the commutation placement (6.0.0 ships a speed-following lead). A
+discriminator worth building: the same speeds on two placements. **First step when it starts:** record with Stephen which
+speeds, wheels, load and direction. Execution: a two-phase design study.
+
+### PL-175 -- the N-motor shape: one P2 driving 1-3 motors (after 6.0.0, with the DocoEng work)
+
+> **Status (2026-10-01):** DEFERRED; moved here from task «#3562» at 6.1.0 start. STEPHEN 2026-09-16: the N-motor part is
+> *"after 6.0.0"* and goes with the Doco effort; 2026-09-17: *"no those three are not in"*. Not started before Stephen
+> schedules it.
+
+**Scope** (`DOCs/plans/FIXED-COG-SHAPE-DESIGN.md` §1, §4, §6 roster rows, §7, §9), on the front cog already built: a
+roster owner serving 1-3 motors (STEPHEN 2026-09-15: *"A single P2 is going to control 1 to 3 motors... The Docom motors
+are the ones that drive CNCs"*), an indexed API plus roster-wide stop / e-stop and one synchronised drive; `demo_n_motor`
+added beside the two existing demos (STEPHEN 2026-09-15); configuration for the N-motor form beside the two existing
+ones (the config was re-shaped to `CFG_SINGLE_MOTOR` / `CFG_DUAL_MOTOR` on 2026-09-28, so this part is re-designed against
+that, not the six blocks it was written for); `tools/build-check.sh` certifies three release demos; README / DEVELOP /
+DRIVE-OBJECTS for the third form. **Open for Stephen when scheduled, asked before building:** the owner object's name and
+the configuration names. Certification needs the DocoEng motors on the bench.
+
+### PL-176 -- generalise the offset sweep into a real motor-adoption tool
+
+> **Status (2026-10-01):** DEFERRED; moved here from task «#3592» at 6.1.0 start. Goes with the DocoEng effort (PL-175,
+> PL-27, PL-71). STEPHEN 2026-09-21, setting the phasing: *"we could just build this as our standard instrument today and
+> use it for this phase for the 6.5, and use it for the doco when we get there. After having experience with it, we can
+> generalize it to a real tool and make that part of a later effort."*
+
+**Waits for** the alignment instrument (`dual-align`) to have run against both the 6.5″ and the DocoEng motor: a stop
+condition that holds for a motor whose fault behaviour was unmeasured can be derived from two observed motors, not
+invented from one. **Scope when it starts:** parameterise by motor rather than editing the instrument's named constants
+(what had to be edited for the DocoEng IS the specification, so record it during that run); a stop condition derived
+from both motors' measured edge behaviour; a stable record format; the `ADDING_MOTOR.md` integration, which today walks
+a user through producing a new motor's offsets by hand. The user docs must not promise a generalised tool before it
+exists. Verify when built: the stop condition derives from two motors' measurements; `ADDING_MOTOR.md`'s offset step
+names the tool and is walkable end to end.
+
+### PL-177 -- back-EMF as a position source, and the torque-peak hold it enables (a delta release)
+
+> **Status (2026-10-01):** DEFERRED; moved here from task «#3602» at 6.1.0 start. STEPHEN 2026-09-22: *"I'm thinking the
+> back EMF is an added capability, and so I might make that a delta release after we get the current driver
+> stabilized. My current thinking is to defer back EMF."* Not started before Stephen schedules it.
+
+**Scope, all priced in `DOCs/plans/DRIVE-INTEGRATION-DESIGN.md` §7:** C-B, back-EMF as a position source; C-D, holding an
+overloaded wheel at its torque peak (PL-105, modelled at ~1.8-2.7× today's pull); C-C, hall-timing interpolation (C-D's
+other route). First measurement: the release-window capture (§7 C-B) -- release the bridge for ~10 frames at a few
+speeds, capture the phase pins in P_ADC_SCOPE, and read the decay time, settle time and clean window against current.
+While driving, the drive senses back-EMF 0 % of the time today. **6.1.0 note:** PL-167's D-5 design (task «#3645»)
+works on where the held field sits at the limit; if it lands, it changes this entry's measure of benefit for C-D.
 
 ### PL-172 -- the style gate's self-test fails: check T128 has no fixture
 

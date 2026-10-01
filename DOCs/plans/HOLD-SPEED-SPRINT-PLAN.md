@@ -436,8 +436,8 @@ certified, all 60 bench tiers within the DEBUG footprint; `tools/check_style.sh`
 - **Tracking (entry check):** the two completed tasks archived («#3643», «#3644»); 8 live tasks, no `seq` collision.
   Their shape (gist ≤ 60: 2/8; one tag: 0/8; no priority: 0/8; `attention:`: 4/8) predates the creation-time checks and
   is a backlog observation; `plan-to-tasks` writes this sprint's tasks to shape. Leftover tasks, disposed by §12:
-  «#3640» resumes as §1; «#3636» and «#3641» are superseded by §1 and §3; «#3506», «#3532», «#3562», «#3592», «#3602»
-  stay out of the release by Stephen's rulings. Context: 3 keys, all live; `sprint_established_decisions` is
+  «#3640» closed, its design phase delivered; «#3636» and «#3641» superseded by §1 and §3; «#3506», «#3532», «#3562»,
+  «#3592», «#3602» moved to the punch list (PL-173-177) and off the board (§15). Context: 3 keys, all live; `sprint_established_decisions` is
   regenerated per §0.3 before any dispatch. Auto-memory: 4 files, index 4 lines. **Verdict: ready.**
 - **Entry baseline** (the substitute gate, `baseline-health` §2a; the gate's inputs `src/`, `tools/`, `.github/` are
   byte-identical between the measured tree `54c4a1e` and the starting commit, so the planning measurement is this
@@ -455,26 +455,28 @@ certified, all 60 bench tiers within the DEBUG footprint; `tools/check_style.sh`
 | Plan § | Deliverable | Task | seq |
 | --- | --- | --- | --- |
 | §1.1 | Design D-5, the held field at the limit; Stephen rules on its benefit | «#3645» | 1 |
-| §6 | Style gate: PRI docs on code lines; T128 fixture (PL-12, PL-172) | «#3646» | 5 |
-| §6 | Booleans print as TRUE/FALSE (PL-23) | «#3647» | 6 |
-| §6 | Delete the unused `bc_*` assets (PL-37) | «#3648» | 7 |
-| §6 | FlySky knob deadband (PL-169) | «#3649» | 8 |
-| §7 | Compile-time pin-group refusal (PL-67) | «#3650» | 9 |
-| §4 | Token-table self-check (PL-96, PL-97) | «#3651» | 10 |
-| §2 | Ladder A-3 / A-5 verdicts | «#3654» | 11 |
-| §5 | Commit in every bench log (PL-68); closes batch A's gate | «#3652» | 12 |
-| §8 | `DRIVER_BOARDS.md` | «#3653» | 13 |
-| §1.2 | Build D-1..D-3 (+ D-5 as ruled) | «#3655» | 14 |
-| §3 | Floor premises (PL-168, PL-132, PL-160) | «#3656» | 15 |
-| §3 | Floor cells for the fix; closes batch B's gate | «#3657» | 16 |
-| §9 | Prepare the visit: pack, run sheet, `BENCH: READY` | «#3658» | 17 |
-| §9 | Evaluate the visit's logs | «#3659» | 18 |
-| Blast Radius | Bring the docs current | «#3660» | 19 |
-| §10 | Release 6.1.0 | «#3661» | 20 |
+| §6 | Style gate: PRI docs on code lines; T128 fixture (PL-12, PL-172) | «#3646» | 2 |
+| §6 | Booleans print as TRUE/FALSE (PL-23) | «#3647» | 3 |
+| §6 | Delete the unused `bc_*` assets (PL-37) | «#3648» | 4 |
+| §6 | FlySky knob deadband (PL-169) | «#3649» | 5 |
+| §7 | Compile-time pin-group refusal (PL-67) | «#3650» | 6 |
+| §4 | Token-table self-check (PL-96, PL-97) | «#3651» | 7 |
+| §2 | Ladder A-3 / A-5 verdicts | «#3654» | 8 |
+| §5 | Commit in every bench log (PL-68); closes batch A's gate | «#3652» | 9 |
+| §8 | `DRIVER_BOARDS.md` | «#3653» | 10 |
+| §1.2 | Build D-1..D-3 (+ D-5 as ruled) | «#3655» | 11 |
+| §3 | Floor premises (PL-168, PL-132, PL-160) | «#3656» | 12 |
+| §3 | Floor cells for the fix; closes batch B's gate | «#3657» | 13 |
+| §9 | Prepare the visit: pack, run sheet, `BENCH: READY` | «#3658» | 14 |
+| §9 | Evaluate the visit's logs | «#3659» | 15 |
+| Blast Radius | Bring the docs current | «#3660» | 16 |
+| §10 | Release 6.1.0 | «#3661» | 17 |
 
 **Superseded or closed at generation:** «#3640» (the PL-167 design, phase 1 delivered and approved) completed; «#3636»
-and «#3641» SUPERSEDED by §1 / §3. The five out-of-release tasks («#3506», «#3532», «#3562», «#3592», «#3602») keep low
-priority and sort after this set (todo-mcp numbers `seq` within a priority, so their 1-5 do not compete with this set's).
+and «#3641» SUPERSEDED by §1 / §3. **The board holds this sprint and nothing else (corrected 2026-10-01 on Stephen's
+review):** the five out-of-release tasks («#3506», «#3532», «#3562», «#3592», «#3602») moved to the punch list as
+PL-173-177 with their rulings and scope, superseded and archived; every task above is priority `high`, `seq` 1-17 in the
+order shown, no collision.
 
 **Dispatch shape (`plan-to-tasks` §3c).** This sprint keeps the project's `arbiter-serial`: the harness tasks («#3651»,
 «#3654», «#3656», «#3657») share `src/test_bench_dual.spin2`, and «#3655» holds `src/isp_bldc_motor.spin2`, both on
