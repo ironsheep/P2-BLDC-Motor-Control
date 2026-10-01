@@ -9,8 +9,8 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 
 ### New Features
 
-- `setFaultResponse()` chooses what a motor does when it loses control: re-sync from the hall sensors and
-  ramp down (`FR_GRADED`, the default) or stop at once (`FR_SHIPPED`)
+- `setFaultResponse()` chooses what a motor does on losing control: re-sync from the halls and ramp down
+  (`FR_GRADED`, the default) or stop at once (`FR_SHIPPED`)
 - Current limiting protects the board: output folds back above 40 A and derates to 27 A under sustained load
 - Protective stop: a commanded motor that cannot turn for about a second stops until
   `clearProtectiveStop()` (`ERR_PLATFORM_BLOCKED`, `getProtectiveStop()`)
@@ -19,17 +19,17 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 - `checkWiring()`: an opt-in check that moves each wheel a few centimetres to prove its hall and phase wiring
 - `setCommandTimeout(ms)`: an opt-in link-loss guard that stops the motors when drive commands stop arriving
 - `getStopReason()` says why the last drive ended: your command, its limit, a fault, a blocked wheel, a lost
-  link, an emergency stop, or (two wheels) the other wheel
-- `getEvent()` and `getEventTotal()` report what the drive handled on its own: stops, faults, current
-  limiting and hall-sensor trouble. Every cog reads every event, and events lost to a full log are reported
+  link, an e-stop, or the other wheel
+- `getEvent()` and `getEventTotal()` log what the drive handled on its own (stops, faults, current limiting,
+  hall trouble), for every cog, counting any lost
 - `holdAtStop(true)` holds a stopped wheel with the effort its load needs, up to a ceiling, then shorts the
-  phases; `getHoldStatus()` reports which, and `setHoldLimits()` tunes it
+  phases (`getHoldStatus()`, `setHoldLimits()`)
 - `getPackVoltage()` reads the battery pack from an optional voltage sensor
   ([VOLTAGE-SENSOR.md](VOLTAGE-SENSOR.md))
 - `getFaultCause()`, `getHallIntegrityCounts()` and `getHallIllegalCodes()` report why a motor faulted and
   the health of its hall sensors
-- `setDeceleration(rate)` sets how fast the motors slow down and stop (250 to 10,000 mm/s²);
-  `getAcceleration()` and `getDeceleration()` read the ramp back, and return the built-in rates until set
+- `setDeceleration(rate)` sets the slow-down and stop rate (250 to 10,000 mm/s²); `getAcceleration()` and
+  `getDeceleration()` read the ramp, the built-in rates until set
 - Ramp rates set before `start()` are kept across it
 - `getDriveVoltage()` returns the configured drive voltage
 - Distance commands accept `DDU_KM` and `DDU_MI`
@@ -42,13 +42,13 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 
 ### Improvements
 
-- 6.5″ motor: commutation uses the motor's measured hall position and a lead that follows speed; unloaded
-  running current at low and middle speeds is 8 to 25 times lower than with v5.0.2's commutation offsets
+- 6.5″ motor: commutation uses the motor's measured hall position and a lead that follows speed, placing the
+  field for the least running current
 - Forward and reverse draw the same current, to within 8 %
 - Starting from rest is smooth: the current surge at spin-up is gone
 - Every ramp is jerk-limited: acceleration eases in and out over 250 ms, and a reversal passes through zero
   in one continuous ramp
-- A motor that cannot reach its command holds the fastest speed it can sustain instead of faulting
+- A motor that cannot reach its command runs slower instead of faulting
 - `stopAfterDistance()`, `stopAfterRotation()` and `stopAfterTime()` bring the motor to rest at the limit
 - Two wheels: when one wheel cannot keep up, both slow together, so the platform keeps its path
 - Two wheels: when one wheel faults, the other ramps to a stop instead of pivoting the platform
@@ -58,17 +58,14 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 - `getError()` returns the calling cog's first error; the steering object's returns its own, the left
   wheel's and the right wheel's
 - The three hall sensors are read at one instant, so a switching transient cannot form a false hall code
-- Distance readings and distance stops are about 1 % more accurate
+- Distance readings and distance stops use the wheel's circumference to a tenth of a millimetre
 - `isp_3wire_joystick` and `isp_4button_af1332` print no debug line per press; the joystick's `stop()` releases
   its analog pins
 - The PWM dead-time is 260 ns on both board revisions, meeting the 250 ns minimum both board manuals specify
-- Serial: commands are handled about 1 ms after they arrive; a refused command replies
-  `ERROR {cmd} failed: {ERR_NAME} ({code})`, and a parameter that is not a decimal integer is refused
+- Serial: commands are handled about 1 ms after arrival; a refused command replies
+  `ERROR {cmd} failed: {ERR_NAME} ({code})`, and a non-decimal parameter is refused
 - Serial: the Python demo sends hold as -1 / 0, and has a wrapper for every command
 - The FlySky demos set deceleration from the VrB knob (1,000 to 3,000 mm/s²) beside acceleration on VrA
-- New documents: [TECHNIQUES.md](TECHNIQUES.md), the
-  [6.5″ motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md), and
-  [ADDING_MOTOR.md](ADDING_MOTOR.md) rewritten as a characterization procedure
 
 ### Bug Fixes
 
@@ -84,8 +81,8 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 - `isp_queue_serial` `stop()` stops its own receive cog; it stopped the cog numbered one lower
 - `isp_flysky_rx` `readSwitch()` and `readSw3Way()` read a channel that is not a 3-position switch as OFF; it
   read as ON
-- The FlySky demos no longer have a "1 rotation" switch. It read a switch the transmitter does not have, and could
-  drive one wheel rotation on its own while the sticks were disabled
+- The FlySky demos no longer have a "1 rotation" switch, which read a switch the transmitter lacks and could
+  turn a wheel while the sticks were disabled
 
 ### Breaking Changes
 
@@ -124,21 +121,20 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 
 ### Known Issues
 
-- Under load, spins in place can run up to 40 % slow and speed changes can arrive late; both wheels slow
-  together, so the platform keeps its path
+- Under load, spins in place can run up to 40 % slow and speed changes arrive late; both wheels slow together,
+  keeping the path
 - Against an obstacle that gives way, a blocked wheel can keep pushing for several seconds before the protective
   stop latches; the push is current-limited
-- The optional pack sensor reports the battery voltage, but the drive does not use it yet: `getCurrent()`'s
-  watts and the speed table assume the configured `DRIVE_VOLTAGE`
+- The drive does not use the pack sensor's voltage yet: `getCurrent()`'s watts and the speed table assume
+  the configured `DRIVE_VOLTAGE`
 - `getCurrent()` does not show regenerative current
-- Braking by shorting the phases (`emergencyCutoff()`, and a stop held with `holdAtStop(TRUE)`) is not
-  current-limited: that current never passes the board's current sensor. Ramp down before stopping where
-  you can (`stopMotor()` does; the stop limits do)
+- Braking by shorted phases (`emergencyCutoff()`, `holdAtStop(true)`) is not current-limited; ramp down
+  before stopping where you can, as `stopMotor()` and the stop limits do
 - Speeds are characterized unloaded; under load the motor has less torque in reserve near top speed
 - `setHoldLimits()`'s defaults were sized with the wheels unloaded
 - `calibrate()` is not implemented
-- The drive is tested and supported at a 270 MHz system clock (`_clkfreq = 270_000_000`, as in every demo);
-  below about 250 MHz its 1 ms control pass has not been shown to keep time
+- The drive is supported at a 270 MHz system clock (`_clkfreq = 270_000_000`, as in every demo); below about
+  250 MHz its timing is unproven
 - The DocoEng 4,000 RPM motor is not validated for v6.0.0; v6.0.0 is validated on the 6.5″ hub motor
 - The serial control path (`isp_steering_serial.spin2`, the Python host demo) is not validated on hardware
   for v6.0.0
