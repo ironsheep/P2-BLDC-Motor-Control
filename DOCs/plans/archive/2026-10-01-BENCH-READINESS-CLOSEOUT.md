@@ -1,5 +1,7 @@
 # Bench Readiness (the 6.0.0 sprint) — closeout, 2026-10-01
 
+*Retrospective: `DOCs/plans/archive/2026-10-01-6.0.0-SPRINT-Retrospective.md`*
+
 **Plan:** `DOCs/plans/archive/BENCH-READINESS-SPRINT-PLAN.md` (written 2026-09-10; revised through 2026-09-25; closed
 2026-10-01). Its floor visit («#3576») was replaced on 2026-09-30 by Plan A, closed the same day:
 `2026-10-01-WINDOW-FREE-BENCH-CLOSEOUT.md`.

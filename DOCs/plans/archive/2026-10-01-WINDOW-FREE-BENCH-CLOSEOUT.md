@@ -1,5 +1,7 @@
 # Window-free bench (Plan A) — closeout, 2026-10-01
 
+*Retrospective: `DOCs/plans/archive/2026-10-01-6.0.0-SPRINT-Retrospective.md`*
+
 **Plan:** `DOCs/plans/archive/WINDOW-FREE-BENCH-SPRINT-PLAN.md` (written 2026-09-30, closed 2026-10-01).
 **Outcome:** the plan's 6.0.0 scope shipped. v6.0.0 is tagged at `ccef603` (VERSION 6.0.0, CHANGELOG entry dated
 2026-10-01) and its release workflow opened the draft. §11 (PL-167, holding speed under load) and §12 (PL-168, the test
