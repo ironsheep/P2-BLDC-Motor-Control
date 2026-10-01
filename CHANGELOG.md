@@ -126,6 +126,8 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
 
 - Under load, spins in place can run up to 40 % slow and speed changes can arrive late; both wheels slow
   together, so the platform keeps its path
+- Against an obstacle that gives way, a blocked wheel can keep pushing for several seconds before the protective
+  stop latches; the push is current-limited
 - The optional pack sensor reports the battery voltage, but the drive does not use it yet: `getCurrent()`'s
   watts and the speed table assume the configured `DRIVE_VOLTAGE`
 - `getCurrent()` does not show regenerative current

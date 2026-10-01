@@ -1466,7 +1466,7 @@ it:** a sub-sector angle -- hall-timing interpolation or back-EMF -- against whi
 > rerun's BRAKE trial (`r_stand,1_097`, SR_BLOCKED + SR_PARTNER). Against a rocking obstacle the latch can take seconds
 > (the rerun's coast trial pushed about 6 s; the first visit's took a graceful lag fault at about 4 s, lag peaks within 5
 > counts of the fault line): **accepted as it is for 6.0** (Stephen 2026-10-01, R18: *"i think the current obstacle
-> behavior is find for this release"*).
+> behavior is find for this release"*). Listed in v6.0.0's Known Issues (Stephen 2026-10-01, *"yes A"*).
 
 **Found 2026-09-22 at Visit 8** ([evaluation](analyses/bench/2026-09-22/VISIT-8-EVALUATION.md) §3.4, F-3).
 `R16-DUAL-BLOCKED-D` has read NOMEAS (`why,NOT_BLOCKED`) in **every** part-D log on record: 2026-09-17 twice,

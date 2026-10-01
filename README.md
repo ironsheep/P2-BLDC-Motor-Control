@@ -124,7 +124,7 @@ you can reuse.
 | [demo_dual_motor_rc.spin2](src/demo_dual_motor_rc.spin2)           | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object; prints each event and stop as it happens, and re-arming the kill switch (swD) acknowledges a protective stop | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
 | [demo_dual_motor_rc_hdmi.spin2](src/demo_dual_motor_rc_hdmi.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables | Any of the three P2 boards with four 12-pin header pairs (**NOT the 64019 P2 edge mini-breakout board**) |
 
-_NOTE: we built these demos over time as we developed the driver. There can be better examples but in the interest of time, so that we can get more of us using this driver as soon as possible, we are releasing these in their current state and will improve them over time._
+_NOTE: Each demo is commented as a starting point for your own program; [DEVELOP.md](DEVELOP.md) shows how to wire these objects into a project of your own._
 
 _NOTE: We also have a demo using the RPi to control the motors via serial comms with the P2. See: [Use RPi or Arduino to control your platform](SERIAL-CONTROL.md)._
 
