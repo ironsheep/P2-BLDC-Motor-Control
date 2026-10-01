@@ -49,8 +49,8 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-12 | The style gate's C4 check can flag a PRI code line carrying a trailing `''` | One condition: the line's code portion is blank |
-| PL-172 | The style gate's `--self-test` fails: check T128 has no fixture | A `T128.spin2` fixture; the self-test exits 0 |
+| PL-12 | The style gate's C4 check can flag a PRI code line carrying a trailing `''` | DONE 2026-10-01 (also A4, A5) |
+| PL-172 | The style gate's `--self-test` fails: check T128 has no fixture | DONE 2026-10-01 |
 | PL-23 | Booleans print as numbers in two places still: `test_bench_spin` and `testGetResults()`'s fault flag | Print the word; return TRUE/FALSE |
 | PL-37 | Five panel bitmaps and their generator outlived the panel | Delete them (no consumer in the tree, checked 2026-10-01); the note two other generators point at moves with them. Supersedes the 2026-09-14 "leave them for now" |
 | PL-169 | The FlySky demos re-send the acceleration setting on knob noise | A deadband on both knobs |
@@ -96,8 +96,14 @@ again (STEPHEN 2026-10-01).
 
 ### PL-12 -- latent: `check_pri_docs` conflates "has a trailing comment" with "is a comment line"
 
-> **Status (2026-10-01):** IN 6.1.0, a simple fix (STEPHEN 2026-10-01). Still latent as of today: `check_pri_docs()`
-> (`tools/check_style.sh:544`) tests `comment_kind` without checking the code portion is blank.
+> **Status (2026-10-01): DONE** («#3646»). `check_pri_docs()` now ends the doc scan at any line whose code portion is
+> not blank, as `check_pub_docs()` does. The audit of the other checks found the same conflation in two more: A5 (a CON
+> constant with a trailing `' ----` counted as a separator line) and A4 (a code line with a trailing `''` at the top
+> counted as header); both now require a comment-only line. C3a-C3f already read the code portion; C6, C6b and the
+> signature's trailing-comment test are about declaration lines and are correct as written. `conformant.spin2` carries
+> a PRI body line with a trailing `'`, one with a trailing `''`, and a CON constant with a trailing `' ----`; MEASURED:
+> before the fixes the self-test reported C4 and then A5 on it, after them it exits 0 and `tools/check_style.sh` passes
+> over `src/`.
 >
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (style-gate tooling, latent)
 
@@ -1843,7 +1849,8 @@ works on where the held field sits at the limit; if it lands, it changes this en
 
 ### PL-172 -- the style gate's self-test fails: check T128 has no fixture
 
-> **Status (2026-10-01):** IN 6.1.0, a simple fix (it rides with PL-12 in the same file).
+> **Status (2026-10-01): DONE** («#3646»). `tools/fixtures/style/T128.spin2` fires T128 and only T128; MEASURED:
+> `tools/check_style.sh --self-test` exits 0.
 
 **MEASURED 2026-10-01:** `tools/check_style.sh --self-test` exits 1 and ends `SELF-TEST FAIL: no fixture exercises:
 ['T128']`. T128 (no parenthesis in display text, PL-128) joined `ALL_CHECK_IDS` (`tools/check_style.sh:1151`) in

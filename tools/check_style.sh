@@ -541,6 +541,11 @@ def check_pri_docs(lines, methods):
         end = meth['body_end']
         while j < end:
             rec = lines[j]
+            # A doc line is comment-only: comment_kind says a comment is
+            # attached, not that the line holds nothing else, so a code line
+            # with a trailing comment ends the doc scan (as in check_pub_docs).
+            if rec['code'].strip() != '':
+                break
             if rec['comment_kind'] == "''":
                 out.append(('C4', '4.4', j + 1,
                              "%s() - PRI method doc uses '' (must use ')"
@@ -625,7 +630,8 @@ def check_header(lines):
             i += 1
     header_text = []
     start_i = i
-    while i < n and lines[i]['comment_kind'] == "''":
+    # the header is comment-only '' lines; a code line ends it
+    while i < n and lines[i]['comment_kind'] == "''" and lines[i]['code'].strip() == '':
         header_text.append(lines[i]['comment_text'])
         i += 1
     blob = '\n'.join(header_text)
@@ -659,8 +665,9 @@ def check_con_dashes(lines):
         # Must be in CON block and not inside braces
         if rec['block'] != 'CON' or rec['in_brace']:
             continue
-        # Must be a comment line with ' or ''
-        if rec['comment_kind'] not in ("'", "''"):
+        # Must be a comment-only line with ' or '' (a constant carrying a
+        # trailing comment is not a separator line)
+        if rec['comment_kind'] not in ("'", "''") or rec['code'].strip() != '':
             continue
         # Not a block-start line (the CON declaration itself)
         if rec['block_starts']:
