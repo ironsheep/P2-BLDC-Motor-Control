@@ -1,6 +1,6 @@
 # 6.1.0 — Hold Speed Under Load — sprint plan
 
-**Status:** PLANNED 2026-10-01. Not started (`sprint-start` starts it).
+**Status:** STARTED 2026-10-01 (§14 records the entry checks).
 **Release:** 6.1.0. The version is settled; the ship call is Stephen's (doctrine overlay P5).
 **Baseline at planning:** tree `54c4a1e` + the planning edits; `DRIVER_REV 46` (`src/isp_bldc_motor.spin2:6796`);
 `test_bench_dual` SRC_REV 70 (`:794`); gates: see §13.
@@ -427,6 +427,28 @@ certified, all 60 bench tiers within the DEBUG footprint; `tools/check_style.sh`
 **Questions:** none open on either side. The one owner decision is scheduled (§1.1) and needs the desk work first.
 
 ---
+
+## 14. Sprint start (2026-10-01)
+
+- **Build version: 6.1.0.** Settled by Stephen's 2026-10-01 rulings (R21); `VERSION` reads `6.0.0` until §10 bumps it.
+- **Working tree:** clean apart from `.vscode/settings.json`, Stephen's own edit, outside every file this sprint touches;
+  left as it is. No untracked source in `src/` or `tools/`.
+- **Tracking (entry check):** the two completed tasks archived («#3643», «#3644»); 8 live tasks, no `seq` collision.
+  Their shape (gist ≤ 60: 2/8; one tag: 0/8; no priority: 0/8; `attention:`: 4/8) predates the creation-time checks and
+  is a backlog observation; `plan-to-tasks` writes this sprint's tasks to shape. Leftover tasks, disposed by §12:
+  «#3640» resumes as §1; «#3636» and «#3641» are superseded by §1 and §3; «#3506», «#3532», «#3562», «#3592», «#3602»
+  stay out of the release by Stephen's rulings. Context: 3 keys, all live; `sprint_established_decisions` is
+  regenerated per §0.3 before any dispatch. Auto-memory: 4 files, index 4 lines. **Verdict: ready.**
+- **Entry baseline** (the substitute gate, `baseline-health` §2a; the gate's inputs `src/`, `tools/`, `.github/` are
+  byte-identical between the measured tree `54c4a1e` and the starting commit, so the planning measurement is this
+  tree's):
+  - `tools/build-check.sh`: PASS — 2 configurations, 50 files, **50/50 tops certified**, both release demos certified,
+    all 60 bench tiers within the DEBUG footprint; **0 warning lines** in the whole log. Excluded, by name:
+    `hng034rm.spin2` (PL-1).
+  - `tools/check_style.sh`: PASS — 45 files, no enforced finding; the vendored files excluded by D1.
+  - **One failure group:** `tools/check_style.sh --self-test` exits 1 (T128 has no fixture). **Fix-when: in this sprint,
+    §6 PL-172** (Stephen's 2026-10-01 "pull in the simple changes/fixes").
+  - **A green gate is a compile result only.** Behaviour is certified on the bench (§9).
 
 ## Revision history
 
