@@ -632,6 +632,8 @@ wheel that keeps rocking against a yielding obstacle restarts the count with eve
   (a controlled stop of both wheels) after about 4 s. Either way the push is current-limited.
 - **Under a steady one-sided load** the two wheels slowed together (49 % and 47 % of their command, the line kept
   within 3 %), and the held wheel kept turning without a fault.
+- **Spinning in place on the lead table's timing** both wheels ran at 57–94 % of their commanded speed, slowing
+  together, with the drive well inside its duty and current range. That is a known issue of v6.0.0 (§9).
 - **A stop from speed:** from about 2.3 m/s at a deceleration of 2,087 mm/s² the platform stopped in 1.2 s and
   1.38 m, as the ramp predicts (1.23 s, 1.41 m). At full speed (about 2.45 m/s on the floor) the duty reached
   96 % of its ceiling, and the pack sagged about 0.3 V (1.5 %) at the 3.5 A peaks.
@@ -845,7 +847,7 @@ Each question says why it matters and what would settle it.
 
 | Question | Why it matters | What would settle it |
 |---|---|---|
-| **Whether the lead table holds speed under a heavy load.** Spinning a 7.7 kg platform in place (both tyres scrubbing, the heaviest load it meets), the lead table's timing ran at 57–94 % of its commanded speed with the drive using well under its duty range, where two fixed timings held 100 % at about twice the current. On straight runs at low speed it held. | The lead table's unloaded saving (§5) is not a win if it costs speed under load. | Being investigated in the driver. |
+| **Whether the lead table holds speed under a heavy load.** Spinning a 7.7 kg platform in place (both tyres scrubbing, the heaviest load it meets), the lead table's timing ran at 57–94 % of its commanded speed with the drive using well under its duty range, where two fixed timings held 100 % at about twice the current. On straight runs at low speed it held. | The lead table's unloaded saving (§5) is not a win if it costs speed under load. | A driver change, designed and planned for the release after v6.0.0, that holds speed with torque up to the current limit; then the same spins on the floor. |
 | **How a start behaves under load at higher speeds.** Measured only at low and medium speed on the floor. | A start's current spike is what a heavy robot feels. | A longer loaded run at speed. |
 | **Whether the hold keeps a platform from creeping on an incline.** Not yet measured on a slope. | It decides the hold's ceiling for a robot that parks on one. | A run on an incline. |
 | **Why L falls with speed.** Is the speed dependence a property of the motor (its electrical time constant) or of the commutation scheme (loop lag)? The textbook predicts the opposite sign (§5.2). | It decides whether a speed law can be written down or must be measured per motor. | The motor's time constant does not care about the drive-pass rate and loop lag does, so the lead measurement repeated on a build with a different pass rate would tell them apart. |

@@ -533,7 +533,7 @@ back up — so the platform keeps its path and loses speed.
 | `start()` blocks for about a second | It samples the current sense at rest so `getCurrent()` reads zero at rest. |
 | A command method can take up to 20 ms | It waits, bounded, for the front cog's answer. `ERR_NO_RESPONSE` means the answer did not come in time and the outcome is unknown. |
 | Setting a time and a distance limit together honours only the time | The distance limit waits until no time limit is armed (§5). |
-| `setMaxSpeed()` never refuses | It caps what you command. A motor that cannot reach its command holds the fastest speed it can sustain. |
+| `setMaxSpeed()` never refuses | It caps what you command. A motor that cannot reach its command runs slower instead of faulting. |
 | Reverse power on a `MOTR_DOCO_4KRPM` uses *negative* increments as "forward" | The DocoEng motor's increment convention is inverted relative to the 6.5″ motor. |
 | Distance methods need a non-zero wheel diameter | With `WHEEL_DIA_IN_INCH = 0.0` they return `ERR_NO_WHEEL_DIA`. Single-motor bench setups usually have it at 0. |
 | `power` 100 is not the fastest the motor can turn | It is the fastest speed that keeps a duty reserve. Above it the motor follows only by field weakening, at a steep cost in current, and can slip. |

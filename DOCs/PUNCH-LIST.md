@@ -65,7 +65,7 @@ do the right thing, and then we can call them done without having to test on the
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-167 | The shipped commutation timing does not hold commanded speed under a heavy load (found 2026-09-30, the hands-off rerun) | Desk root-cause and a design that holds speed with torque up to the current limit (Plan A §11); a measure of benefit to Stephen before it is built; then the floor spins certify it |
+| PL-167 | The shipped commutation timing does not hold commanded speed under a heavy load (found 2026-09-30, the hands-off rerun) | **A v6.0.0 Known Issue; fixed in 6.1.0 (R21).** Designed (`DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md`, approved); then built, and the floor spins certify it |
 | PL-106 | The stop that protects a blocked wheel has never been seen on a blocked wheel | **CERTIFIED** on the floor, twice (2026-09-30: `l_stand,1_143`; the rerun: `r_stand,1_097`). Against a rocking obstacle it can take seconds to latch, or a lag fault stops first: **accepted for 6.0** (Stephen, R18) |
 | PL-150 | The floor run has no cells for the path limiter or the overload hold under load | **CERTIFIED 2026-09-30** (the rerun): both slow together (LDPATH `mis_pm,30`, `l_pct,49,r_pct,47`) and the hold holds without a fault (LDHOLD 276 ms) |
 | PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Wheels-up half CERTIFIED 2026-09-28; **the feel under load CERTIFIED** (Stephen's FlySky drives, both visits; the knobs' rates reach the ramps exactly). The quarter-speed start under load (SPINSTRT / SPINPEAK) is unmeasurable on a one-turn spin: two-turn spins (R20, PL-168) |
@@ -86,7 +86,7 @@ do the right thing, and then we can call them done without having to test on the
 | Entry | What it is | What closes it |
 | --- | --- | --- |
 | PL-120 | The right board's high side sometimes delivers no voltage; the start check refuses it correctly | Pass 7 times its recovery; evidence so far points at the board, not the driver |
-| PL-168 | Test premises the floor runs proved wrong (harness) | Corrected before any rerun (Stephen 2026-10-01: a test built on a wrong premise is corrected before it runs again) |
+| PL-168 | Test premises the floor runs proved wrong (harness) | Corrected before any rerun, as 6.1.0 work (Stephen 2026-10-01: a test built on a wrong premise is corrected before it runs again) |
 | PL-169 | The FlySky demo re-sends the acceleration setting every 250 ms on knob noise | A small deadband in the demos (harmless today) |
 
 Ancillary, recorded but not chased for 6.0: PL-7, PL-12, PL-16, PL-19, PL-20, PL-21, PL-23, PL-27, PL-31, PL-37,
@@ -2599,7 +2599,11 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 ### PL-167 -- under a heavy load the shipped commutation timing gives up speed with torque to spare
 
-> **6.0 status (2026-10-01):** RELEASE — Stephen, on hearing it: *"is there something we can do to address this to make
+> **Status (2026-10-01, R21):** a **v6.0.0 Known Issue**; the fix is **6.1.0** work. Stephen: *"ok yes, A lets get
+> 6.0.0 to release first then we'll follow with this new effort"*. The CHANGELOG, the manual's §6.5 / §9, the REWORK page,
+> and every "holds the fastest speed it can sustain" claim in the user docs now state what v6.0.0 does.
+>
+> *Was (2026-10-01):* RELEASE — Stephen, on hearing it: *"is there something we can do to address this to make
 > it more like a professional driver? i'm assuming one wouldn't do this."* Desk work first (Plan A §11).
 >
 > **Design (2026-10-01):** `DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md`. The cause is proven for the quarter-speed
@@ -2628,7 +2632,7 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 ### PL-168 -- floor-test premises the runs proved wrong
 
-> **Status (2026-10-01):** to be corrected before any rerun (Stephen: *"if we deem a test needing to be run again and it's
+> **Status (2026-10-01):** 6.1.0 work (R21); no test harness ships in a release archive set. To be corrected before any rerun (Stephen: *"if we deem a test needing to be run again and it's
 > build on wrong premise we should correct that before running again, right?"*).
 
 From `FLOOR-RERUN-EVALUATION.md` §4, §2.1, §7:

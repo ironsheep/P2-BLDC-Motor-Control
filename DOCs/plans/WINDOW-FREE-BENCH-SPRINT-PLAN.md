@@ -76,6 +76,7 @@ All are Stephen's, from 2026-09-30 unless dated otherwise.
 | R18 | **The obstacle behaviour as it stands is fine for 6.0** (the platform butting against a rocking obstacle for several seconds before the protective stop latches, or a graceful lag fault). | *"i think the current obstacle behavior is find for this release"* (2026-10-01) |
 | R19 | **Failed downloads on the Pi are a system error with a workaround: ignored.** | *"ignore the failed downloads thats a system error with a workaround so we are ignoring it"* (2026-10-01) |
 | R20 | **The platform is self-contained, not tethered: spins may take more than one turn, within reason** (still inside the 2 m square, R17). Supersedes the one-turn-per-spin limit and every tether precaution. | *"actually we are not teathered as we thought we might be - the platform is self contained so you have more freedom on number of turns, just don't go crazy ;-)"* (2026-10-01) |
+| R21 | **Ship 6.0.0 in the driver's current shape (DRIVER_REV 46) first; the hold-speed-under-load fix (PL-167) and the test-premise corrections (PL-168) follow as the next release, 6.1.0.** PL-167 ships as a Known Issue in 6.0.0. Section 13. | Stephen asked *"What would it take to package the driver in the current shape with our new packaging as a 6.0.0 and then release these changes as a 6.1.0?"*, then *"ok yes, A lets get 6.0.0 to release first then we'll follow with this new effort"* (2026-10-01) |
 | R16 | **FlySky ramps on independent knobs: VRA acceleration 200–3,000 mm/s², VRB deceleration 1,000–3,000 mm/s² (safety first).** | *"let's think safety first. A sounds about right"* |
 | R13 | **Earlier, still in force:** incline postponed (2026-09-29); every mid-run stop is his own and physical (2026-09-29); floor motion limits of 1 m straight and one turn in place (2026-09-27); the fault return run uses `testForceFault()` (2026-09-28). | quoted in `DOCs/analyses/bench/VISIT-6B-FLOOR-RUNSHEET.md` |
 
@@ -353,6 +354,20 @@ before anything is built (overlay P5); the floor spins certify it.
 
 The coast trial's no-latch bound, SPINCTL at equal delivered speed, per-trial obstacle RESULTs, two-turn quarter-speed
 spins (R20) for SPINSTRT / SPINPEAK / SPINLEAD, the mislabelled whys, and the tether wording gone everywhere (R20).
+
+**§11 and §12 move to the 6.1.0 effort (R21).** The design (`DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md`, 857432b) and
+its phase 2 desk step carry on; the build, the premise corrections and the floor run are 6.1.0's.
+
+## 13. Release 6.0.0 in the driver's current shape (R21)
+
+No bench work: every floor and bench result on record is on DRIVER_REV 46, and the release archive sets carry only the
+demos' closures (`tools/make-release.sh`), so no test harness ships. In order:
+
+1. **PL-167 as a Known Issue** in the v6.0.0 entry, voiced for a user (class 1, released); `DRIVER-6.0-REWORK.md`'s
+   "still being worked on" and the manual's §6.5 / §9 restated to match.
+2. **Public-doc currency for 6.0** (the Plan B items in the blast radius): `VOLTAGE-SENSOR.md` as built («#3611»),
+   the README "current state" note, the HDMI demo's stale comment, and the Known Issues list checked whole.
+3. **Ship** («#3516»): VERSION, the entry's date, the three gates in one pass, the release preview, then his tag.
 
 ## Documentation blast radius
 

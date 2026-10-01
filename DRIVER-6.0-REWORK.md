@@ -52,7 +52,7 @@ pass and publishes them. A distance or time limit fires early by exactly that am
 rest at the limit, not past it.
 
 **Protection that responds instead of giving up.** Current folds back above 40 A and derates to 27 A under
-sustained load. A motor that cannot keep up holds the fastest speed it can sustain instead of faulting. A
+sustained load. A motor that cannot keep up runs slower instead of faulting. A
 wheel commanded but unable to turn is stopped after about a second. When control is truly lost, the default
 response re-seeds the field from the halls and ramps down, rather than simply cutting power. On a two-wheel
 platform, one wheel's fault stops the other, and a wheel that can't keep up slows both, so the platform
@@ -95,8 +95,9 @@ couldn't answer:
    keyboard; the loads that need a person are a hand on the frame and the remote.
 
 The first three are complete for 6.0. The floor results are in the motor manual's
-[§6.5](MOTOR-6.5IN-TECHNICAL-MANUAL.md#65-stopping-faulting-and-holding); one of them, the lead table's timing
-under a heavy load, is still being worked on. Every other figure on this page and in the motor manual was measured
+[§6.5](MOTOR-6.5IN-TECHNICAL-MANUAL.md#65-stopping-faulting-and-holding). One of them is a known issue of v6.0.0:
+spinning a loaded platform in place, the lead table's timing gives up speed well inside its current range. A driver
+change for it is designed and planned for the next release. Every other figure on this page and in the motor manual was measured
 with the wheels lifted, and what that leaves unmeasured is listed in the Known Issues of the
 [CHANGELOG](CHANGELOG.md)'s v6.0.0 entry and in the manual's
 [What we do not know yet](MOTOR-6.5IN-TECHNICAL-MANUAL.md#9--what-we-do-not-know-yet).

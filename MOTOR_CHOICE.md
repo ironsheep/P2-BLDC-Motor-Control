@@ -47,7 +47,7 @@ Enjoy!
 
 `power` 100 is the motor's top speed at your drive voltage, and `power` 1 is its slowest. The driver scales every `power` you command between the two, so "100" means the same thing, full speed, whatever battery you use. The table gives that top speed, the same in both directions.
 
-**How the top speed is chosen.** The drive keeps some voltage in reserve at full speed, so it can still correct the motor when something pushes back. Top speed is the fastest speed that keeps that reserve, not the fastest the motor can be made to spin. Unloaded, the motor meets every `power` across the range. Under load it has less in hand near the top, and a heavily loaded motor may run slower than commanded; it then holds the fastest speed it can sustain.
+**How the top speed is chosen.** The drive keeps some voltage in reserve at full speed, so it can still correct the motor when something pushes back. Top speed is the fastest speed that keeps that reserve, not the fastest the motor can be made to spin. Unloaded, the motor meets every `power` across the range. Under load it has less in hand near the top, and a heavily loaded motor may run slower than commanded rather than fault.
 
 All figures are **unloaded**: wheels off the ground, no payload.
 
