@@ -402,8 +402,8 @@ Known Issues live only in `CHANGELOG.md`; README points to it — keep it that w
 Every other open punch-list entry, by its group in "The register for 6.1.0": fixed-in-tree awaiting their binaries
 (PL-20, 21, 44, 53, 64, 65, 134), the dormant scan (PL-46, 98), the deferrals by ruling (serial, DocoEng, PL-102, 164,
 165, 166), the Known Issue PL-118, the watches (PL-43, 120, 126, 136, 139, 171) and the ancillary entries (PL-60, 63,
-103, 105, 108, 109, 110, 119, 135, 170). The paused «#3640» resumes as §1; «#3636» and «#3641» are superseded by §1 and
-§3 when `plan-to-tasks` runs.
+103, 105, 108, 109, 110, 119, 135, 170). «#3640» (the PL-167 design) was closed at task generation, its phase 1 delivered; «#3636» and «#3641» are
+superseded by §1 and §3 (§15).
 
 ## 13. Exit gate (`sprint-plan` §5)
 
@@ -449,6 +449,40 @@ certified, all 60 bench tiers within the DEBUG footprint; `tools/check_style.sh`
   - **One failure group:** `tools/check_style.sh --self-test` exits 1 (T128 has no fixture). **Fix-when: in this sprint,
     §6 PL-172** (Stephen's 2026-10-01 "pull in the simple changes/fixes").
   - **A green gate is a compile result only.** Behaviour is certified on the bench (§9).
+
+## 15. Section ↔ task cross-reference (plan-to-tasks, 2026-10-01; tag `6.1.0`)
+
+| Plan § | Deliverable | Task | seq |
+| --- | --- | --- | --- |
+| §1.1 | Design D-5, the held field at the limit; Stephen rules on its benefit | «#3645» | 1 |
+| §6 | Style gate: PRI docs on code lines; T128 fixture (PL-12, PL-172) | «#3646» | 5 |
+| §6 | Booleans print as TRUE/FALSE (PL-23) | «#3647» | 6 |
+| §6 | Delete the unused `bc_*` assets (PL-37) | «#3648» | 7 |
+| §6 | FlySky knob deadband (PL-169) | «#3649» | 8 |
+| §7 | Compile-time pin-group refusal (PL-67) | «#3650» | 9 |
+| §4 | Token-table self-check (PL-96, PL-97) | «#3651» | 10 |
+| §2 | Ladder A-3 / A-5 verdicts | «#3654» | 11 |
+| §5 | Commit in every bench log (PL-68); closes batch A's gate | «#3652» | 12 |
+| §8 | `DRIVER_BOARDS.md` | «#3653» | 13 |
+| §1.2 | Build D-1..D-3 (+ D-5 as ruled) | «#3655» | 14 |
+| §3 | Floor premises (PL-168, PL-132, PL-160) | «#3656» | 15 |
+| §3 | Floor cells for the fix; closes batch B's gate | «#3657» | 16 |
+| §9 | Prepare the visit: pack, run sheet, `BENCH: READY` | «#3658» | 17 |
+| §9 | Evaluate the visit's logs | «#3659» | 18 |
+| Blast Radius | Bring the docs current | «#3660» | 19 |
+| §10 | Release 6.1.0 | «#3661» | 20 |
+
+**Superseded or closed at generation:** «#3640» (the PL-167 design, phase 1 delivered and approved) completed; «#3636»
+and «#3641» SUPERSEDED by §1 / §3. The five out-of-release tasks («#3506», «#3532», «#3562», «#3592», «#3602») keep low
+priority and sort after this set (todo-mcp numbers `seq` within a priority, so their 1-5 do not compete with this set's).
+
+**Dispatch shape (`plan-to-tasks` §3c).** This sprint keeps the project's `arbiter-serial`: the harness tasks («#3651»,
+«#3654», «#3656», «#3657») share `src/test_bench_dual.spin2`, and «#3655» holds `src/isp_bldc_motor.spin2`, both on
+the exclusive-resource roster. **Two-phase:** «#3645» (the design returns, the arbiter reviews, Stephen rules) and
+«#3655» (the D-2 routine first, reviewed, then the rest). **Gates:** batch A («#3646»-«#3651», «#3654») is gated once in
+«#3652»; batch B («#3655»-«#3657») once in «#3657»; «#3653» and the docs touch no compiled source. **Ordering edges:** the
+premises task follows the build because the coast bound follows whatever D-5 does to the blocked count; the docs follow
+the visit's evaluation (certified behaviour); the release follows the docs.
 
 ## Revision history
 
