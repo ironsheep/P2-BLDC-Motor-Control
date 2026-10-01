@@ -77,7 +77,7 @@ do the right thing, and then we can call them done without having to test on the
 | PL-95 | The drive ran saturated above mid-range and still reported AT_SPEED | **CERTIFIED 2026-09-30**: HELDATSPD 0 bad over every OBSTACLE drive and the GRAB window (443 + 547 + 254 samples); the kick certified at the RC pass |
 | PL-111 | A serial host could not clear a protective stop | API half **CERTIFIED 2026-09-30** (PROTCLR PASS: refused, `clearEmergency()` held, `clearProtectiveStop()` cleared, next drive taken); the serial half is not in this release |
 | PL-132 | The blocked-wheel stop shorted the phases even under coast | Control **PASS** 2026-09-30 (BLKSHORT 14 mV both); the COAST cell NOMEAS — a lag fault pre-empted the latch. Rerun floor-obstacle-coast |
-| PL-144 | The two-wheel path limiter cycled the platform between crawl and full | 2026-09-30: LDHUNT **FAIL, 3 of 1** — two engages in the free start-up (released in 0.6-0.7 s), one held through the hold; no cycling under the hold. The cell counted the whole lifetime (harness scope, H3). Rerun floor-grab with LDHUNT judging transitions inside the hold's window || PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | 2026-09-30 Rev A run: the every-frame defect ABSENT (407 of 220,000 frames); cells NOMEAS; the residual reaches only TEST USE limits (ancillary). Stephen decides whether anything further is chased |
+| PL-144 | The two-wheel path limiter cycled the platform between crawl and full | 2026-09-30: LDHUNT **FAIL, 3 of 1** — two engages in the free start-up (released in 0.6-0.7 s), one held through the hold; no cycling under the hold. The cell counted the whole lifetime (harness scope, H3). Rerun floor-grab with LDHUNT judging transitions inside the hold's window || PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | 2026-09-30, two Rev A runs: the every-frame defect ABSENT on both boards (at most 4.3 % of frames, on noise); cells NOMEAS (the test limit sits at the sense chain's noise floor); the residual reaches only TEST USE limits (ancillary). No further Rev A run for 6.0 unless Stephen asks |
 
 **Watch**
 
@@ -2455,8 +2455,8 @@ cadence, not the absent test, and the RC pass's steady readings certify the samp
 
 ### PL-163 -- on a Rev A board below about 2.7 A, the fold-back cut the drive on every driven frame
 
-> **6.0 status (2026-09-30, after the Rev A run):** the every-frame defect is ABSENT (MEASURED, below); both cells NOMEAS
-> by their own rules; the residual (FOLD_MIN_MV's noise premise, false on Rev A) is ANCILLARY -- TEST USE limits only,
+> **6.0 status (2026-09-30, after both Rev A runs):** the every-frame defect is ABSENT on both Rev A boards (MEASURED,
+> below); both cells NOMEAS by their own rules (the test limit sits at the sense chain's noise floor); the residual (FOLD_MIN_MV's noise premise, false on Rev A) is ANCILLARY -- TEST USE limits only,
 > no user can reach it (overlay P5). Not chased for 6.0 unless Stephen asks.
 
 **Found 2026-09-27** by the DRIVER_REV 37 desk review (PL-146's rest-offset work).
@@ -2524,6 +2524,19 @@ threshold, `FOLD_MIN_MV` (a fold needs a 5 mV net reading).
 - **The LEFT board did not start:** its start check failed the phase U lead after retries (`healthFailed = $0000_0004`,
   `error,-1_020`); V and W passed, and the RIGHT Rev A board passed all three. Asked of Stephen (lead open, or a false
   refusal); a false refusal would be a start-check finding of its own, not PL-163's.
+
+**2026-09-30 21:09, the Rev A rerun** (`t0-reva`, test_bench_t0 SRC_REV 30, hands-off;
+`DOCs/analyses/bench/2026-09-30/reva2/REVA-RERUN-EVALUATION.md`, log `debug_260930-210953.log`).
+- **The LEFT board starts** after Stephen's lead check: `chk,$5F,fail,$0`, every lead probe ~800 mV. The first run's
+  refusal was the lead; the start check's refuse and pass are both now seen on Rev A.
+- **MEASURED, the defect stays absent on both boards:** unloaded `fold_win` 734 / 9,485 (LEFT, powers 10 / 5) and
+  127 / 919 (RIGHT), of 220,000. The LEFT's power-5 leg folds 4.3 % on noise: its mean reads 1 mV above its netted zero.
+- **The hands-off positive control's premise is false:** the hard speed-up (power 40 at 10,000 mm/s²) never raised the
+  mean net reading to 3 mV (`net_mean_mv` 1 / 0), because the fold itself, at 4 mV (about 0.8 A of DC link), cut every
+  frame that crossed it; the wheels were still spinning up at 1.5 s. FOLD and FOLDPOS NOMEAS on both boards.
+- **Disposition:** at a 2 A limit every Rev A reading sits at the sense chain's noise floor (2 A is about 10 mV against a
+  12-13 mV zero; noise peaks 6-8 mV), at a limit no user can set. No further Rev A runs for 6.0; the residual stays
+  ancillary (overlay P5) unless Stephen asks.
 
 ### PL-164 -- the driver's supported clock range is one point, 270 MHz; users choose their own clock
 
