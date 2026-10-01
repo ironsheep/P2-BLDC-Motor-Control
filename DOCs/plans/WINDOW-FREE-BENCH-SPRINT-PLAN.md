@@ -73,6 +73,9 @@ All are Stephen's, from 2026-09-30 unless dated otherwise.
 | R14 | **Both grips are held until the program stops the motion:** one start cue, and no let-go count. | *"ok A"*, to option (a), "hold until it stops" |
 | R15 | **R4 refined (2026-09-30, after the floor visit): a command may chain many checks when none needs him in between.** One action per command was only because he had to act at each one. | *"As long as you don't need me interceding, running multiple checks per command is just fine. The only reason we did that single check per command is because you needed me at each one."* |
 | R17 | **A hands-off floor run stays inside a 2 m × 2 m square; he can reset the platform to a fixed start within it before each run.** | *"As long as you keep the robot in a 2 m by 2 m square area, it can run independently."* *"If you need me to reset it to a fixed location before each run, I can do that as well within the 2 m area."* |
+| R18 | **The obstacle behaviour as it stands is fine for 6.0** (the platform butting against a rocking obstacle for several seconds before the protective stop latches, or a graceful lag fault). | *"i think the current obstacle behavior is find for this release"* (2026-10-01) |
+| R19 | **Failed downloads on the Pi are a system error with a workaround: ignored.** | *"ignore the failed downloads thats a system error with a workaround so we are ignoring it"* (2026-10-01) |
+| R20 | **The platform is self-contained, not tethered: spins may take more than one turn, within reason** (still inside the 2 m square, R17). Supersedes the one-turn-per-spin limit and every tether precaution. | *"actually we are not teathered as we thought we might be - the platform is self contained so you have more freedom on number of turns, just don't go crazy ;-)"* (2026-10-01) |
 | R16 | **FlySky ramps on independent knobs: VRA acceleration 200–3,000 mm/s², VRB deceleration 1,000–3,000 mm/s² (safety first).** | *"let's think safety first. A sounds about right"* |
 | R13 | **Earlier, still in force:** incline postponed (2026-09-29); every mid-run stop is his own and physical (2026-09-29); floor motion limits of 1 m straight and one turn in place (2026-09-27); the fault return run uses `testForceFault()` (2026-09-28). | quoted in `DOCs/analyses/bench/VISIT-6B-FLOOR-RUNSHEET.md` |
 
@@ -330,6 +333,26 @@ swB and swC, and a banner line with the duty and feed-forward ceilings.
 
 **Verify.** Every tier compiles in its bench form; the fence refuses a leg planned past the square (a desk case in the
 source's own derivation); the run sheet walks against the code; one gate over the batch.
+
+**Status (2026-10-01).** Both visits are run and analysed (`DOCs/analyses/bench/2026-09-30/{reva,floor,reva2,floor2}/`).
+Certified on the floor: PL-93, PL-95, PL-106, PL-111 (API), PL-144, PL-150, PL-160's feel, X-5. Open: PL-167 (§11) and the
+test premises in PL-168 (§12), in that order (Stephen 2026-10-01: *"for everything that we've learned in this run let's
+make sure all our records are up to date, then do the design work, then the test premise work"*).
+
+## 11. Holding speed under load (PL-167)
+
+**Why.** Spinning in place on the floor, the shipped commutation timing gave up speed (57–94 % of command) while using a
+fraction of its duty and current, where other timings held speed at about twice the current (`floor2/FLOOR-RERUN-EVALUATION.md`
+§2.1). Stephen asked for the professional-driver answer.
+
+**The rule a design must meet:** speed is held by torque, up to the current limit; the field gives way only at that
+limit, and the drive says so. Desk root-cause first (overlay P10), then the design, then a measure of benefit to Stephen
+before anything is built (overlay P5); the floor spins certify it.
+
+## 12. Test premises corrected before any rerun (PL-168)
+
+The coast trial's no-latch bound, SPINCTL at equal delivered speed, per-trial obstacle RESULTs, two-turn quarter-speed
+spins (R20) for SPINSTRT / SPINPEAK / SPINLEAD, the mislabelled whys, and the tether wording gone everywhere (R20).
 
 ## Documentation blast radius
 

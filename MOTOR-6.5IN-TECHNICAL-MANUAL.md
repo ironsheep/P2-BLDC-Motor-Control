@@ -615,7 +615,26 @@ limit time at the ceiling it hands off to the phase short. That was measured whe
 sizes nothing for a slope (§9).
 
 **A wheel commanded but not turning** is caught by the blocked-rotor stop about 1 s in, in the user's
-stop mode.
+stop mode. The second is counted from the moment the wheel stops ticking with the field pressed against it, so a
+wheel that keeps rocking against a yielding obstacle restarts the count with every tick (below).
+
+**On the floor** (a 7.7 kg two-wheel platform, two units, Rev B boards):
+
+- **Distance stops land with the platform's mass behind them**: spins in place and 1 m straight runs came to rest
+  within 3 hall ticks of their limits, at every speed tried.
+- **A fault on one wheel stops the other with it**: 2 s after a forced fault the partner wheel was at 0 % of its
+  speed, both ramped down together, and the platform's heading changed by under 2°.
+- **After a fault and its recovery the next drive draws normal current**: 0.72–0.95 times its current before the
+  fault.
+- **Against a solid obstacle the blocked-rotor stop latched** after the wheel had stood still for 1.0–1.1 s, refused
+  drives until cleared, and left the phases shorted in brake mode. **Against a yielding obstacle** the platform
+  rocks and pushes repeatedly: one run pushed for about 6 s without latching, another ended in a fault response
+  (a controlled stop of both wheels) after about 4 s. Either way the push is current-limited.
+- **Under a steady one-sided load** the two wheels slowed together (49 % and 47 % of their command, the line kept
+  within 3 %), and the held wheel kept turning without a fault.
+- **A stop from speed:** from about 2.3 m/s at a deceleration of 2,087 mm/s² the platform stopped in 1.2 s and
+  1.38 m, as the ramp predicts (1.23 s, 1.41 m). At full speed (about 2.45 m/s on the floor) the duty reached
+  96 % of its ceiling, and the pack sagged about 0.3 V (1.5 %) at the 3.5 A peaks.
 
 ### 6.6 What the driver can prove about the motor at start
 
@@ -761,7 +780,8 @@ Everything here follows from §§4–7 and cites the section it comes from.
 5. **Stay below the duty knee** where you care about efficiency or about current readings meaning
    anything. `power` 100 keeps about 7 % unloaded duty reserve. Above the knee the wheel follows
    only by field weakening, draws amps unloaded, and can slip with a 23–25 A peak (§6.3).
-6. **Every speed figure is wheels-up.** The reserve left under load is not yet measured (§6.1).
+6. **Every speed figure is wheels-up.** On the floor, driving a 7.7 kg platform at full stick, the duty reached 96 %
+   of its ceiling (§6.5); the reserve left under a heavier load is not yet measured.
 
 **Starting and stopping**
 
@@ -825,7 +845,9 @@ Each question says why it matters and what would settle it.
 
 | Question | Why it matters | What would settle it |
 |---|---|---|
-| **Behaviour under load.** Everything above is wheels-up: how a start behaves under load, how much of the ceiling's 7 % duty reserve a load leaves, whether the lead table's saving holds, whether the hold keeps a platform from creeping on an incline, and what a stop from speed does to a platform rather than a lifted wheel. | These are what a robot, as opposed to a wheel, experiences. | A loaded floor run. |
+| **Whether the lead table holds speed under a heavy load.** Spinning a 7.7 kg platform in place (both tyres scrubbing, the heaviest load it meets), the lead table's timing ran at 57–94 % of its commanded speed with the drive using well under its duty range, where two fixed timings held 100 % at about twice the current. On straight runs at low speed it held. | The lead table's unloaded saving (§5) is not a win if it costs speed under load. | Being investigated in the driver. |
+| **How a start behaves under load at higher speeds.** Measured only at low and medium speed on the floor. | A start's current spike is what a heavy robot feels. | A longer loaded run at speed. |
+| **Whether the hold keeps a platform from creeping on an incline.** Not yet measured on a slope. | It decides the hold's ceiling for a robot that parks on one. | A run on an incline. |
 | **Why L falls with speed.** Is the speed dependence a property of the motor (its electrical time constant) or of the commutation scheme (loop lag)? The textbook predicts the opposite sign (§5.2). | It decides whether a speed law can be written down or must be measured per motor. | The motor's time constant does not care about the drive-pass rate and loop lag does, so the lead measurement repeated on a build with a different pass rate would tell them apart. |
 | **Is the alignment the global optimum?** About 35 % of the electrical cycle has been swept (§4.4); one minimum per direction lies inside it. | Theory says there is only one, but that is an argument. | A full-cycle sweep, by a method that does not drive the motor into the current wall to get there. |
 | **Unit-to-unit variation.** Two units measured; Z agrees within 0.06° and resistance within 7 %. | Two is not a population. | More units — Z can be measured on any board (§8.1). |
@@ -839,7 +861,8 @@ Each question says why it matters and what would settle it.
 ## 10 · About the measurements
 
 Every measurement here was taken on two units of this motor, on a Rev B 64010 board, with the P2 at
-270 MHz and the wheels lifted, during the 6.0 driver work in September 2026. The measurements were made
+270 MHz, during the 6.0 driver work in September 2026: with the wheels lifted, except the floor results in §6.5
+and §9, which were taken with the two units driving a 7.7 kg two-wheel platform. The measurements were made
 with the driver's own sense channels, read through the programs in `src/test_*.spin2`;
 [TECHNIQUES.md](TECHNIQUES.md) explains the methods. The analyses behind each number are kept in this
 repository's `DOCs/analyses/` folder.

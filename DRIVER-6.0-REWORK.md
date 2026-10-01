@@ -89,11 +89,15 @@ couldn't answer:
    for every check, judged against a criterion written before the run. Each check was also shown to *fail*
    on a case built to fail it — a lead withheld in firmware, a hall pair read as swapped — because a check
    that has only been seen to pass hasn't been tested.
-4. **On the floor, loaded.** How the platform behaves with its weight behind the wheels: the feel of the
-   ramps, the hold on a slope, stops from speed.
+4. **On the floor, loaded.** How the platform behaves with its weight behind the wheels, on a 7.7 kg two-wheel
+   platform: distance stops, the fault response, the current after a fault, the blocked-rotor stop, a one-sided
+   load, and the feel of the ramps under a remote control. Each run starts by itself and needs no one at the
+   keyboard; the loads that need a person are a hand on the frame and the remote.
 
-The first three are complete for 6.0. Every figure on this page and in the motor manual was measured with
-the wheels lifted, and what that leaves unmeasured is listed in the Known Issues of the
+The first three are complete for 6.0. The floor results are in the motor manual's
+[§6.5](MOTOR-6.5IN-TECHNICAL-MANUAL.md#65-stopping-faulting-and-holding); one of them, the lead table's timing
+under a heavy load, is still being worked on. Every other figure on this page and in the motor manual was measured
+with the wheels lifted, and what that leaves unmeasured is listed in the Known Issues of the
 [CHANGELOG](CHANGELOG.md)'s v6.0.0 entry and in the manual's
 [What we do not know yet](MOTOR-6.5IN-TECHNICAL-MANUAL.md#9--what-we-do-not-know-yet).
 

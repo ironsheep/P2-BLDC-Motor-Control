@@ -131,8 +131,6 @@ A reworked drive: lower current, a quiet start, built-in protection, and every c
   current-limited: that current never passes the board's current sensor. Ramp down before stopping where
   you can (`stopMotor()` does; the stop limits do)
 - Speeds are characterized unloaded; under load the motor has less torque in reserve near top speed
-- The jerk-limited ramp is measured with the wheels lifted; its feel and currents under load are not yet
-  measured, and its built-in rates (1,000 / 1,470 mm/s², 250 ms easing) may be retuned when they are
 - `setHoldLimits()`'s defaults were sized with the wheels unloaded
 - `calibrate()` is not implemented
 - The drive is tested and supported at a 270 MHz system clock (`_clkfreq = 270_000_000`, as in every demo);
