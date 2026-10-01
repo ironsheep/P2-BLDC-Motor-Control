@@ -553,6 +553,248 @@ public "torque-limited" signal (Q4) would be an API addition mirrored in `isp_st
 - Speed-ups arrive when the ramp says.
 - Nothing changes unloaded: same current, same speed, same ramps.
 
+### 4.9 D-5 — where the held field sits while a limiter has the duty («#3645», PL-167, PL-105)
+
+**Status: DESIGN, for Stephen's ruling (P5). No driver code.** Plan §1.1. Not to be confused with *R18.4 D-5*, the
+source's label for `holdDecay` (`:7738`, `:8716`); the build should name this one "PL-167 D-5".
+
+#### 4.9.1 What it answers
+
+Under D-1..D-3 one modelled case regresses (§3.5, R3). A 4 N·m load on the LEFT wheel from 1.0 s to 2.0 s, on a straight
+drive at power 13, leaves the platform at **40.4 / 41.0 %** of command over the 1.5 s after release, against today's
+**83.9 / 82.9 %** (`release`). The chain (`rtrace acc_shift=16 dB=1 boost_shift=10 dC=1`):
+
+1. D-2 lifts the duty to the 27 A limit in ~60 ms. The field is held at `LAG_HOLD` 100.
+2. At a stall the voltage has no back-EMF to work against, so the current is in phase with it. The torque peak is
+   then where the voltage sits on the q axis: `err` ≈ e90, 56-57 counts at the schedule's MEDIUM placement (§3.3).
+   A field held at `err` 100 leads the rotor by 79-121 counts, 22-64 past that peak. **On that side of the peak a
+   rotor that slips back loses torque**, down to none at 64 counts (90°) past. So the wheel stalls with 27 A flowing.
+3. D-3 correctly lets the field give way at the limit. At a stall the limit never releases, so `holdDecay` walks
+   `drv_incr` to the floor, and the path limiter scales both wheels to 66 ‰.
+
+The lever is where the held field sits once a limiter has the duty. A fixed lower hold failed (D-4, §7 Q1). The
+blocked stop must still latch a wheel stopped at its limit (`bFrontProtect()`, `:2864-2904`).
+
+#### 4.9.2 The mechanism
+
+**D-5a, driver: the limit hold.** On a running pass in SPIN_UP or AT_SPEED where a limiter acted since the previous
+pass (D-3's own fact: `duty_capped_ + foldback_cnt_` differs from `lim_seen`):
+- the field advances only while `lag_s < LAG_LIM`, **64**, instead of `LAG_HOLD`;
+- a field already past `LAG_LIM` is **set back to it in that pass**:
+  `angle_ −= sign(drv_incr) × (lag_s − LAG_LIM) << 24`, and `prior_angle` moves with it;
+- the held pass counts `lag_held_` and calls `holdDecay` as today (D-3 gates the decay on the same fact).
+
+Every other pass keeps today's `LAG_HOLD` 100. SPIN_DN and SLOW_TO_CHG are excluded: `holdDecay` does not walk them,
+and the PL-55 ceiling, the one limiter of SPIN_DN, would otherwise pin the lag under its own lift at `LAG_SOFT`.
+
+**D-5b, front cog: the blocked count.** `bFrontProtect()` counts a pass when a drive is commanded, the state is driving
+and there is no hall tick, and **either** `|err| ≥ LAG_SOFT` (today) **or a limiter acted since its previous pass**
+(`duty_capped + foldback_frames` changed; both are already in the status run).
+
+The sketch below replaces `.justIncr`'s `cmps lag_s, #LAG_HOLD wc` (`:7734`) with `call #holdGate`, LUT-resident. It is
+a design sketch: the build counts and checks it.
+
+```
+holdGate        mov     tmpX, duty_capped_              ' D-3's fact: did a limiter act since the previous pass?
+                add     tmpX, foldback_cnt_
+                cmp     tmpX, lim_seen              wz  ' NZ: limited. Z survives to the return on every path
+    if_nz       cmp     drv_state_, #DCS_SPIN_DN    wc  ' C: SPIN_UP or AT_SPEED (:6693; .justIncr is reached only
+    if_nz_and_c jmp     #.limHold                       '  running, so no state below SPIN_UP -- the build confirms)
+    _ret_       cmps    lag_s, #LAG_HOLD            wc  ' today's gate: C = the field advances
+.limHold        cmps    lag_s, #LAG_LIM             wc  ' the limit hold: C = the field advances
+    if_c        ret                                     ' RET without WC/WZ keeps C (p2kbPasm2Ret)
+                mov     tmpX, lag_s                     ' the set-back in angle_ units, (lag_s - LAG_LIM) << 24 <= 63 << 24
+                sub     tmpX, #LAG_LIM
+                shl     tmpX, #24
+                testb   drv_incr, #31               wc  ' signed as the pass forms lag_s (:7642-7643); writes C only
+    if_c        neg     tmpX
+                sub     angle_, tmpX                    ' err_ reads LAG_LIM on the next frame
+                sub     prior_angle, tmpX               ' I-7: CMPM sees no move, so fwdrev keeps its side (:7915-7916)
+    _ret_       cmps    lag_s, #LAG_LIM             wc  ' NC again: held. lag_held_ and holdDecay follow at .justIncr
+```
+
+**Why `prior_angle` moves too (DERIVED).** `.ctlMotor` reads the direction from the field's last move:
+`cmpm angle_, prior_angle wcz` / `if_nz wrc fwdrev` (`:7915-7916`). CMPM's C is the sign of `angle_ − prior_angle`
+(`p2kbPasm2Cmpm`). A bare set-back would flip `fwdrev` for a forward drive. The error would then be read against the
+other offset (`:7924-7925`), which is 2L away (up to 29 counts), and it would stay flipped while the field is held.
+The model has no `fwdrev`, so it models only the corrected form.
+
+#### 4.9.3 The invariants
+
+- **(I-4)** While a limiter has the duty in SPIN_UP or AT_SPEED, the field is held no more than `LAG_LIM` ahead of the
+  rotor's sector: after such a pass, `err_` reads at most 64. By construction: the set-back writes it.
+- **(I-5)** The drive parks a field against a still rotor at only two places: `LAG_HOLD` 100 with no limiter, and
+  `LAG_LIM` 64 at a limiter. Both lie outside the wrap-fault lattice (§4.9.4).
+- **(I-6)** The blocked stop counts every pass on which the drive pins a still wheel: past `LAG_SOFT`, or at a
+  limiter.
+- **(I-7)** The set-back moves the field, never the direction `err_` is read in.
+- **I-1..I-3 stand.** D-5 acts only on limited passes. Steady running below the limit is untouched: every `design`
+  leg is identical digit for digit. The give-way stays D-3's.
+
+#### 4.9.4 Why it cannot enter the 82.3-88.3 window (DERIVED)
+
+- **The lattice.** A parked field reading L reads L + 42.67k (wrapped) after k backward hall ticks. It faults when that
+  lands in [125, 131] mod 256 (`|err_| ≥ 125` on the wrapped 8-bit value, `:7926-7930`).
+  - So L is unsafe when L mod 42.67 lies within 3 counts of the lattice points {0, 42.7, 85.3}.
+  - Those are the windows −3..3, 39.7..45.7 and 82.3..88.3. The last is §7 Q1's.
+- **64 sits in the middle of the safe band.** 64 = 1.5 sectors is residue 21.3, 18.3 counts from both edges.
+  - Its backward ticks read 106.7, −106.7, −64, −21.3, 21.3 and 64, none within 18 counts of ±125.
+  - 100 is residue 14.7, 11.7 counts from an edge. 21.3 and 106.7 are equally central but sit before the peak and
+    further past it.
+- **While limited, a back tick is answered at once.** The next pass (≤ 0.52 ms) sets the field back to 64, so a
+  limited parked field is only ever read one tick back (106.7).
+- **Set back, never walked.** A field above 64 when the limiter acts reaches 64 in one pass, so it never dwells in the
+  window while limited. Candidate C3, which walks, reads 88 and 84 on its way down.
+- **The margin covers what moves the reading.**
+  - A lead-schedule write moves `err_` by the change in L. The schedule spans 5-20.5°, which is at most 11 counts.
+  - Real hall sectors are not exactly 42.67 counts.
+  - Both are inside 18.3. The model cannot show the lead effect: its `err` does not include the offset (§2.4).
+- **What D-5 does not remove.** The field still transits 82.3-88.3 at its own speed against a rotor that has just
+  stopped, before any limiter acts. Today's drive and D-1..D-3 carry this too. It is the one fault per obstacle cell
+  below: the faulting wheel had been held 1-2 passes and set back at most once.
+
+#### 4.9.5 What the blocked stop counts
+
+- **Today's test never counts it.** Under D-5 a wheel stopped at its limit reads `|err|` 64, below `LAG_SOFT`.
+  - Model, D-5a without D-5b, solid object: **0 of 16 latch.** 15 run 7.8 s unlatched and 1 faults.
+  - Constraint 2 fails exactly as predicted. This is D-5b's negative.
+- **D-5b counts on the limiter, not on `err`.** A still wheel at its limit folds back on every 1 ms front pass.
+  - With D-5b, solid object: 15 of 16 latch.
+  - Every latch in the grid comes 1,000-1,055 ms after the wheel's last tick, inside the harness band of 988-1,168
+    (`test_bench_dual.spin2:15961-15962`).
+- **The two cheaper counts fail (DERIVED).**
+  - Lowering the threshold to `LAG_LIM` needs no new long. But the parked field reads exactly 64, a margin of 0, and a
+    lead write can lower `err_` by up to 11 counts and stop the count.
+  - Counting `lag_held` fails the same way: below 64 the field is not held. At the decayed floor (1,500 per pass,
+    about 0.17 counts/s) it takes about 6 s per count to creep back.
+- **BLKSTOP's bounds stay valid.** The latch still needs `BLOCKED_PASSES` after the last tick (the lower bound). D-5b
+  can only start the count sooner (the upper bound). Its premise text (`test_bench_dual.spin2:15925`) names today's
+  test, and the build amends it.
+- **BLKLIMIT stays meaningful.** At 64 the count runs only while the limiter acts.
+- **A premise change for the floor (as R8).**
+  - On the rocking (yielding) object the model now **latches 15-16 of 16**. D-1..D-3 rocked 5-7 of 16 for 7.7 s.
+  - The torque at the limit stalls the wheel against the spring. The blocked count alone, without the hold, gives
+    9 latched / 6 rocked / 1 fault.
+  - The coast trial's expectation ("rocks without latching", R18) becomes "latches". The floor premises are corrected
+    before the next run.
+
+#### 4.9.6 Candidates considered
+
+| Candidate | Release, 4 N·m, L / R | Other | Verdict |
+|---|---|---|---|
+| **C1:** limit hold at 64, set back in one pass, + D-5b | **99.9 / 100.0 %** | grid in §4.9.7 | **Chosen** |
+| C2: lower hold while limited, no set-back | 40.4 / 41.0 % | — | No effect: a stalled rotor never brings the lag down to the lower hold |
+| C3: set back 4 counts per pass | 95.2 / 95.0 %, path limiter to 762 ‰ | rocking 16 / 0 / 0 | Rejected on I-5: walks 100 → 96 → 92 → 88 → 84, through the window, while limited |
+| C4: C1, sticky until a forward tick | 100.0 / 100.0 % | faults 1/0/1/1/1 against C1's 1/1/0/1/1 (solid, rocking 1,000, rocking 3,000 at central; solid, rocking at refit) | Rejected: a register and a hall compare more, no modelled gain |
+| C5: a fixed `LAG_HOLD` 64 | — | every spin leg held 17-499 passes in the window, 82.2-96.8 % | Rejected: fails I-1. The limiter gate is load-bearing |
+| C1 + D-4 (`LAG_HOLD` 86) | — | rocking 13 / 0 / 3 | Not taken: more faults |
+
+#### 4.9.7 The measure of benefit (for Stephen; P5)
+
+The model's central parameters unless marked; refit e90_L18=52 Lh=0.00085; adverse e90_L18=53 Tnoise=0.4 Iz=0.42.
+"Today" is quoted from §5 / §7 Q1 unless re-run. The D-1..D-3 column was re-run for every row below. Commands are in
+§9.
+
+| What a user sees | Today | D-1..D-3 | **D-1..D-3 + D-5** | Standing |
+|---|---|---|---|---|
+| 4 N·m on 1.0-2.0 s, then released: speed over the next 1.5 s, L / R | 83.9 / 82.9 % | 40.4 / 41.0 %: stalls at 27 A, path 66 ‰ | **99.9 / 100.0 %**, no path limiting, 3 set-backs | MODELLED |
+| The same at the refit / at adverse | — | 74.0 / 74.2 % / 64.9 / 65.0 % | **99.9 / 100.0 % / 100.0 / 100.0 %** | MODELLED |
+| Spin legs (all ten), central / refit / adverse | 57-94 % (MEASURED) | 99.6-100 %, no hold, no path limiting | **Identical, digit for digit**: clean at all three sets | MODELLED |
+| Duty swing / err_pk while spinning | 803-1,647 / 84-113 (MEASURED) | 15-184 / 67-70; adverse 53-544 / 67-76 | Identical | MODELLED |
+| Current, schedule against legacy at equal speed | — | 2.5-4.4× less | Identical | MODELLED (ratio) |
+| Unloaded current | — | 0.04 / 0.09 / 0.13 A | Identical | DERIVED (acts only at a limiter) + MODELLED |
+| One-sided load at power 13, L / R | 1 N·m 98.6 / 99.3; 2: 61.8 / 61.5; 4: 7.8 / 12.1 % | 1: 99.0 / 100; 2: 99.4 / 100; 4: 99.6 / 100 % at 12.4 A | 1: 99.0 / 100; **2: 99.2 / 100 (−0.2)**; 4: 99.6 / 100 % at 12.1 A | MODELLED |
+| Where the field gives way | at 0.05-0.14 A (MEASURED) | 8 N·m (97 N): 25.2 / 25.7 %, 27 A, 1,050 limit frames | **8 N·m: 99.9 / 100 %**, 21.2 A mean, 22.7 A peak, no limit frame in the window. The give-way load is now above 8 N·m | MODELLED; where above 8 N·m UNKNOWN (not searched) |
+| Ramp at 3,000 mm/s², arrival / prediction | 696 / 320 ms (MEASURED) | 322 / 321 ms | Identical | MODELLED |
+| Ramp at 200 mm/s², FlySky; SPINSYM | as §5 | UNKNOWN | UNKNOWN (unchanged) | UNKNOWN |
+
+**The one row that moves the wrong way.** A 2 N·m load drops from 99.4 to 99.2 % (`step`), and in `release` from 99.8
+to 99.7 %. That is 0.16 of a hall tick over the 1.5 s window. It comes from one set-back on the load's current
+transient (LEFT phase mean 8.32 → 8.69 A). It is reported, not hidden: the plan's "no row may get worse" is not met to
+the letter.
+
+**The obstacle grid** (`block`, 16 contacts per cell, the session's 2 A limit). Each cell reads latched / rocked 7.7 s /
+lag fault, then the contact-to-latch median and range in ms:
+
+| Obstacle | Parameters | Today | D-1..D-3 | **D-1..D-3 + D-5** |
+|---|---|---|---|---|
+| Solid, 50,000 N/m | central | 15 / 0 / 1; 1,023 (1,004-1,620) | 14 / 0 / 2; 1,005 (987-1,102) (re-run) | **15 / 0 / 1; 1,011 (1,011-1,075)** |
+| Solid, 50,000 N/m | refit | — | 14 / 1 / 1; 1,030 (1,021-1,139) | **15 / 0 / 1; 1,011 (1,010-2,030)** |
+| Rocking, 1,000 N/m | central | 10 / 5 / 1; 1,072 (1,055-1,157) | 8 / 7 / 1; 1,062 (1,045-1,124) (re-run) | **15 / 0 / 1; 1,092 (1,080-1,923)** |
+| Rocking, 1,000 N/m | refit | 9 / 6 / 1; 1,093 (1,081-3,563) | 6 / 6 / 4; 1,082 (1,075-1,450) | **15 / 0 / 1; 1,104 (1,083-2,003)** |
+| Rocking, 3,000 N/m | central | — | 10 / 5 / 1; 1,025 (1,010-1,975) | **16 / 0 / 0; 1,047 (1,042-2,647)** |
+| Negative: D-5a without D-5b, solid | central | — | — | 0 / 15 / 1: never latches |
+
+- **Every cell is no worse than D-1..D-3.** More latched, fewer rocked, and faults equal or fewer (1 / 1 / 1 / 1 / 0
+  against 2 / 1 / 1 / 4 / 1).
+- The longer latches (to 2.6 s after contact) come on contacts that rocked through several ticks first. The stand after
+  the last tick stays 1,000-1,055 ms.
+
+**The cost (P13; estimated from the sketch: the build counts from the compiler).** Starting from §4.4: cog 53 free and
+LUT 41 free after D-1..D-3.
+
+| Part | Cog longs | LUT longs | Time | ABI |
+|---|---|---|---|---|
+| D-5a `holdGate`: one CALL replaces one CMPS | 0 | +16 | ~+16 clocks per drive pass; ~+38 on a limited, set-back pass; 0 per frame | none |
+| `LAG_LIM` (an immediate) | 0 | 0 | 0 | none |
+| D-3's limiter test, shared through Z | 0 | up to −3 | — | — |
+| D-5b (Spin2, front cog) | — | — | one compare and one assignment per 1 ms front pass | +1 Spin2-only VAR long per motor (`blockedLimSeen`, beside `blockedPos` `:7427`, after every PASM-addressed run) |
+| **With D-1..D-3** | **+2 (53 free)** | **+27-30 (25-28 free)** | ~22 per frame (D-2) + 16-38 per pass | **no params or status long**; `DRVR_*_LONGS_COUNT` unchanged |
+
+Clock basis: CALL and RET take 4 clocks in cog/LUT (`p2kbPasm2Call`, `p2kbPasm2Ret`), and ALU instructions take 2
+(`p2kbPasm2Testb`, `p2kbPasm2Cmpm`). `_RET_`'s cost is taken as RET's: UNVERIFIED. The pass's extra clocks land in that
+frame's window, which `tools/pasm_equiv`'s frame-budget report measures in the build.
+
+#### 4.9.8 The falsifier
+
+**The claim:** the modelled benefit comes from where the held field sits relative to the torque peak. Each rival below
+makes a prediction the model can test.
+
+- **R-a: any set-back breaks the stall chain (the decay, the path limiter), wherever it lands.**
+  - It predicts the benefit at every `LAG_LIM` below 100.
+  - The sweep (`release ... d5=1 lag_lim=N`) gives 99.9 / 100.0 % at 21, 43, 53, 64 and 75; 88.6 / 88.7 % at 90;
+    57.7 / 57.6 % at 97; 40.4 / 41.0 % at 100.
+  - At 90 and 97 the field is set back 56 and 53 times and still loses. **Excluded.**
+- **R-b: the benefit is leaving D-2's boost band (lag ≥ `LAG_SOFT`), not the torque angle.**
+  - It predicts that a hold at 75 with the boost acting at it loses, and a hold at 90 with the boost lifted above it
+    wins.
+  - Hold 75 with `lag_soft=70` gives 99.9 / 100.0 %; the control (D-1..D-3 with `lag_soft=70`) gives 49.7 / 49.7 %.
+  - Hold 90 with `lag_soft=95` gives 93.0 / 93.2 %; the control gives 37.7 / 35.0 %.
+  - The boost accounts for at most ~4.5 points at 90. **Excluded as the carrier.**
+- **R-c: the blocked count, not the hold, changes the obstacle outcome.**
+  - The blocked count alone gives 9 / 6 / 1 on the rocking object, against D-1..D-3's 8 / 7 / 1. **Excluded.**
+- **The positive test: move the peak instead of the hold.**
+  - `e90_L18=70` puts the peak 14 counts nearer the hold. D-1..D-3 alone then gives 99.1 / 99.0 %.
+- **Standing (D2).**
+  - Inside the model the rivals are excluded. On the motor the peak's position rests on e90 and the winding inductance,
+    which are FITTED (§3.3), not measured. So the hardware verdict is **"consistent with"**.
+  - The benefit holds for any `LAG_LIM` from 21 to 75 and at both fits, so it does not depend on the peak sitting
+    exactly where fitted.
+  - No bench run is proposed. The §6 cells, with their load premises corrected in the build (R8), are where it is
+    checked.
+
+#### 4.9.9 Model changes (`DOCs/plans/servo-model/spin2_model.py`)
+
+New parameters. Each defaults to today's behaviour, and `release` and `release acc_shift=16 dB=1 boost_shift=10 dC=1`
+print 83.9 / 82.9 and 40.4 / 41.0 % before and after.
+- `d5`: the limit hold.
+- `lag_lim`: its lag, 64.
+- `d5_back=0`: candidate C2. `d5_step=N`: C3. `d5_sticky=1`: C4.
+- `blk_lim`: D-5b's count. It acts only in `block` mode.
+
+Runs print `set-backs [L, R]` when there are any.
+
+#### 4.9.10 Not checked
+
+- The default 27 A limit on an obstacle: every `block` run uses the session's 2 A.
+- The PL-55 ceiling, and the driver's phase-current estimate (the model folds back on the true current).
+- Non-uniform hall sectors, and a lead write moving `err_` (the model's `err` has no offset). Both are DERIVED inside
+  64's margin only.
+- `fwdrev`, which the model lacks. I-7 is DERIVED from the source.
+- The state precondition at `.justIncr` (never below SPIN_UP), which the build confirms in `jerkStep`.
+- Rev A's coarser fold-back (R7).
+- Where above 8 N·m the field now gives way.
+
 ---
 
 ## 5. The measure of benefit (for Stephen's decision; P5)
@@ -818,6 +1060,39 @@ python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=
 python3 $S/spin2_model.py block ob_n=16 ob_k=3000 acc_shift=16 dB=1 boost_shift=10 dC=1
 python3 $S/spin2_model.py block ob_n=16 ob_k=3000 acc_shift=16 dB=1 boost_shift=10 dC=1 lag_hold=86
 python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1 lag_hold=90   # informational
+# «#3645» D-5 (4.9). The design = the D-1..D-3 flags + d5=1 (and blk_lim=1, which acts only in block mode). Every new
+#  parameter defaults off: `release` and `release acc_shift=16 dB=1 boost_shift=10 dC=1` still print 83.9 / 82.9, 40.4 / 41.0
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1                 # the release case
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 e90_L18=52 Lh=0.00085    # refit; drop d5=1 for D-1..D-3
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 e90_L18=53 Tnoise=0.4 Iz=0.42   # adverse; likewise
+python3 $S/spin2_model.py rtrace acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1                           # no stall at the limit
+python3 $S/spin2_model.py design acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1                           # diff against the run without
+python3 $S/spin2_model.py design acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 e90_L18=52 Lh=0.00085     #  d5=1: identical but the
+python3 $S/spin2_model.py design acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 e90_L18=53 Tnoise=0.4 Iz=0.42   #  header line
+python3 $S/spin2_model.py jscan acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1
+python3 $S/spin2_model.py step acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1                             # and without d5=1
+python3 $S/spin2_model.py ramp acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1                             # diff: identical
+python3 $S/spin2_model.py wheelsup acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1                         # diff: identical
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000 acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1   # solid; + e90_L18=52 Lh=0.00085
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1    # rocking; + the refit
+python3 $S/spin2_model.py block ob_n=16 ob_k=3000 acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000 acc_shift=16 dB=1 boost_shift=10 dC=1             # D-1..D-3, re-run: as 7 Q1
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1              # D-1..D-3, re-run: as 7 Q1
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000 acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1        # D-5b's negative: 0 latch
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1 blk_lim=1    # R-c: the blocked count alone
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1 lag_hold=86   # + D-4
+# D-5's candidates (4.9.6)
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 d5_back=0               # C2
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 d5_step=4               # C3
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1 d5_step=4
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 d5_sticky=1             # C4; also step, and the
+                                                                                                      #  five block cells, + d5_sticky=1
+python3 $S/spin2_model.py design acc_shift=16 dB=1 boost_shift=10 dC=1 lag_hold=64                   # C5
+# D-5's falsifier (4.9.8)
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 lag_lim=21              # R-a: also 43, 53, 75, 90, 97
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 lag_lim=75 lag_soft=70  # R-b; control: drop d5=1 lag_lim=75
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 lag_lim=90 lag_soft=95  # R-b; control: drop d5=1 lag_lim=90
+python3 $S/spin2_model.py release acc_shift=16 dB=1 boost_shift=10 dC=1 e90_L18=70                   # the peak moved instead of the hold
 ```
 
 Run times depend on the machine; independent runs can go in parallel.

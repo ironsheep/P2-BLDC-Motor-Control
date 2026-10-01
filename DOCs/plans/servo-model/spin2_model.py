@@ -17,6 +17,10 @@ usage (run from any directory; spin_model.py must sit beside this file):
   python3 spin2_model.py step | release | rtrace | ramp | wheelsup [key=value ...]   -- see the design doc section 9
   python3 spin2_model.py block    [key=value ...]   -- a straight drive into an obstacle; the protective stop's latch
   python3 spin2_model.py blockcal [key=value ...]   -- the obstacle's calibration grid (stiffness x slide force)
+
+D-5 (design doc 4.9), off by default so every earlier command reproduces its numbers: d5=1 the limit hold (lag_lim,
+the candidates' d5_back / d5_step / d5_sticky), blk_lim=1 the blocked count that also counts a front pass on which a
+limiter acted. The design's runs add `d5=1 blk_lim=1` to the D-1..D-3 flags.
 """
 import math, sys
 from spin_model import P, Drive, lead_tenths, l_eff, ke_from_ladder, FRAME, PASS, SECTOR, TWO32, SLOW, MED, BRISK
@@ -37,6 +41,17 @@ Q.update(m=7.7, r=0.08255, track=0.387, Jw=0.006, Iz=0.26,     # Iz: NOT measure
          obst=0, ob_x=0.15, ob_dx=0.0, ob_k=50_000.0, ob_c=50.0, ob_slip=1e9,
          blocked_passes=1000,     # BLOCKED_PASSES (:7245): front passes (1 ms) at |err| >= LAG_SOFT with no hall tick
          ob_n=6, ob_t=9.0,        # block mode: realizations (contact points spread over one hall sector), seconds each
+         # D-5 (design doc 4.9), the limit hold. Off by default: every earlier command reproduces its numbers
+         d5=0,                    # 1 = on a pass in SPIN_UP / AT_SPEED where a limiter acted since the previous pass (the
+                                  #  D-3 fact: fold-back or duty cap), the field's hold is lag_lim instead of lag_hold, and a
+                                  #  field past it is set back to it on that pass (err then reads lag_lim)
+         lag_lim=64,              # D-5's held lag: 1.5 hall sectors, the point furthest from the wrap-fault lattice (4.9.3)
+         d5_back=1,               # 0 = candidate C2: the lower hold while limited, without the set-back
+         d5_step=0,               # > 0 = candidate C3: the set-back moves at most d5_step counts per pass (0: all at once)
+         d5_sticky=0,             # 1 = candidate C4: once the limit hold has set the field back, it stays the hold (and
+                                  #  sets back again, limiter or not) until the rotor ticks forward past that sector
+         blk_lim=0,               # 1 = D-5's blocked count: bFrontProtect also counts a front pass on which a limiter acted
+                                  #  (duty_capped + foldback advanced since its previous pass), with no hall tick
          )
 
 PATH_RELEASE_SLOTS, PATH_RELEASE_STEP, PATH_BEHIND = 4, 20, 100
@@ -58,6 +73,8 @@ class Wheel:
         w.pin = 0.0
         w.lag_edge = 48; w.last_sector = 0; w.pterm = 0
         w.capped_seen = 0; w.capped = 0; w.boosts = 0
+        w.setbacks = 0                    # D-5: passes the limit hold set the field back
+        w.lim_sector = None               # D-5 C4 (d5_sticky): the sector the limit hold armed in, None when clear
 
     def permille(w):
         return min(abs(w.drv.v) * 1000 // abs(w.cmd), 1000) if w.cmd else 1000
@@ -83,6 +100,7 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             w.anchor = p['ob_x'] + (p['ob_dx'] if i == 1 else 0.0)
             w.contact_t = None; w.last_tick_t = 0.0; w.blk_pos = 0; w.blk_n = 0; w.F = 0.0
             w.err_pk = 0; w.ticks_fwd = 0; w.ticks_back = 0; w.tick_sector = 0; w.blk_best = 0
+            w.blk_cap = 0                 # D-5 (blk_lim): the limiter counts as the previous front pass read them
         blk = dict(latch_t=None, wheel=None, stand=None, fault_t=None, fault_wheel=None)
     for f in range(n):
         t = f * FRAME
@@ -90,7 +108,9 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
         if p['obst'] and f % 44 == 0:
             for i, w in enumerate(W):
                 pos = math.floor(w.thr / SECTOR)
-                if w.tgt != 0 and abs(w.e) >= p['lag_soft'] and pos == w.blk_pos \
+                lim_f = w.capped != w.blk_cap        # D-5 (blk_lim): a limiter acted since the previous front pass
+                w.blk_cap = w.capped
+                if w.tgt != 0 and (abs(w.e) >= p['lag_soft'] or (p['blk_lim'] and lim_f)) and pos == w.blk_pos \
                         and w.drv.state in ('SPIN_UP', 'AT_SPEED', 'SPIN_DN'):
                     w.blk_n += 1
                 else:
@@ -150,9 +170,25 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                     w.drv.state = 'SPIN_UP'
                 at_rest = w.drv.jerk_step(w.tgt, w.e)
                 if not at_rest:
-                    if lag_s < p['lag_hold']:
+                    # D-5 (d5): while a limiter has the duty, in the states holdDecay walks, the hold is lag_lim
+                    dir_ = -1 if w.drv.v < 0 else 1
+                    if w.lim_sector is not None and (math.floor(w.thr / SECTOR) - w.lim_sector) * dir_ > 0:
+                        w.lim_sector = None       # C4: the rotor ticked forward past the armed sector
+                    lim_hold = p['d5'] and (w.capped != w.capped_seen or w.lim_sector is not None) \
+                        and w.drv.state in ('SPIN_UP', 'AT_SPEED')
+                    hold_at = p['lag_lim'] if lim_hold else p['lag_hold']
+                    if lag_s < hold_at:
                         w.thf += w.drv.v / TWO32 * 256
                     else:
+                        if lim_hold and p['d5_back'] and lag_s > p['lag_lim']:
+                            # the set-back: angle_ -= sign(drv_incr) * (lag_s - lag_lim) << 24, so err reads lag_lim
+                            back = lag_s - p['lag_lim']
+                            if p['d5_step'] > 0:
+                                back = min(back, p['d5_step'])
+                            w.thf -= back * dir_
+                            w.setbacks += 1
+                            if p['d5_sticky']:
+                                w.lim_sector = math.floor(w.thr / SECTOR)
                         w.drv.held += 1
                         if not p['dC']:
                             w.drv.hold_decay()
@@ -263,11 +299,13 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
     if t0_override is not None:
         t0 = t0_override
     ws = [s for s in samples if t0 <= s[0] < t0 + win]
-    res = dict(engages=engages, faulted=[w.faulted for w in W], boosts=[w.boosts for w in W])
+    res = dict(engages=engages, faulted=[w.faulted for w in W], boosts=[w.boosts for w in W],
+               setbacks=[w.setbacks for w in W])
     if p['obst']:
         blk['t_end'] = t
         blk['wheels'] = [dict(contact=w.contact_t, last_tick=w.last_tick_t, fwd=w.ticks_fwd, back=w.ticks_back,
-                              err_pk=w.err_pk, held=w.drv.held, limited=w.capped, blk_best=w.blk_best, F=w.F)
+                              err_pk=w.err_pk, held=w.drv.held, limited=w.capped, blk_best=w.blk_best, F=w.F,
+                              setbacks=w.setbacks)
                          for w in W]
         res['block'] = blk
         return res
@@ -313,7 +351,8 @@ def fmt(r):
         x = r[k]
         s += f"{k} {x['fol']:5.1f} % {x['err_pk']:4} {x['swing']:5.0f} (d {x['duty']:5.0f} A {x['amps']:4.2f} h {x['held']:3}) | "
     return (s + f"path {r['path_min']:4} (mean {r['path_mean']:4.0f}, eng {r['engages']})"
-            + (f" boost frames {r['boosts']}" if any(r['boosts']) else '') + (' FAULT' if any(r['faulted']) else ''))
+            + (f" boost frames {r['boosts']}" if any(r['boosts']) else '')
+            + (f" set-backs {r['setbacks']}" if any(r['setbacks']) else '') + (' FAULT' if any(r['faulted']) else ''))
 
 
 def legs(p, quiet=False, which=None):
@@ -377,6 +416,7 @@ def block_set(q, verbose=False):
             print('  ' + ' ' * 14 + ' | '.join(
                 f"{n_} contact {x['contact'] if x['contact'] is None else round(x['contact'], 3)} ticks +{x['fwd']}/-{x['back']} "
                 f"err_pk {x['err_pk']} held {x['held']} limited {x['limited']} longest count {x['blk_best']} F {x['F']:.1f} N"
+                + (f" set-backs {x['setbacks']}" if x['setbacks'] else '')
                 for n_, x in zip('LR', b['wheels'])), flush=True)
     lat.sort(); stands.sort()
     s = f"latched {len(lat)} of {int(q['ob_n'])}, no latch {nolatch}, fault {faults}; contact-to-latch ms "
@@ -401,7 +441,10 @@ if __name__ == '__main__':
     print(f"Iz {p['Iz']} -> J spin {p['Jw'] + 2 * p['Iz'] * rr / p['track']**2:.4f}, straight {p['Jw'] + p['m'] * rr / 2:.4f}; "
           f"Tc {p['Tc']} Lh {p['Lh']*1e3:.2f} mH e90@L18 {p['e90_L18']} Tnoise {p['Tnoise']}"
           + (f"  DESIGN dA {p['dA']} (kp_shift {p['kp_shift']}) dB {p['dB']} (boost_shift {p['boost_shift']}) "
-             f"dC {p['dC']} acc_shift {p['acc_shift']}"))
+             f"dC {p['dC']} acc_shift {p['acc_shift']}")
+          + (f"  D-5 d5 {p['d5']} lag_lim {p['lag_lim']} d5_back {p['d5_back']} d5_step {p['d5_step']} "
+             f"d5_sticky {p['d5_sticky']}"
+             if p['d5'] else '') + (f"  blk_lim {p['blk_lim']}" if p['blk_lim'] else ''))
     if mode in ('legs', 'design'):
         out = legs(p)
         bad = [k for k in (1, 2, 3, 4, 7) if not signature(out[k])] if mode == 'legs' else []
@@ -479,7 +522,8 @@ if __name__ == '__main__':
         #  MEASURED (2026-09-30 floor2 obstacle session): solid-object stand 988-1,168 ms band, BRAKE trial latched
         #  1,097 ms after its last tick; COAST trial rocked ~6 s in a 66-76-tick band without latching
         q = block_params(p)
-        print(f"-- block: SLOW straight, i_limit {q['i_limit']} A, lag_hold {q['lag_hold']}, ob_k {q['ob_k']:.0f} N/m, "
+        print(f"-- block: SLOW straight, i_limit {q['i_limit']} A, lag_hold {q['lag_hold']}"
+              + (f" (D-5 lag_lim {q['lag_lim']})" if q['d5'] else '') + f", ob_k {q['ob_k']:.0f} N/m, "
               f"ob_slip {q['ob_slip']:.0f} N, ob_c {q['ob_c']} N s/m, ob_dx {q['ob_dx']*1000:.1f} mm, {q['ob_t']} s each")
         print(block_set(q, verbose=True))
     elif mode == 'blockcal':
