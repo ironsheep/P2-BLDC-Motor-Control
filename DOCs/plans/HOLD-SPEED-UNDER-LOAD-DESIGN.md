@@ -530,7 +530,7 @@ public "torque-limited" signal (Q4) would be an API addition mirrored in `isp_st
 | R4 | Obstacle behaviour (R18) | D-1..D-3: same logic, same fold-back limit, reached sooner. The obstacle stands already reach it today (14 `FOLDBACK` events in `…-182135.log`). Modelled at `LAG_HOLD` 100 (`block`, §7 Q1): latch times as today's, a solid object 987-1,102 ms after contact against today's 1,004-1,620 |
 | R5 | Fault interaction | Fault test unchanged (125). On the load steps, no fault with D-2 present. D-3 alone slowed to 76 % at 4 N·m (§4.2): **they ship together**. On an obstacle a lag fault stays possible, as today: 1-2 of 16 modelled contacts at central parameters, today and D-1..D-3 alike; 4 of 16 on the rocking obstacle at the refit, against today's 1 |
 | R6 | Unloaded behaviour | Current identical wheels up (0.04 / 0.09 / 0.13 A at 10 / 20 / 37×10⁶). Low-speed duty swing 56-61 → 148-154, under A-3's 400 |
-| R7 | Rev A (5 mV/A) resolves the fold-back coarser (PL-163), so D-3's "at the limit" may come later | Not modelled. Rev A is not certified by this design |
+| R7 | Rev A (5 mV/A) resolves the fold-back coarser (PL-163, archived; its open residual is PL-170), so D-3's "at the limit" may come later | Not modelled. Rev A is not certified by this design |
 | R8 | The grab cells' premise | A hand load below the current limit (~11 N·m per wheel at 27 A, ~135 N at the tyre) no longer slows the wheels, so LDPATH / LDHUNT see no path limiting: a PL-168-type premise correction before the next run |
 | R9 | A second slow/medium mechanism (§3.6) survives | The certification cells catch it: SPINRATE on every leg |
 

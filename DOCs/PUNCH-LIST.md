@@ -14,84 +14,87 @@ Confirmed-done entries swept on 2026-09-23 are in
 closed by the 2026-09-26 release audit are in
 [`plans/archive/PUNCH-LIST-ARCHIVE-2026-09-26.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-26.md), and those
 swept at the 6.0.0 sprint closeout are in
-[`plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01.md).
+[`plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01.md). The study that
+opened 6.1.0 planning swept PL-19, PL-31, PL-163 and the three 2026-09-20 driver notes to
+[`plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01b.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01b.md). The 6.0.0
+release burn-down that headed this list until then is in git history (`git show d72e7ed:DOCs/PUNCH-LIST.md`).
 
-### Release burn-down — 2026-09-26
+### The register for 6.1.0 — 2026-10-01
 
-Pass 7 (2026-09-26) closed: PL-66, 78, 87, 143, 147, 151, 152, 153, 155, 156, 158, 159
-([archive](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-27.md)).
+Every open entry sits in exactly one group below; its own heading carries the detail. Each group was checked against
+the tree on 2026-10-01, not against an earlier status line.
 
-The release-candidate pass (2026-09-27, DRIVER_REV 46,
-[evaluation](analyses/bench/2026-09-27/rc/VISIT-10-RC-EVALUATION.md)) certified: **PL-14, 51, 52, 145, 146, 149, 161**
-(each marked ✅ under its heading; archived at [`PUNCH-LIST-ARCHIVE-2026-10-01`](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01.md)), and **PL-162** closed by Stephen's ruling (no more
-unplug testing; pass 7's detection stands; archived at the same sweep). Open after it: the release items below, and one visit
-(a short wheels-up block, then the floor run the same day).
+**Scope (STEPHEN 2026-10-01):** the planned scope (option (a)), then *"pull in any bench harness work that directly
+relates to tests we will run during this plans effort, pull in the simple changes/fixes"*. The tests this plan runs are
+the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `test_bench_dual` and the runner.
 
-**STEPHEN'S RULINGS, 2026-09-27 (release scope):**
-- **Serial is not in this release:** *"serial testing not in this initial release"*. PL-148, PL-154, PL-157 and PL-111's
-  serial half move to a later release; README's Known Issues says the serial path is not validated for v6.0.0.
-- **FlySky testing IS in this release:** *"note: flysky testing is in this release"* — the RC demo runs at the last visit.
-- **DocoEng support is a later release:** *"doco support in subsequent release"*. PL-71 and PL-27 move there; README says
-  v6.0.0 is validated on the 6.5" hub motor.
-- **PL-118 ships as a Known Issue** (ruling 1 A): README states that phase-short braking is not current-limited.
-- **Clock:** *"it ships at v6 as stated testing conditions"* (270 MHz); a post-v6 study widens the range (PL-164).
-- **Doc defects PL-7, PL-16, PL-54: fixed** (*"we fix them!"*).
-
-**Deferred to a later release (Stephen's rulings above):** PL-27, PL-71 (DocoEng), PL-148, PL-154, PL-157 and PL-111's
-serial half (serial), PL-164 (clock range), PL-102 with Q4 (a "following" getter), PL-165 (the DEBUG footprint
-measure), PL-166 (the inertia term, Q5).
-
-**Floor rulings (STEPHEN 2026-09-28):** the fault return run faults its wheel with the guarded `testForceFault()`
-(*"fp1: A"*), not the wrong-offset write (PL-119's surge); the overload hold is proved on the grab run only, and the
-incline proves only the hold on a slope (*"fp2 B"*).
-
-The owner's rule for 6.0.0 (Stephen, 2026-09-26): *"What we need is not an eye towards looking for things we
-can address, but an eye towards whether we have everything we need to meet the criteria for the features that
-we're trying to release in 6."* Only work that makes a 6.0 feature (README.md "Latest Changes", v6.0.0) operational
-is chased; everything else is recorded and waits. Each remaining entry carries its status under its heading.
-
-**Demo and serial testing come after a release-candidate driver (STEPHEN 2026-09-26):** *"let's not complicate this
-pass with serial testing... all demo testing will be after we have a release condidate driver"*. So PL-148, PL-149,
-and the hardware halves of PL-154 and PL-157 certify in the release-candidate pass, not before.
-
-**Where each item certifies (Stephen, 2026-09-26):** *"most of these API changes can be tested wheels up... make all
-the driver changes, add a couple of rapid tests at the bench to prove that the API methods range check correctly and
-do the right thing, and then we can call them done without having to test on the floor."*
-- **Wheels-up, and done when it passes:** every API contract (range checks, refusals, getters, persistence), the
-  odometer and limits, the finished-move test, status and rounding, the command timeout, the stop reasons and events,
-  the serial path. They run as one pointed contract tier plus the short motion cells.
-- **The floor run keeps only claims about load:** the kick's inertia term and feel, the hold on an incline, the path
-  limiter and the overload hold under load, and the protective stop on a chocked wheel.
-
-**Release — chased**
+**In 6.1.0 — the plan's work**
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-167 | The shipped commutation timing does not hold commanded speed under a heavy load (found 2026-09-30, the hands-off rerun) | **A v6.0.0 Known Issue; fixed in 6.1.0 (R21).** Designed (`DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md`, approved); then built, and the floor spins certify it |
-| PL-160 | Every ramp starts and ends with an acceleration step (the jerk-limited generator) | Wheels-up half CERTIFIED 2026-09-28; **the feel under load CERTIFIED** (Stephen's FlySky drives, both visits; the knobs' rates reach the ramps exactly). The quarter-speed start under load (SPINSTRT / SPINPEAK) is unmeasurable on a one-turn spin: two-turn spins (R20, PL-168) |
+| PL-167 | Under a heavy load the drive gives up speed with torque to spare (the headline; a v6.0.0 Known Issue) | The design (`plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md`) built, then certified by the floor spins |
+| PL-168 | Floor-test premises the runs proved wrong | Corrected in `test_bench_dual` before any rerun |
+| PL-132 | The blocked-wheel stop shorted the phases under coast (fixed DRIVER_REV 20) | Its COAST cell, rerun once PL-168 corrects the no-latch bound |
+| PL-160 | The quarter-speed start under load is unmeasured (all else certified) | Two-turn quarter spins (PL-168) |
+| PL-67 | Two motor pin groups that overlap are not refused | A compile-time refusal, proved by `tools/build-check.sh` |
 
-**Awaits certification** (fix built, not yet run)
-
-| Entry | What it is | What closes it |
-| --- | --- | --- |
-| PL-111 | A serial host could not clear a protective stop | API half **CERTIFIED**, twice (PROTCLR PASS); the serial half is not in this release |
-| PL-132 | The blocked-wheel stop shorted the phases even under coast | The short control PASSes (both visits); the COAST cell is NOMEAS twice: the harness's no-latch bound gave up before the driver latched against a rocking obstacle (PL-168). Rerun after that is corrected |
-| PL-163 | Rev A below ~2.7 A: the fold-back cut every driven frame | 2026-09-30, two Rev A runs: the every-frame defect ABSENT on both boards (at most 4.3 % of frames, on noise); cells NOMEAS (the test limit sits at the sense chain's noise floor); the residual reaches only TEST USE limits (ancillary). No further Rev A run for 6.0 unless Stephen asks |
-
-**Watch**
+**In 6.1.0 — harness work for the tests this plan runs**
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-120 | The right board's high side sometimes delivers no voltage; the start check refuses it correctly | Pass 7 times its recovery; evidence so far points at the board, not the driver |
-| PL-168 | Test premises the floor runs proved wrong (harness) | Corrected before any rerun, as 6.1.0 work (Stephen 2026-10-01: a test built on a wrong premise is corrected before it runs again) |
-| PL-169 | The FlySky demo re-sends the acceleration setting every 250 ms on knob noise | A small deadband in the demos (harmless today) |
+| PL-96 + PL-97 | A record label can print `?` or adjacent memory with no signal (four instances, the latest at `test_bench_dual` SRC_REV 70) | One start-up self-check over every token table, with a verdict in the log |
+| PL-68 | No bench log names the commit it was built from | The runner echoes the commit and tree state; the design goes to Stephen before it is built (overlay P2: the runner fronts his tools) |
 
-Ancillary, recorded but not chased for 6.0: PL-12, PL-19, PL-20, PL-21, PL-23, PL-27, PL-31, PL-37,
-PL-43, PL-44, PL-46, PL-53, PL-60, PL-63, PL-64, PL-65, PL-67, PL-68, PL-71, PL-96, PL-97, PL-98, PL-102,
-PL-103, PL-105, PL-108, PL-109, PL-110, PL-118, PL-119, PL-126, PL-134, PL-135, PL-136, PL-139.
+**In 6.1.0 — simple fixes**
+
+| Entry | What it is | What closes it |
+| --- | --- | --- |
+| PL-12 | The style gate's C4 check can flag a PRI code line carrying a trailing `''` | One condition: the line's code portion is blank |
+| PL-23 | Booleans print as numbers in two places still: `test_bench_spin` and `testGetResults()`'s fault flag | Print the word; return TRUE/FALSE |
+| PL-37 | Five panel bitmaps and their generator outlived the panel | Delete them (no consumer in the tree, checked 2026-10-01); the note two other generators point at moves with them. Supersedes the 2026-09-14 "leave them for now" |
+| PL-169 | The FlySky demos re-send the acceleration setting on knob noise | A deadband on both knobs |
+
+**Fixed in the tree; waits for its binary's next run** (no planned run loads these binaries, so nothing is owed)
+
+| Entry | Binary | What the tree holds |
+| --- | --- | --- |
+| PL-20, PL-21 | `char` | The overflow-proof running mean and the quiescent hold on a started driver (header, `:231`, `:268`) |
+| PL-44 | `detect` | Its last trapped capture removed (`:1266`); the `t0` and `char` halves certified at Visit 2 |
+| PL-53 | `char`, `detect` | Every record built through `isp_bench_log`; identical by construction |
+| PL-64, PL-65 | `dual-ui`, `dual-floor` | The rebuilt walkthrough and the corrected plan labels (SRC_REV 12); neither tier has run since |
+| PL-134 | `t0-stopmode` | The rate estimate counts only while holding (SRC_REV 17); no `t0-stopmode` run since 2026-09-24 |
+
+**Dormant: the commutation scan** — PL-46, PL-98. 6.0.0 commutates from the motor's measured hall position and a lead
+that follows speed (CHANGELOG v6.0.0), the scan last ran on 2026-09-21, and no plan uses it. They wake if a
+characterisation plan takes up the scan.
+
+**Deferred by Stephen's rulings**
+- **Serial** (*"serial testing not in this initial release"*, 2026-09-27): PL-111's serial half, PL-148, PL-154, PL-157.
+  All three builds are in the tree (`protclear`/`getprot`, the idle poll, the digits check, the 6.0 getters); what each
+  waits for is a host-driven hardware run.
+- **DocoEng** (*"doco support in subsequent release"*): PL-27, PL-71. PL-71 is a one-line fix, but it changes how the
+  DocoEng motor starts and cannot be checked without that motor, so it stays with the DocoEng work.
+- **After v6.0.0:** PL-102 (a "following" getter), PL-164 (clock range), PL-165 (the DEBUG footprint measure), PL-166
+  (the inertia term).
+
+**Ships as a Known Issue:** PL-118 (phase-short braking is not current-limited; ruling 1 A).
+
+**Watch** — each run carries what would make it actionable, at no extra load: PL-43 and PL-126 (silent stops, one
+instance each since the supply repair), PL-120 (the right board's high side; no refusal in the 69 Rev B program loads
+logged since 2026-09-27, 35 of them naming the right wheel, after the 2026-09-26 header reseat), PL-136 (the PREFLT diagnostics, which certify themselves on a wheel's first failure), PL-139
+(the at-rest band, crossed once on each board).
+
+**Ancillary, recorded and not chased:** PL-60, PL-63, PL-103, PL-105, PL-108, PL-109, PL-110, PL-119, PL-135, PL-170.
+
+**Standing rulings carried from 6.0.0:** the fault-return run faults its wheel with the guarded `testForceFault()`, not
+the wrong-offset write (STEPHEN 2026-09-28, *"fp1: A"*); a test built on a wrong premise is corrected before it runs
+again (STEPHEN 2026-10-01).
 
 ### PL-12 -- latent: `check_pri_docs` conflates "has a trailing comment" with "is a comment line"
 
+> **Status (2026-10-01):** IN 6.1.0, a simple fix (STEPHEN 2026-10-01). Still latent as of today: `check_pri_docs()`
+> (`tools/check_style.sh:544`) tests `comment_kind` without checking the code portion is blank.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (style-gate tooling, latent)
 
 `tools/check_style.sh`'s C4 check (guide 4.4, PRI docs must use `'` not `''`)
@@ -114,31 +117,12 @@ all read the `prologue` list, which the C3c fix corrected at source. The
 remaining checks were not exhaustively audited for it; doing that audit is part
 of this item.
 
-### PL-19 -- `test_bench_char.spin2` drives the right wheel in motor frame, but captions it in robot frame
-
-> **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench harness captions)
-
-**Found 2026-09-12 in Bench Pass 1 step 4, by Stephen at the bench** -- the right wheel turned
-opposite to the plan on all four RIGHT holds (his meter sheet marks them `REV???` / `FWD???`).
-
-`test_bench_spin.spin2:77-79` calls `wheelR.forwardIsReverse()`, because the two motors face
-opposite directions on the chassis. `test_bench_char.spin2` `ensureSide()` (:604-609) starts
-`wheelR` without it, so "RIGHT WHEEL FORWARD" commands a positive increment, which on the
-right motor is robot-reverse. The correction was made to the spin binary at 23:40 on
-2026-09-11 and never searched into its sibling -- a doctrine-overlay P8 miss.
-
-**The data is valid.** `BC-HOLD` logs the signed `cmd_incre`, so every hold is attributable,
-and motor frame is the frame that exposed the forward/reverse current asymmetry
-([evaluation](analyses/bench/2026-09-12/CHAR-RUN-EVALUATION.md)).
-
-**Fix (my call, per P3):** keep characterisation in motor frame -- it is a per-motor
-measurement -- and make the frame explicit: captions name both frames (e.g. *RIGHT MOTOR +
-INCREMENT (robot reverse)*), and `BC-HOLD` gains a `robot_dir` field. The captions are bitmaps,
-so regenerate with `tools/gen_bench_char_assets.py`. Check `test_bench_t0.spin2` and
-`test_bench_detect.spin2` for the same class in the same change.
-
 ### PL-20 -- `BC-SENSE` `i_mV_avg` overflows a long at the pre-S-3 scale
 
+> **Status (2026-10-01):** FIXED IN TREE, not yet run. `test_bench_char.spin2` keeps a running mean without storing
+> the sum (`CON { overflow-proof running mean (PL-20) }`, :231; :1568). The `char` binary has not run since, and no
+> plan runs it; its next run certifies this.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench harness accumulator)
 
 **Found 2026-09-12 in Bench Pass 1 step 4.** `debug_260912-153807.log:2853` and `:3650` report
@@ -155,6 +139,10 @@ treat `avg` outside `[min, max]` as an instrument fault, never as a reading.
 
 ### PL-21 -- the quiescent-zero hold reads a stopped instance's frozen telemetry
 
+> **Status (2026-10-01):** FIXED IN TREE, not yet run. Hold 0 now runs on the LEFT driver started at zero command
+> (`HOLD_ZERO_SIDE`, `test_bench_char.spin2:268`), and telemetry is read only from a running cog (:1698). Its next
+> `char` run certifies it; no plan runs it.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench harness quiescent hold)
 
 **Found 2026-09-12 in Bench Pass 1 step 4.** `debug_260912-153807.log:460`: 542 samples with
@@ -173,6 +161,11 @@ or report the sense fields as `NOMEAS` when no cog is running.
 
 ### PL-23 -- bench binaries print booleans as numbers
 
+> **Status (2026-10-01):** IN 6.1.0, a simple fix (STEPHEN 2026-10-01). The sites table below is aged: the `char`,
+> `t0` and `detect` sites were reworked since. Still printing a number on 2026-10-01: `test_bench_spin.spin2:125`
+> (`udec_(okL <> 0)`), `testGetResults()`'s `bDidFault` (the raw `fault` long), and 0/1 `measured` fields such as
+> `test_bench_t0.spin2:7620`. The fix sweeps the tree for the class, not only these.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench record formatting)
 
 **Raised by Stephen 2026-09-12:** *"true and false are very large. One of them is a very large
@@ -214,41 +207,14 @@ board read as Rev A after any stop and restart (MEASURED 2026-09-12). Two conseq
    from, and whether motors were restarted between readings. It needs no answer before the 6.5″
    bench work; the Doco bench is deferred past the next release (decision 2026-09-11).
 
-### PL-31 -- the offset scan finds the no-load minimum but not the fault cliff beside it
-
-> **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (commutation scan instrument)
-
-**Found 2026-09-12 in scan run 3** (DERIVED from MEASURED, evaluation §4, §5, §8). On the left
-motor every minimum-current offset sits within 10° of an offset that faults, measured with the
-wheels unloaded:
-- positive ¼: minimum −21°, fault by −8°;
-- positive ½: still falling at −11°, fault at −6°;
-- negative ¼: still falling at +13°, fault at +3°, so the minimum is not bracketed.
-
-A no-load minimum therefore cannot be shipped as the offset without a margin measured under
-load.
-
-**Scan changes:**
-1. fine-walk (5°) into a fault edge before declaring `EDGE_FAULT`;
-2. report the cliff location and the minimum-to-cliff margin per leg;
-3. re-measure the zero at every reference point, because a ~13–16 mV sense-side bias appeared
-   after some high-current or fault events (coarse points read higher than fine points at the
-   same offset, with the same duty).
-
-**Scan v2 (`5ea0510`) in run 4 (MEASURED, `analyses/bench/2026-09-13/SCAN-RUN-4-EVALUATION.md`):**
-- Both left cliffs were located: negative edge 5.5°, positive −15.5°, each 7.5° from its lowest
-  point.
-- The bias is a zero shift: references of 89.3 and 100.4 mV sat on zeros of 7.7 and 18.9, giving
-  identical net readings of 81.6 and 81.5. The 18.9 zero was read 1.5 s after an `ABORT_I` restart.
-- Remaining defect: `evaluateBracket` never brackets a side whose walk stopped on faults, even
-  when the cliff probe rises above the low. Both legs therefore reported NOT_BRACKETED, neither
-  fitted, and both ½-speed legs were skipped.
-
-Scan v3 fixes it by ending the sweep window at the last good point, and reads the zero before
-every point, including after every restart.
-
 ### PL-37 -- the meter-panel assets outlived the panel they drew
 
+> **Status (2026-10-01):** IN 6.1.0, a simple fix. STEPHEN 2026-10-01, *"pull in the simple changes/fixes"*, which
+> supersedes his 2026-09-14 *"leave them for now"*. The tree-wide search is done: nothing consumes the five bitmaps
+> or the generator. Only comments point at the generator's note on sizing text (`tools/gen_t0hand_assets.py:6, :99`,
+> `tools/gen_dual_assets.py:480`, `src/test_bench_t0.spin2:6036`); that note moves into them in the same change.
+> PL-19, which mentioned the generator, is archived.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (unused bench panel assets)
 
 **Found 2026-09-14 in «#3521».** The meter-free rework removed `test_bench_char.spin2`'s PLOT panel
@@ -349,6 +315,11 @@ The repair's certification stands for the runs it covered; this occurrence is no
 
 ### PL-44 -- every value captured through an abort trap in the bench binaries reads 0
 
+> **Status (2026-10-01):** FIXED IN TREE; one half not yet run. The `t0` and `char` captures were certified at Visit 2.
+> The detection binary's last trapped capture is gone: its phase-2 start is a plain call (`test_bench_detect.spin2:1266`,
+> converted by «#3574», the record-builder conversion). `detect` has not run since; its next run certifies that half.
+> The "NA reason tokens / sentinel pre-loads" residual below has no defect attached to it, so nothing is owed for it.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench harness trap captures)
 
 **Found 2026-09-14 evaluating Visit 1** (`analyses/bench/2026-09-14/VISIT-1-RESULTS.md` §6).
@@ -479,6 +450,12 @@ DETECT-A-EVALUATION carry corrections dated 2026-09-14.
 
 ### PL-46 -- scan v4 cannot demonstrate a half-speed minimum, and its half-speed cell passes anyway
 
+> **Status (2026-10-01):** DORMANT. Its "IN THIS RELEASE" line below is aged: 6.0.0 shipped commutating from the
+> motor's measured hall position and a lead that follows speed (CHANGELOG v6.0.0), not from a scanned offset pair.
+> The scan last ran on 2026-09-21 (`2026-09-22/debug_260921-200935.log`), and no plan uses it. It wakes if a
+> characterisation plan takes up the scan; the redesign (a droop stop instead of a fault walk) is recorded below for
+> then.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (commutation scan instrument)
 
 **Found 2026-09-14 in scan run 7** (`analyses/bench/2026-09-14/SCAN-RUN-7-EVALUATION.md` §5). Read
@@ -548,6 +525,9 @@ now tells the truth.
 
 ### PL-53 -- the scan, char and detection binaries still carry their own copies of the record builder
 
+> **Status (2026-10-01):** FIXED IN TREE; `scan` has run on it (2026-09-21), `char` and `detect` have not. Their
+> next runs are the check, and no plan runs them. The "IN THIS RELEASE" line below is aged.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench record builder)
 
 **Filed 2026-09-14** by «#3508» phase 2 (`plans/MOTION-HARNESS-DESIGN.md` §7.2; §12.1 Q5 ruled it a
@@ -627,6 +607,10 @@ or both), then decide whether the stillness rule or the reading is at fault.
 
 ### PL-64 -- the attended-test UI is out of step with what each test needs, and `dual-ui` failed itself
 
+> **Status (2026-10-01):** FIXED IN TREE, never run. `dual-ui` has not run since the rebuild (no log since 2026-09-17
+> carries UICHECK), and the floor runs that followed use countdown boards instead of the attended panels. The
+> paragraph below saying it "certifies at the next attended visit" is aged: no planned run loads `dual-ui`.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (attended bench UI)
 
 **Found 2026-09-15 in Visit 2** (`analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` §3).
@@ -668,6 +652,9 @@ which now exists: the spin-in-place floor run STEPHEN approved on 2026-09-17 nee
 
 ### PL-65 -- `BM-PLAN` names the wrong findings for the UICHECK and FLOOR parts
 
+> **Status (2026-10-01):** FIXED IN TREE, never run: neither UICHECK (`dual-ui`) nor FLOOR (`dual-floor`) has run since
+> SRC_REV 12, and no plan runs them.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench plan labels)
 
 **Found 2026-09-15 in Visit 2** (`analyses/bench/2026-09-15/VISIT-2-ATTENDED-RESULTS.md` §3). Minor.
@@ -685,6 +672,10 @@ next attended log's `BM-PLAN`.
 
 ### PL-68 -- no bench log names the commit it was built from, so a visit ran on an older commit unnoticed
 
+> **Status (2026-10-01):** IN 6.1.0, harness work for this plan's runs (STEPHEN 2026-10-01). Still open: no line of
+> `tools/bench-run.sh` reads the commit. The runner fronts Stephen's tools, so the design goes to him before it is
+> built (overlay P2).
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench provenance tooling)
 
 **Found 2026-09-16 in Visit 3** (`analyses/bench/2026-09-16/VISIT-3-RESULTS.md` §1).
@@ -741,6 +732,8 @@ work only** — that is the one question it answers.
 | [`plans/archive/PUNCH-LIST-ARCHIVE-2026-09-17.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-17.md) | PL-3, PL-4, PL-5, **PL-9**, **PL-24** |
 | [plans/archive/PUNCH-LIST-ARCHIVE-2026-09-26.md](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-26.md) | the 50 entries closed by the 2026-09-26 release audit (PL-142 fixed the same evening) |
 | [plans/archive/PUNCH-LIST-ARCHIVE-2026-09-27.md](plans/archive/PUNCH-LIST-ARCHIVE-2026-09-27.md) | the 12 entries certified by Visit 10 pass 7: PL-66, PL-78, PL-87, PL-143, PL-147, PL-151, PL-152, PL-153, PL-155, PL-156, PL-158, PL-159 |
+| [plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01.md](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01.md) | the 16 entries swept at the 6.0.0 sprint closeout |
+| [plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01b.md](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01b.md) | PL-19 (obsolete), PL-31 (delivered), PL-163 (certified; residual is PL-170), the three 2026-09-20 driver notes (superseded) |
 
 An archive file is never re-edited. If an archived item must be reopened, it comes back here as a
 **new** item that references the archive.
@@ -787,119 +780,12 @@ refused, plus a tier that states the motors-unplugged precondition in the log th
 are stated. It deliberately drives a board's gate input, so it is a change to a hardware safety guard and wants
 a review before its first run, not a slot before a bench session.
 
-### ⭐ THE OBSERVABLES THEMSELVES MUST BE RESPECIFIED -- a measure that tops out is not a measure
-
-**STEPHEN 2026-09-20:** *"if we have measures that are topping out we need to respecify them so they do
-not - as they are not useful once topped out"*. That is the general statement of why every instrument
-built on this driver has been blind, and it applies to the driver's own control as much as to the bench.
-
-| Observable | How it tops out | What it should be instead -- unbounded where it matters |
-|---|---|---|
-| `err` (position error) | **Twice over.** The lag limiter holds it near `LAG_HOLD` (100), and the stored field is bounded by its own +-127 representation -- the tree already notes a driver with no limiter simply prints 127. | **The limiting actually applied** -- the field advance the limiter withheld this pass. When the drive is keeping up it is zero; when it cannot, it grows without bound. That is the same information `err` was supposed to carry, in a form that does not stop. |
-| `duty` | Saturates at `duty_max` (24_264) and pins there for the whole top half of the range. | **Duty DEMAND before the cap**, or the **deficit** (demand less cap). Once duty pins, the deficit is what says how far past capability the command is; duty itself says only "still pinned". |
-| `tr_over` (the kick cell) | Derived from `err`, so it inherits both ceilings -- which is why it read 0 of 22 while the transition current rose seventy-five fold. | Transition **current**, already recorded as `tr_i_pk`. Not clamped. |
-| `AT_SPEED` | A boolean meaning "my own increment reached its target" -- true by construction even when the motor never got there. | **Measured rate against commanded rate**, a ratio that keeps informing on both sides of the limit. |
-
-⭐ **This is not only a telemetry fix. The respecified quantities are exactly what the drive needs as
-feedback**: "how much am I withholding" and "how much duty did I want beyond what I have" are the two
-numbers that say the command is unachievable, and a drive that has them does not need a separate droop
-detector bolted on -- it can hold at the achievable rate by construction. The instrument and the control
-want the same respecification, which is a sign it is the right one.
-
-**Cog space is a constraint to respect, not a gate** (STEPHEN 2026-09-20: *"you are fretting too much
-about cog space, the lut addition just doubled it. we have room we just have to be mindful"*).
-
-**Fix direction (this is the 6.0.0 driver work, and everything else is downstream of it):** close the
-loop the halls and the current are already giving us -- correct the field against hall edges rather than
-free-running between them, bound the ramp by measured acceleration rather than a fixed increment step,
-and use current as the signal for commutation quality rather than only as a fold-back trigger. **A
-droop detector, which this list previously proposed, is a guard around this defect and not a fix for
-it** (doctrine D1: fix the system, not the display).
-
-### What the user can actually command -- the space the drive has to be good across
-
-**STEPHEN 2026-09-20:** *"if we also weigh-in what a user can command we are going to have to handle
-small delta speed-up/slow-down requests as well as large, near max throttle... our drive mech. has to
-handle this well"*. That is the acceptance space, and measuring against it exposes two gaps.
-
-⛔ **CORRECTION to an earlier reading of mine: the kick does NOT scale with the size of the speed
-change.** MEASURED, the SAME 20x10^6 step taken at six places in the range:
-
-| step | 20->40 | 40->60 | 60->80 | **80->100** | 100->120 | 120->140 |
-|---|---|---|---|---|---|---|
-| transition current | 234 | 583 | 1_197 | **1_439** | 1_264 | 599 |
-
-**Identical command, six-fold difference in what the motor does** -- peaking at the step that lands on
-the saturation knee (rung 7). So the same user action, a modest throttle bump, behaves completely
-differently depending on where in the range it is made. **Where the change happens dominates; how big it
-is does not.** That is a property of the drive, not of the request, and it is exactly what "handle this
-well" has to mean.
-
-⛔ **AND EVERY TRANSITION WE HAVE EVER MEASURED IS A SPEED-UP.** MEASURED across the whole load: **44
-speed-up steps recorded, ZERO speed-down steps.** The ladder only climbs, and the LIVE segment
-(QTR -> HALF -> TOP) climbs too and emits no transition record at all. **A user slowing from 80% to 60%
-is completely uncharacterised** -- and slowing is the direction where the field must fall BACK through
-the rotor, which is the opposite sign of error and a different failure if it is wrong.
-
-**The space, and what we hold for each cell:**
-
-| | small delta | medium delta | large delta | near-max |
-|---|---|---|---|---|
-| **speed UP, low in range** | not measured | MEASURED (rungs 3-5) | not measured | n/a |
-| **speed UP, at the knee** | not measured | **MEASURED, and it is the worst case** | not measured | n/a |
-| **speed UP, high in range** | not measured | MEASURED (rungs 9-12, already saturated) | not measured | MEASURED, saturated |
-| **speed DOWN, any** | **NOTHING** | **NOTHING** | **NOTHING** | **NOTHING** |
-
-**So the acceptance test for the corrected drive is a ladder that also descends, that includes a small
-delta and a large one at each of low / knee / high, and that records a transition for every step
-including the LIVE-style ones.** The instrument change is small -- `BM-RUNGTR` already carries the right
-fields and simply is not emitted for every segment -- and it must land with the drive fix, not after it,
-or the fix is verified only on the quarter of the space we happen to have.
-
-**Verification is already paid for on the part we do cover:** the ladder prints `duty_pk`, steady
-current, `err_pk` and the transition current per rung, so the table above IS the acceptance test. A corrected drive flattens the
-transition current, keeps duty off its ceiling until genuinely at the ceiling, and does not report
-AT_SPEED while the field is parked.
-
-**2026-09-26:** R18.4 was built and measured unloaded at Visits 8, 8b, 9 and 9b; what remains is the loaded floor run and the kick, PL-87.
-
-### ⛔ THE MECHANISM, read from the samples 2026-09-20 -- and it is a DRIVER defect, not a harness one
-
-**MEASURED** (`debug_260919-173537.log`, tid 16, RIGHT wheel, eight consecutive samples k 64-71):
-
-| | reading |
-|---|---|
-| `i` | **3_742 -> 3_772 mV**, i.e. about **25 A** at the harness's own 150 mV/A calibration |
-| `d` | **23_891 -> 24_264**, and 24_264 **is `duty_max`** -- the servo wound to the ceiling and stayed |
-| `e` | **pinned at -101**, just under the driver's `\|err\| >= 125` fault test, and right at `LAG_HOLD` (100) |
-| `st` | **AT_SPEED** throughout |
-
-**DERIVED, and every step is visible in the numbers above:** the lag limiter holds the field so `err`
-sits at its hold threshold and **never reaches the fault test**; the duty servo, seeing an error it
-cannot clear, **winds `duty_` to `duty_max`**; S-2's current fold-back computes its threshold as
-`max(duty_, duty_floor_) * i_limit_k_ >> 16`, so **at `duty_max` that threshold is at its most
-permissive** and no fold-back occurred (duty rose into the ceiling rather than backing off); the
-protective stop did not fire either. The driver therefore sat at **maximum duty drawing ~25 A while
-reporting AT_SPEED**, and the only thing that stopped it was the harness's external 10 A abort.
-
-⛔ **A USER HAS NO SUCH ABORT.** This is the same shape as a stalled or blocked wheel -- "commanded rate
-cannot be reached" -- so it is reachable outside a provoked fault. It is filed here because a fault
-exposed it, but **the condition is general and it is the most consequential thing Visit 6a found.**
-
-**Fix direction (driver, and it subsumes PL-86 and PL-46's instrument problem):** a **droop detector** --
-compare commanded tick rate against measured tick rate, and when they diverge for N consecutive frames
-act on it (fault, or the protective stop that already exists). One mechanism then serves three needs:
-the driver gets the protection it is missing, the commutation scan gets the stop condition the limiter
-took away (PL-46), and the fault provocation gets a reachable edge (PL-86). The current-limit threshold
-scaling with duty should be re-read at the same time: it is most permissive exactly when duty is
-highest, which is backwards for this failure.
-
-**2026-09-26:** R18.4 was built and measured unloaded at Visits 8, 8b, 9 and 9b; what remains is the loaded floor run.
-
----
-
 ### PL-96 -- an over-length record token prints as `?` with no signal, so a label can be lost silently
 
+> **Status (2026-10-01):** IN 6.1.0, together with PL-97, as one start-up self-check (STEPHEN 2026-10-01: harness work
+> for this plan's runs). **A fourth instance since this entry:** `sSfCritSpPeak` was `START_I_OVER_STEADY_X100`, 24
+> bytes against `TOKMAX_CRIT` 18, and printed `?` until SRC_REV 70 shortened it (`test_bench_dual.spin2:3338`).
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench record vocabulary)
 
 **Found 2026-09-21 while judging Visit 7b.** Open. **One instance is fixed; the class is not.**
@@ -932,6 +818,8 @@ first.
 
 ### PL-97 -- a token table shorter than its enum walks off the end and prints adjacent DAT as text
 
+> **Status (2026-10-01):** IN 6.1.0, together with PL-96 (one mechanism).
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench record vocabulary)
 
 **Found 2026-09-21 while adding the ALIGN segment.** Instance fixed; **the class is the same one as
@@ -985,6 +873,8 @@ PL-96, and the short `lookupz` tables in one run.
 
 ### PL-98 -- two scan sign-off cells cannot fail on the path they exist to police
 
+> **Status (2026-10-01):** DORMANT with the scan (see PL-46): no plan runs `test_bench_scan`.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (scan sign-off cells)
 
 **Found 2026-09-21 at «#3595», discharging scan run 7's D6 and D8.** One of the three was fixed in
@@ -1188,6 +1078,9 @@ not a battery one.
 
 ### PL-111 -- a serial host cannot clear a protective stop
 
+> **Status (2026-10-01):** the serial half is BUILT IN TREE (`protclear`, `getprot`, and the Python client) and
+> deferred with serial (PL-148); its "Run-time proof owed" waits for that run.
+>
 > **6.0 status (2026-09-30):** ✅ API half CERTIFIED — R21-DUAL-PROTCLR-P PASS on floor-obstacle-short (refused −2,001;
 > `clearEmergency()` held; `clearProtectiveStop()` 0; the next drive taken). The serial half is not in this release.
 
@@ -1259,6 +1152,10 @@ Moving them over is a change to certified tiers and is not made here.
 
 ### PL-120 -- the right board's bridge puts no voltage on any phase
 
+> **Status (2026-10-01):** WATCH. No refusal of the right board in the 69 Rev B program loads logged since 2026-09-27
+> (35 of them name the right wheel), after Stephen's 2026-09-26 reseat of the board on its headers. The cause is not
+> established, so the entry stays open; every run's start check and `T0-25` recovery timer keep watching it.
+>
 > **6.0 status (2026-09-26 audit):** WATCH (release-relevant) — the right board's high side intermittently delivers no voltage; the start check refuses it correctly (certified); evidence points at the board, not the driver; pass 7 times its recovery.
 
 **Found 2026-09-23** at Visit 10 pass 1 ([evaluation](analyses/bench/2026-09-23/VISIT-10-PASS1-EVALUATION.md) §3.1).
@@ -1490,6 +1387,9 @@ note line («#3516»).
 
 ### PL-134 -- HOLD-RISE's rate estimate kept counting after the hold slipped
 
+> **Status (2026-10-01):** FIXED IN TREE, not yet run: no `t0-stopmode` run since the 2026-09-24 log that found it, and
+> no plan runs one.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench estimator)
 
 **Found 2026-09-24** at `t0-stopmode` 21:29 (`debug_260924-212939.log`, row 1 run 1). `rise_ms,16_539`: he pushed past the
@@ -1599,6 +1499,10 @@ rotor rocking inside one hall sector — never from these readings.
 
 ### PL-148 -- the serial control path has never run on hardware
 
+> **Status (2026-10-01):** DEFERRED to the serial release (STEPHEN 2026-09-27: *"serial testing not in this initial
+> release"*). The "release work" disposition below is aged. Every serial build it would exercise is in the tree
+> (PL-111, PL-154, PL-157); this entry is the host-driven hardware run they all wait for.
+>
 > **6.0 status (2026-09-26 audit):** RELEASE — a shipped deliverable with no hardware evidence.
 
 **Found 2026-09-26** by the release audit (a read-only survey of every 6.0 feature against the bench evaluations).
@@ -1615,6 +1519,10 @@ Stephen's host.
 
 ### PL-154 -- the serial path: hold cannot be set from the host example, every command can wait 1 s, and non-numbers become numbers
 
+> **Status (2026-10-01):** BUILT IN TREE; the hardware run is deferred with serial (PL-148). The idle loop now waits
+> `IDLE_POLL_MS`, not 1 s (`isp_steering_serial.spin2:296`), and a non-numeric parameter is refused
+> (`isp_queue_serial.spin2:295`). The "⛔ build" disposition below is aged.
+>
 > **6.0 status (2026-09-26 audit):** RELEASE — the serial path is a deliverable; the 1 s wait also delays `emercutoff`.
 
 **Found 2026-09-26** by the public-API audit (API-2, API-3 and API-10; API-2 and API-3 VERIFIED in source) and the
@@ -1636,6 +1544,11 @@ digits or a leading minus, else ERROR; the doc says all of this. Certified by `p
 
 ### PL-157 -- the serial protocol and the Python host example have not kept up with the 6.0 getters
 
+> **Status (2026-10-01):** BUILT IN TREE; the hardware run is deferred with serial (PL-148). The getters the list
+> below names are in the command table (`getpackvolt`, `getcurrent`, `getfaultcause`, `getholdstatus`,
+> `gethallcounts`, `getstopreason`, `getevent`, `geterror`, `gethealth`, `getfaultresp`, `getholdlimits`, …;
+> `isp_steering_serial.spin2:87-116`). The "⛔ build" disposition below is aged.
+>
 > **6.0 status (2026-09-26 audit):** RELEASE — STEPHEN: *"when we added getters, we should have been keeping our serial
 > interface up to date"* (API-9, API-13).
 
@@ -1739,91 +1652,6 @@ questions are now answered; what remains is the wheels-up re-run (t0 SRC_REV 28)
 acceleration equal to the jerk (`jerk_pk,104`), the reversal `crossed,TRUE,stop_seen,FALSE`, STOPPLAN-C/-M PASS again.
 PL-160 stays open only for the feel under load (the floor run).
 
-### PL-163 -- on a Rev A board below about 2.7 A, the fold-back cut the drive on every driven frame
-
-> **6.0 status (2026-09-30, after both Rev A runs):** the every-frame defect is ABSENT on both Rev A boards (MEASURED,
-> below); both cells NOMEAS by their own rules (the test limit sits at the sense chain's noise floor); the residual (FOLD_MIN_MV's noise premise, false on Rev A) is ANCILLARY -- TEST USE limits only,
-> no user can reach it (overlay P5). Not chased for 6.0 unless Stephen asks.
-
-**Found 2026-09-27** by the DRIVER_REV 37 desk review (PL-146's rest-offset work).
-- **DERIVED:** the fold-back threshold at the duty floor is `max(duty_, duty_floor_) * i_limit_k_ >> 16`. Rev A's
-  larger sense resistor gives a smaller mV-per-A, and below about 2.7 A the shift truncates the threshold to 0, so
-  every driven frame read above it and folded — a Rev A user setting a low current limit got a drive that could not
-  hold its duty.
-- **Fix (DRIVER_REV 38):** the compare folds only when the whole-mV reading is above floor(t) (`wcz`, `if_nc_and_nz`),
-  i.e. at or above ceil(t). Rounding the threshold instead would still fold every frame for t < 0.5 (1 A on Rev A).
-- **Negative:** on Rev A with `testSetCurrentLimits(2, 2)`, a driven, unloaded wheel at the duty floor counts
-  `foldback_frames` every frame; fixed, it counts none.
-
-**Disposition (2026-09-30):** certifies on the Rev A platform, which carries two Rev A boards; boards are never moved
-between platforms (STEPHEN 2026-09-30: *"Prepare it to run on the RevA platform that has two RevA boards"*). Tier
-`t0-reva`, rebuilt by «#3629» with no window: the unloaded legs on each Rev A group are the negative (FOLD), and a grip
-on the RIGHT wheel, held until the program stops it, is the positive (FOLDPOS). The cell's record states the effective
-threshold, `FOLD_MIN_MV` (a fold needs a 5 mV net reading).
-
-**2026-09-27, the residual, built (DRIVER_REV 40, uncommitted).**
-- **DERIVED:** DRIVER_REV 38 folds on a net reading above floor(t). At a 2 A Rev A limit near the duty floor t is
-  0.75 mV, so any 1 mV net reading folds, about 0.2 A of DC link. That decision sits below what the sense chain
-  resolves. Each reading is one frame, floored to whole mV. The noise is ±3 mV (CURRENT-LIMIT-AND-STOP-DESIGN.md §3.4;
-  PL-146's Rev B offset reached its threshold on noise). The netted zero is the truncated mean of floored readings,
-  so it sits 0.5–1.5 mV low. Zero current can therefore read up to 4 mV net.
-- **Built:** `FOLD_MIN_MV` = 4. `setFoldLimit()` writes `i_limit_k` and raises the fold's `duty_floor` to
-  ceil(4 × 65536 / K), so t never falls below 4 mV and a fold needs a 5 mV net reading. The two longs are written in
-  the order whose one-frame mix is the lower threshold. Above the raised floor, t is unchanged.
-  - Rev B is never raised: t ≥ 11 mV at 1 A. Neither is Rev A at 11 A and up, so the shipped 40 A and 27 A limits
-    are unchanged on both boards. Only a TEST-USE Rev A limit of 1–10 A changes. At 2 A the floor moves from
-    m = 0.10 to 0.53.
-  - The derate's estimate keeps m = 0.1 (`dutyFloorEst`).
-  - Spin2 only: cog RAM and LUT unchanged.
-- **Negative (desk model, 220,000 frames at duty 2,000, Rev A, 2 A, uniform ±3 mV noise):**
-
-  | Case | pre-DRIVER_REV 38 | DRIVER_REV 38–39 | fixed |
-  |---|---|---|---|
-  | Unloaded (0.09 A DC link) | 220,000 | ~145,000 | **0** |
-  | Overloaded (1.2 A DC link) | 220,000 | 220,000 | 165,000–201,000 (still folds) |
-
-- **What still protects at a raised floor:**
-  - the fold itself, on any net reading over 4 mV
-  - `duty_min` (m ≈ 0.065), since the fold never cut below it
-  - the lag gates and the blocked stop
-  - the 1 s derate average
-- **R22-T0-REVA-FOLD:** its PASS (a window rise of 0) still holds. Its record and notes still describe a threshold
-  floored to 0 and a 1 mV fold. They need the effective threshold and a positive control before they carry
-  certification (see the task report).
-
-**2026-09-30, the Rev A platform run** (`t0-reva`, test_bench_t0 SRC_REV 29, DRIVER_REV 46;
-`DOCs/analyses/bench/2026-09-30/reva/REVA-PLATFORM-EVALUATION.md`, log `debug_260930-155650.log`).
-- **MEASURED, the defect is absent:** the RIGHT Rev A board's unloaded legs folded on `fold_win,407` and `341` of
-  `frames_win,220_000`; the pre-DRIVER_REV 38 compare folds on every frame.
-- **MEASURED, the residual's premise is false on Rev A:** `net_max_mv,7` on both unloaded legs (zero 13 mV, mean 13 mV,
-  792,220 samples), against the ±3 mV that sized FOLD_MIN_MV = 4. So the fold acts on noise, about 75 frames a second,
-  at a 2 A limit. Only `testSetCurrentLimits()` sets such a limit; at the shipped 40 A peak the Rev A threshold at the
-  duty floor is about 15 mV. **Ancillary for 6.0.** If chased: FOLD_MIN_MV per board revision, sized from this reading.
-- **Both cells NOMEAS** by their pre-registered rules (FOLD: PREMISE_NOISE; FOLDPOS: `measured,FALSE`).
-- **FOLDPOS cannot measure as built (SRC_REV 29, harness).** A redesign needs all three: (1) the judged window opens at
-  the speed-up, not after a 3 s lead, because a firm grip latches the protective stop about 1 s after it stalls the
-  wheel (`state_end,7`, `fold_win,0`); (2) no duty gate, since the fold holds the duty below m = 0.2 under a grip
-  (`duty_pk,1_600`); (3) a rate criterion against the unloaded legs' noise-fold rate, with the acceleration's folds
-  separated from the grip's (`fold_ramp,758` mixes them).
-- **Harness gaps, fix with the next Rev A build:** `t0vStart()` reports a refused start's board as `REV_Unknown`
-  ("NONE"), so a start-check refusal reads as "not REV_A"; the hold record prints no stop reason.
-- **The LEFT board did not start:** its start check failed the phase U lead after retries (`healthFailed = $0000_0004`,
-  `error,-1_020`); V and W passed, and the RIGHT Rev A board passed all three. Asked of Stephen (lead open, or a false
-  refusal); a false refusal would be a start-check finding of its own, not PL-163's.
-
-**2026-09-30 21:09, the Rev A rerun** (`t0-reva`, test_bench_t0 SRC_REV 30, hands-off;
-`DOCs/analyses/bench/2026-09-30/reva2/REVA-RERUN-EVALUATION.md`, log `debug_260930-210953.log`).
-- **The LEFT board starts** after Stephen's lead check: `chk,$5F,fail,$0`, every lead probe ~800 mV. The first run's
-  refusal was the lead; the start check's refuse and pass are both now seen on Rev A.
-- **MEASURED, the defect stays absent on both boards:** unloaded `fold_win` 734 / 9,485 (LEFT, powers 10 / 5) and
-  127 / 919 (RIGHT), of 220,000. The LEFT's power-5 leg folds 4.3 % on noise: its mean reads 1 mV above its netted zero.
-- **The hands-off positive control's premise is false:** the hard speed-up (power 40 at 10,000 mm/s²) never raised the
-  mean net reading to 3 mV (`net_mean_mv` 1 / 0), because the fold itself, at 4 mV (about 0.8 A of DC link), cut every
-  frame that crossed it; the wheels were still spinning up at 1.5 s. FOLD and FOLDPOS NOMEAS on both boards.
-- **Disposition:** at a 2 A limit every Rev A reading sits at the sense chain's noise floor (2 A is about 10 mV against a
-  12-13 mV zero; noise peaks 6-8 mV), at a limit no user can set. No further Rev A runs for 6.0; the residual stays
-  ancillary (overlay P5) unless Stephen asks.
-
 ### PL-164 -- the driver's supported clock range is one point, 270 MHz; users choose their own clock
 
 > **Status (2026-09-27):** AFTER v6.0.0 — STEPHEN: *"user gets to chose clock freq to run their system. we need to be as
@@ -1915,11 +1743,32 @@ From `FLOOR-RERUN-EVALUATION.md` §4, §2.1, §7:
 
 ### PL-169 -- the FlySky demos re-send the acceleration setting on knob noise
 
-> **Status (2026-10-01):** ANCILLARY, harmless (no visible effect on the ramps).
+> **Status (2026-10-01):** IN 6.1.0 (a ride-along in the confirmed scope). Harmless today: no visible effect on the
+> ramps. Not yet fixed: both demos still call the setters on every mapped change (`demo_dual_motor_rc.spin2:233, :241`).
 
 The VRA knob's ±2-count noise (raw 1,504 / 1,506) changes the mapped rate by 4 mm/s², and the demo calls
 `setAcceleration()` on every change: about every 250 ms through the last minute of the 2026-09-30 rerun (2,458 / 2,462).
 A deadband of a few counts on both knobs would stop it.
+
+### PL-170 -- on Rev A the fold-back's noise margin is sized for ±3 mV, and the board reads 7
+
+> **Status (2026-10-01):** ANCILLARY — reaches only TEST USE current limits; not in 6.1.0's tests. Opened from PL-163's
+> residual when PL-163 itself was archived as certified ([archive](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01b.md)).
+
+**MEASURED** (`analyses/bench/2026-09-30/reva/REVA-PLATFORM-EVALUATION.md`, `debug_260930-155650.log`; rerun
+`reva2/REVA-RERUN-EVALUATION.md`, `debug_260930-210953.log`): on Rev A the unloaded net reading peaks at 7 mV
+(`net_max_mv,7`; zero 12-13 mV), against the ±3 mV that sized `FOLD_MIN_MV` = 4 (DRIVER_REV 40). At a 2 A limit the
+fold therefore acts on noise, about 75 frames a second, and the LEFT board's power-5 leg folded 4.3 % of frames. Only
+`testSetCurrentLimits()` sets a limit that low; at the shipped 40 A peak the Rev A threshold at the duty floor is about
+15 mV, so no user reaches it.
+
+**Fix direction, if taken:** `FOLD_MIN_MV` per board revision, sized from these readings. Its certification needs a
+`t0-reva` that can measure:
+- **FOLDPOS as built cannot.** The judged window must open at the speed-up (a grip latches the protective stop about
+  1 s after the stall), with no duty gate, and a rate criterion against the unloaded legs' noise-fold rate that
+  separates the acceleration's folds from the grip's.
+- **Two harness gaps:** `t0vStart()` reports a refused start's board as `REV_Unknown`, so a start-check refusal reads as
+  "not REV_A"; the hold record prints no stop reason.
 
 ---
 
