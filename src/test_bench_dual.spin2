@@ -687,6 +687,19 @@
 ''               the platform stands. The fourteen single actions are compiled as before: every addition is behind DBF_AUTO,
 ''               DBF_OBSTSESS, DBF_RAMP or the DBG_FENCE group they define (flLeg() moves to DBG_FLLEG, FAULTRUN's and OBSTACLE's
 ''               session). The record set grows, so FMT goes to 45
+''               01 Oct 2026 -- SRC_REV=71, FMT 46: task 3651 (HOLD-SPEED plan sec 4, PL-96, PL-97): THE RECORD LABELS CHECK THEMSELVES
+''               AT START-UP. A token longer than its field printed "?" and a table shorter than its count walked into the DAT
+''               beside it, four times, each found by reading a log. Now: every packed token table ends with TOK_END (an empty
+''               token) and every count is its enum's last member + 1 (the ABI's two, the library's own constants); the new
+''               tokenTablesSelfTest() walks every table this build compiles (under the table's own #ifdef), counts its entries to
+''               the sentinel against its count, measures each against its field's TOKMAX_*, and measures every sSfCell* and
+''               sSfCrit* string against TOKMAX_CELL and TOKMAX_CRIT. New record BM-TOKCHK (174 bytes worst case) and new cell
+''               R21-DUAL-TOKTAB (BOOL, criterion TABLES_CLEAN), declared and judged in EVERY build, PART_NONE's included; its
+''               negative is -D TOKCHK_NEG (tier dual-tokneg): it removes one entry from one real table and makes one real token
+''               too long, and the cell must print FAIL. BM-PLAN's two lookupz() tables, which no pass could count, are one DAT
+''               table (estPlan) with a sentinel. FOUND while building it: sFenWords' fourth word is 37 bytes and tokenAt() skips at
+''               most TOKEN_SCAN_MAX (32), so it stepped into the middle of that word and returned wrong text for every
+''               word after it (the fence line's OBSTACLE and RAMP drives): TOKEN_SCAN_MAX is 40
 ''
 '' =================================================================================================
 
@@ -728,6 +741,10 @@
                          | dual-c | dual-d | dual-floor | dual-ui | dual-align | dual-lead | dual-limits
                          | dual-limits-top | dual-fault | dual-fault-rightfirst | dual-start | dual-start-nowalk
                          | dual-start-phaseneg | dual-start-swapneg | dual-pack | dual-reg | dual-kick
+                         | dual-tokneg
+
+      SRC_REV 71: dual-tokneg is no part (PART_NONE, nothing moves, seconds): -D TOKCHK_NEG removes one entry from one token
+      table and makes one token too long, and the R21-DUAL-TOKTAB cell must print FAIL (the self-check's own negative)
 
       SRC_REV 69: part SPIN is fourteen tiers, one action each, none with a window or an input (each adds -D DUAL_PART_SPIN
       and its own -D FLOOR_ACT_*): floor-obstacle-coast | floor-obstacle-short | floor-grab | floor-faultrun
@@ -789,10 +806,19 @@
 #PRAGMA EXPORTDEF CFG_DUAL_MOTOR
 #ENDIF
 
+' SRC_REV 71: -D TOKCHK_NEG (tier dual-tokneg) is the token self-check's own negative case: it is both of its limbs, and each
+'  limb is also a flag of its own so a desk compile can show each alone flip the cell. TOKCHK_NEG_SHORT removes one token from
+'  the scope table (tokScope); TOKCHK_NEG_LONG lengthens one token of the exit table (tokExit) past its field. Every other
+'  build compiles the tables as they are.
+#ifdef TOKCHK_NEG
+#define TOKCHK_NEG_SHORT
+#define TOKCHK_NEG_LONG
+#endif
+
 CON { build identity }
 
-    SRC_REV     = 70                               ' hand-bumped whenever this file changes
-    FMT_VERSION = 45                                    ' BM- record-format version
+    SRC_REV     = 71                               ' hand-bumped whenever this file changes
+    FMT_VERSION = 46                                    ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -1451,6 +1477,7 @@ CON { bench target -- the fixed dual 6.5in Rev B 18.5V rig }
     DCS_FAULTED  = wheelL.DCS_FAULTED
     DCS_ESTOP    = wheelL.DCS_ESTOP
     DCS_MAX      = wheelL.DCS_ESTOP                         ' highest DCS_* value, 0..7
+    DCS_COUNT    = DCS_MAX + 1                              ' the values tokDcs names
 
     ' error codes this harness compares against (names, not copies, of the motor object's own)
     NO_ERROR              = wheelL.NO_ERROR
@@ -1724,18 +1751,18 @@ CON { ALIGN tier (task 3590) -- the hall zero measured cold, and the ONE per-mot
   ' ALIGN leg speed class -- what the guide ASKS for; the achieved rate is measured and reported.
   '  SLOW and FAST are the operator's own words, and they are what the guide line says out loud.
     #0, ASPD_SLOW, ASPD_FAST
-    ASPD_COUNT = 2
+    ASPD_COUNT = ASPD_FAST + 1
 
   ' ALIGN asked/measured direction, as a TOKEN. It used to print as +1 / -1, which made the operator
   '  decode a sign mid-run to learn which way to turn -- and a record nobody can read at a glance is
   '  a record that gets read wrong. FORWARD is the positive tick direction, REVERSE the negative.
     #0, ADIR_REVERSE, ADIR_FORWARD
-    ADIR_COUNT = 2
+    ADIR_COUNT = ADIR_FORWARD + 1
 
   ' ALIGN leg outcome. NOSTART is its own outcome and not an absence: a wheel that would not start must
   '  print four legs saying so, or the matrix cell fails with nothing in the log to say which wheel.
     #0, ALEG_OK, ALEG_STALLED, ALEG_SHORT, ALEG_CLIPPED, ALEG_NOSTART
-    ALEG_COUNT = 5
+    ALEG_COUNT = ALEG_NOSTART + 1
 
 CON { segment timing }
 
@@ -2017,7 +2044,7 @@ CON { instrument cog (design sec 2) }
   '  INST_ST_FROZEN - reads the source (mirror and heartbeat stay current), stores nothing
   '  INST_ST_EXITED - parked; safe to cogstop
     #0, INST_ST_IDLE, INST_ST_RUN, INST_ST_FREEZE, INST_ST_FROZEN, INST_ST_EXITED
-    INST_ST_COUNT = 5
+    INST_ST_COUNT = INST_ST_EXITED + 1
 
   ' Instrument source:
   '  INST_SRC_NONE   - no status block is read (hall pins only)
@@ -2104,6 +2131,7 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  SIDE_RIGHT - wheelR, instrument slot 1
   '  SIDE_BOTH  - the steering object
     #0, SIDE_NONE, SIDE_LEFT, SIDE_RIGHT, SIDE_BOTH
+    SIDE_COUNT = SIDE_BOTH + 1
     SLOT_LEFT  = 0
     SLOT_RIGHT = 1
 
@@ -2114,7 +2142,7 @@ CON { record enums -- each value has a token in the DAT token tables }
         SEG_LOWSPD, SEG_ALIGN, SEG_LEAD, SEG_TAKE, SEG_LIMTOP, SEG_LIMRAMP, SEG_LIMLOW, SEG_FLTRESP, SEG_FLTPLAT, ...
         SEG_SKCHECK, SEG_SPIN, SEG_INCLINE, SEG_PACK, SEG_REGRESS, SEG_KICK, SEG_OBSTACLE, SEG_GRAB, SEG_FAULTRUN, ...
         SEG_RAMP
-    SEG_COUNT = 34
+    SEG_COUNT = SEG_RAMP + 1
 
   ' why (design sec 3.1); token = the name after WHY_:
     #0, WHY_NONE, WHY_NO_COG, WHY_NOT_REACHED, WHY_FAULTED, WHY_STEADY_TIMEOUT, WHY_WINDOW_TIMEOUT, ...
@@ -2127,81 +2155,81 @@ CON { record enums -- each value has a token in the DAT token tables }
         WHY_PACK_NOT_FITTED, WHY_NO_PACK, WHY_NOT_CALIBRATED, WHY_NO_METER_READING, WHY_SAME_PACK_VOLTAGE, ...
         WHY_STALLED, WHY_NOT_OVERLOADED, WHY_TOO_FEW_TICKS, WHY_NO_ROOM, WHY_LOW_CURRENT, WHY_JUDGED_ACROSS_RUNS, ...
         WHY_STOP_BEGAN, WHY_FENCE_REFUSED, WHY_NOT_CLEAR, WHY_STRAIGHTS_SKIPPED, WHY_NOT_AT_START, WHY_RATE_REFUSED
-    WHY_COUNT = 52
+    WHY_COUNT = WHY_RATE_REFUSED + 1
 
   ' BM-INST event:
     #0, INST_EV_START, INST_EV_STOP, INST_EV_NOSTART, INST_EV_NOACK
-    INST_EV_COUNT = 4
+    INST_EV_COUNT = INST_EV_NOACK + 1
 
   ' BM-RUNG / BM-FBTRIAL result:
     #0, RES_OK, RES_FAULT, RES_STEADY_TIMEOUT, RES_WINDOW_TIMEOUT, RES_NO_COG, RES_ABORT_I, RES_SKIPPED
-    RES_COUNT = 7
+    RES_COUNT = RES_SKIPPED + 1
 
   ' trace cause (what was DONE; never what the wheel did afterwards, I7). SRC_REV 62: BLOCK is the drive into the
   '  obstacle, DRAG the grabbed drive (SRC_REV 63: CLIMB, the incline's overloaded leg, removed with it):
     #0, CAUSE_STOPCMD, CAUSE_STOPCOG, CAUSE_FAULT, CAUSE_ESTOP, CAUSE_RAMP, CAUSE_DISTANCE, ...
         CAUSE_BRAKEHAND, CAUSE_FLOOR, CAUSE_START, CAUSE_SLOWER, CAUSE_SPIN, CAUSE_BLOCK, CAUSE_DRAG
-    CAUSE_COUNT = 13
+    CAUSE_COUNT = CAUSE_DRAG + 1
 
   ' requested stop mode (what was REQUESTED, I7):
     #0, MODE_FLOAT, MODE_BRAKE
-    MODE_COUNT = 2
+    MODE_COUNT = MODE_BRAKE + 1
 
   ' BM-TRACE-END end:
     #0, TEND_REST, TEND_TIMEOUT, TEND_FAULT, TEND_ABORT, TEND_FROZEN
-    TEND_COUNT = 5
+    TEND_COUNT = TEND_FROZEN + 1
 
   ' BM-FBTRIAL rst:
     #0, RST_NONE, RST_RESET, RST_RESTART, RST_FAILED
-    RST_COUNT = 4
+    RST_COUNT = RST_FAILED + 1
 
   ' BM-RECOVER step:
     #0, RSTEP_RESET, RSTEP_RESTART
-    RSTEP_COUNT = 2
+    RSTEP_COUNT = RSTEP_RESTART + 1
 
   ' BM-ABORT reason (NO_MOTION and FAULT_CAP added to the design's four, see file notes; NO_FAULT by task 3613:
   '  a forced fault that had not latched within FR_PROVOKE_MS -- the hook failed -- so the wheel was stopped):
     #0, ABR_ABS_CURRENT, ABR_INST_STALLED, ABR_TIME_CAP, ABR_SYNC_PRECOND, ABR_NO_MOTION, ABR_FAULT_CAP, ABR_NO_FAULT
-    ABR_COUNT = 7
+    ABR_COUNT = ABR_NO_FAULT + 1
 
   ' BM-ABORT scope:
     #0, SCOPE_TRIAL, SCOPE_SEG, SCOPE_RUN
-    SCOPE_COUNT = 3
+    SCOPE_COUNT = SCOPE_RUN + 1
 
   ' BM-FLOOR / BM-OPER answer:
     #0, ANS_LEFT, ANS_RIGHT, ANS_STRAIGHT, ANS_NOMOVE, ANS_NONE
-    ANS_COUNT = 5
+    ANS_COUNT = ANS_NONE + 1
 
   ' operator input (SRC_REV 69: INPUT_TIMER and INPUT_SENSOR, which only the abandoned floor countdown board produced, are gone):
     #0, INPUT_KEY, INPUT_MOUSE, INPUT_NONE
-    INPUT_COUNT = 3
+    INPUT_COUNT = INPUT_NONE + 1
 
   ' BM-FLOOR slower wheel:
     #0, SLOWER_LEFT, SLOWER_RIGHT, SLOWER_EQUAL
-    SLOWER_COUNT = 3
+    SLOWER_COUNT = SLOWER_EQUAL + 1
 
   ' BM-FLOOR stop_by:
     #0, STOPBY_TIMER, STOPBY_OPERATOR, STOPBY_ABORT
-    STOPBY_COUNT = 3
+    STOPBY_COUNT = STOPBY_ABORT + 1
 
   ' BM-OPER prompt (task 3591: the dual-spin tier's segments; SRC_REV 62: one per floor situation -- CREEP became INCLINE,
   '  BLOCK OBSTACLE and LOAD GRAB, and FAULTRUN was appended; the drive back to the start prompts as its situation):
     #0, PROMPT_BRAKE_L, PROMPT_FLOOR, PROMPT_UICHECK, PROMPT_SPIN, PROMPT_INCLINE, PROMPT_OBSTACLE, PROMPT_GRAB, ...
         PROMPT_FAULTRUN
-    PROMPT_COUNT = 8
+    PROMPT_COUNT = PROMPT_FAULTRUN + 1
 
   ' BM-UISTEP kind (UICHECK):
   '  UIK_CONTROL - one live button, which must arrive both as its key and as a mouse click
   '  UIK_PREVIEW - one attended screen; LOOKS RIGHT when it reads right, SOMETHING WRONG when it does not
     #0, UIK_CONTROL, UIK_PREVIEW
-    UIK_COUNT = 2
+    UIK_COUNT = UIK_PREVIEW + 1
 
   ' BM-UISTEP result:
   '  UIR_OK      - the control arrived, or the screen read right
   '  UIR_WRONG   - the operator said the screen is wrong (SOMETHING WRONG)
   '  UIR_TIMEOUT - nothing usable arrived within UI_STEP_TIMEOUT_MS
     #0, UIR_OK, UIR_WRONG, UIR_TIMEOUT
-    UIR_COUNT = 3
+    UIR_COUNT = UIR_TIMEOUT + 1
 
   ' BM-OPER event:
   '  OPEV_SHOWN   - a prompt the operator now sees
@@ -2217,15 +2245,15 @@ CON { record enums -- each value has a token in the DAT token tables }
   '  OPEV_BACK    - SRC_REV 58: DONE on a BACK screen -- he has moved the platform back to where it started
     #0, OPEV_SHOWN, OPEV_START, OPEV_SKIP, OPEV_TIMEOUT, OPEV_ANSWER, OPEV_DONE, OPEV_STOP, OPEV_LETGO, OPEV_CAUGHT, ...
         OPEV_BACK
-    OPEV_COUNT = 10
+    OPEV_COUNT = OPEV_BACK + 1
 
   ' BM-SEG event:
     #0, SEGEV_BEGIN, SEGEV_END, SEGEV_SKIP
-    SEGEV_COUNT = 3
+    SEGEV_COUNT = SEGEV_SKIP + 1
 
   ' BM-END exit:
     #0, EXIT_COMPLETE, EXIT_ABORTED, EXIT_WATCHDOG
-    EXIT_COUNT = 3
+    EXIT_COUNT = EXIT_WATCHDOG + 1
 
   ' BM-DSTEP step (part D; token = the name after DST_). Each is one claim of the front cog's contract
   '  or of current limiting, measured once and printed with its own numbers:
@@ -2247,21 +2275,21 @@ CON { record enums -- each value has a token in the DAT token tables }
     #0, DST_ESTOP_LATCH, DST_ESTOP_REFUSE, DST_ESTOP_CLEAR, DST_ORDERED, DST_COOPSHUT, DST_TRACKRESET, ...
         DST_TIMESTOP, DST_LOCKSTEP, DST_FOLDBACK, DST_DERATE, DST_BLOCKED, DST_RETRY, DST_CMDTIMEOUT, ...
         DST_DIRSIGN, DST_RESTCOAST
-    DST_COUNT = 15
+    DST_COUNT = DST_RESTCOAST + 1
 
   ' BM-DSTEP result:
   '  DRES_PASS   - the step's own criterion held
   '  DRES_FAIL   - it was measured and did not hold
   '  DRES_NOMEAS - the step could not be provoked on this rig; why names what was missing
     #0, DRES_PASS, DRES_FAIL, DRES_NOMEAS
-    DRES_COUNT = 3
+    DRES_COUNT = DRES_NOMEAS + 1
 
   ' The library's fault causes (names, not copies): tokFltCause is indexed by them
     FC_COUNT = wheelL.FC_HALL + 1
 
   ' BM-OUT status (from DS_*):
     #0, STAT_MOVING, STAT_HOLDING, STAT_OFF, STAT_UNKNOWN, STAT_FAULTED, STAT_ESTOP
-    STAT_COUNT = 6
+    STAT_COUNT = STAT_ESTOP + 1
 
   ' BM-OUT buffer, one row per poll: OUT_LONGS longs in this order.
   '  OUT_FAULTED and OUT_ESTOP are APPENDED (task 3547): the steering object's aggregate isFaulted() and
@@ -2279,7 +2307,7 @@ CON { cog-0 progress checkpoints -- watchdog heartbeat contract (design sec 4.3)
         CP_LOOP_OPER, CP_LOOP_POLL, CP_LIB_START, CP_LIB_STOP, CP_LIB_COMMAND, CP_LIB_QUERY, ...
         CP_LIB_OFFSETS, CP_LIB_RAMP, CP_LIB_HOLD, CP_LIB_ESTOP, CP_LIB_RESETFAULT, CP_LIB_STEER_START, ...
         CP_LIB_STEER_DRIVE, CP_LIB_STEER_STOP, CP_LIB_STEER_QUERY, CP_EMIT, CP_PANEL
-    CP_COUNT = 29
+    CP_COUNT = CP_PANEL + 1
 
 CON { watchdog cog }
 
@@ -2529,7 +2557,8 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
 
     ' this build judges sign-off cells (TRUE) or none (FALSE): every part but PART_NONE, and the CLOCK part
     '  only at a swept clock. The one test every declaration and emission site uses (emitSignoffDecls(),
-    '  emitSignoffs(), declareStall())
+    '  emitSignoffs(), declareStall()) -- except SRC_REV 71's R21-DUAL-TOKTAB, the record labels' self-check, which every
+    '  build declares and prints, PART_NONE's too, so a build that runs nothing can still be shown to catch a bad label
     SF_JUDGES_CELLS = (PART_ID <> PART_NONE) & ((PART_ID <> PART_CLOCK) | (SF_CLOCK_SLOT <> SF_CLOCK_UNSWEPT))
 
     ' R14-DUAL-DBGMASK-*: the quiet set, from the compiled user config's own channel names (sec 12.6)
@@ -2691,7 +2720,7 @@ CON { operator panel geometry -- GENERATED by tools/gen_dual_assets.py, do not h
     BM_BTN_NOMOVE           = 7
     BM_BTN_LOOKS_RIGHT      = 8
     BM_BTN_WRONG            = 9
-    BM_BTN_COUNT            = 10
+    BM_BTN_COUNT            = BM_BTN_WRONG + 1
 
     BM_STRIP_X              = 12
     BM_STRIP_Y              = 242
@@ -2890,14 +2919,17 @@ hallDeltas65    BYTE    0, 0, 0, 0, 0, 0, 0, 0
 
 DAT { packed token tables -- zero-separated, indexed by tokenAt(); order follows each CON enum }
 
-tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0
-tokSeg          BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
+' SRC_REV 71: EVERY table ends with TOK_END, one extra zero after its last token's own, and has the count its enum gives it;
+'  tokenTablesSelfTest() walks each to that sentinel and fails the build's TOKTAB cell on a table whose entries are not its
+'  count, or a token longer than its field. A table added anywhere in this file gets its TOK_END and its walk line there.
+tokSide         BYTE    "NONE", 0, "LEFT", 0, "RIGHT", 0, "BOTH", 0, TOK_END
+tokSeg         BYTE    "NONE", 0, "PREFLT", 0, "STOPMODE", 0, "LIVE", 0, "LADDER", 0, "CLOCK", 0
                 BYTE    "FAULTB", 0, "OVERSHT", 0, "OUTSIDE", 0, "BASELINE", 0, "POSTFLT", 0
                 BYTE    "FLOOR", 0, "UICHECK", 0, "STEERSEG", 0, "LIMIT", 0, "LOWSPD", 0, "ALIGN", 0, "LEAD", 0, "TAKE", 0
                 BYTE    "LIMTOP", 0, "LIMRAMP", 0, "LIMLOW", 0, "FLTRESP", 0, "FLTPLAT", 0, "SKCHECK", 0
                 BYTE    "SPIN", 0, "INCLINE", 0, "PACK", 0, "REGRESS", 0, "KICK", 0, "OBSTACLE", 0, "GRAB", 0
-                BYTE    "FAULTRUN", 0, "RAMP", 0
-tokWhy      BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
+                BYTE    "FAULTRUN", 0, "RAMP", 0, TOK_END
+tokWhy     BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEADY_TIMEOUT", 0
                 BYTE    "WINDOW_TIMEOUT", 0, "STOP_TIMEOUT", 0, "NO_SAMPLES", 0, "NO_FAULT", 0, "ABORTED", 0
                 BYTE    "INST_NOACK", 0, "INST_STALLED", 0, "INST_BUSY", 0, "RING_LOST_HEAD", 0
                 BYTE    "MOTOR_RETIRED", 0, "OPERATOR_SKIP", 0, "OPERATOR_TIMEOUT", 0, "NO_PASSTHROUGH", 0
@@ -2937,51 +2969,62 @@ tokWhy      BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STE
                 '  fault not recovered, a latch not cleared), so no drive back was made; STRAIGHTS_SKIPPED -- an earlier straight
                 '  action failed, so this one was not run; NOT_AT_START -- a straight action ended away from its start;
                 '  RATE_REFUSED -- the steering object refused an acceleration or deceleration setting
-                BYTE    "FENCE_REFUSED", 0, "NOT_CLEAR", 0, "STRAIGHTS_SKIPPED", 0, "NOT_AT_START", 0, "RATE_REFUSED", 0
-tokInstEv     BYTE    "START", 0, "STOP", 0, "NOSTART", 0, "NOACK", 0
-tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED", 0
+                BYTE    "FENCE_REFUSED", 0, "NOT_CLEAR", 0, "STRAIGHTS_SKIPPED", 0, "NOT_AT_START", 0, "RATE_REFUSED", 0, TOK_END
+tokInstEv     BYTE    "START", 0, "STOP", 0, "NOSTART", 0, "NOACK", 0, TOK_END
+tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED", 0, TOK_END
 tokRes          BYTE    "OK", 0, "FAULT", 0, "STEADY_TIMEOUT", 0, "WINDOW_TIMEOUT", 0, "NO_COG", 0
-                BYTE    "ABORT_I", 0, "SKIPPED", 0
+                BYTE    "ABORT_I", 0, "SKIPPED", 0, TOK_END
 tokCause        BYTE    "STOPCMD", 0, "STOPCOG", 0, "FAULT", 0, "ESTOP", 0, "RAMP", 0, "DISTANCE", 0
-                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0, "SLOWER", 0, "SPIN", 0, "BLOCK", 0, "DRAG", 0
-tokMode        BYTE    "FLOAT", 0, "BRAKE", 0
-tokTend         BYTE    "REST", 0, "TIMEOUT", 0, "FAULT", 0, "ABORT", 0, "FROZEN", 0
-tokRst          BYTE    "NONE", 0, "RESET", 0, "RESTART", 0, "FAILED", 0
-tokRstep        BYTE    "RESET", 0, "RESTART", 0
+                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0, "SLOWER", 0, "SPIN", 0, "BLOCK", 0, "DRAG", 0, TOK_END
+tokMode        BYTE    "FLOAT", 0, "BRAKE", 0, TOK_END
+tokTend         BYTE    "REST", 0, "TIMEOUT", 0, "FAULT", 0, "ABORT", 0, "FROZEN", 0, TOK_END
+tokRst          BYTE    "NONE", 0, "RESET", 0, "RESTART", 0, "FAILED", 0, TOK_END
+tokRstep        BYTE    "RESET", 0, "RESTART", 0, TOK_END
 tokAbr          BYTE    "ABS_CURRENT", 0, "INST_STALLED", 0, "TIME_CAP", 0, "SYNC_PRECOND", 0
-                BYTE    "NO_MOTION", 0, "FAULT_CAP", 0, "NO_FAULT", 0
-tokScope        BYTE    "TRIAL", 0, "SEG", 0, "RUN", 0
-tokAns          BYTE    "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0, "NONE", 0
-tokInput        BYTE    "KEY", 0, "MOUSE", 0, "NONE", 0
-tokSlower       BYTE    "LEFT", 0, "RIGHT", 0, "EQUAL", 0
-tokStopBy       BYTE    "TIMER", 0, "OPERATOR", 0, "ABORT", 0
+                BYTE    "NO_MOTION", 0, "FAULT_CAP", 0, "NO_FAULT", 0, TOK_END
+#ifdef TOKCHK_NEG_SHORT
+' -D TOKCHK_NEG (tier dual-tokneg): the scope table with its last token, RUN, removed: two tokens against SCOPE_COUNT's three,
+'  which the self-check must find
+tokScope        BYTE    "TRIAL", 0, "SEG", 0, TOK_END
+#else
+tokScope        BYTE    "TRIAL", 0, "SEG", 0, "RUN", 0, TOK_END
+#endif
+tokAns          BYTE    "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0, "NONE", 0, TOK_END
+tokInput        BYTE    "KEY", 0, "MOUSE", 0, "NONE", 0, TOK_END
+tokSlower       BYTE    "LEFT", 0, "RIGHT", 0, "EQUAL", 0, TOK_END
+tokStopBy       BYTE    "TIMER", 0, "OPERATOR", 0, "ABORT", 0, TOK_END
 tokPrompt       BYTE    "BRAKE_L", 0, "FLOOR", 0, "UICHECK", 0, "SPIN", 0, "INCLINE", 0, "OBSTACLE", 0, "GRAB", 0
-                BYTE    "FAULTRUN", 0
-tokUiKind       BYTE    "CONTROL", 0, "PREVIEW", 0
-tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0
+                BYTE    "FAULTRUN", 0, TOK_END
+tokUiKind       BYTE    "CONTROL", 0, "PREVIEW", 0, TOK_END
+tokUiRes        BYTE    "OK", 0, "WRONG", 0, "TIMEOUT", 0, TOK_END
 tokDStep        BYTE    "ESTOP_LATCH", 0, "ESTOP_REFUSE", 0, "ESTOP_CLEAR", 0, "ORDERED", 0
                 BYTE    "COOPSHUT", 0, "TRACKRESET", 0, "TIMESTOP", 0, "LOCKSTEP", 0, "FOLDBACK", 0
-                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0, "CMDTIMEOUT", 0, "DIRSIGN", 0, "RESTCOAST", 0
-tokDRes        BYTE    "PASS", 0, "FAIL", 0, "NOMEAS", 0
+                BYTE    "DERATE", 0, "BLOCKED", 0, "RETRY", 0, "CMDTIMEOUT", 0, "DIRSIGN", 0, "RESTCOAST", 0, TOK_END
+tokDRes        BYTE    "PASS", 0, "FAIL", 0, "NOMEAS", 0, TOK_END
 ' the library's FC_* fault causes (task 3572, S-7), in enum order
-tokFltCause     BYTE    "NONE", 0, "LAG", 0, "HALL", 0
+tokFltCause     BYTE    "NONE", 0, "LAG", 0, "HALL", 0, TOK_END
 ' operator panel buttons, in BM_BTN_* order (task 3591: DONE is index 3)
 tokButton       BYTE    "START", 0, "SKIP", 0, "STOP", 0, "DONE", 0, "LEFT", 0, "RIGHT", 0, "STRAIGHT", 0, "NOMOVE", 0
-                BYTE    "LOOKSOK", 0, "WRONG", 0
+                BYTE    "LOOKSOK", 0, "WRONG", 0, TOK_END
 tokOpEv         BYTE    "SHOWN", 0, "START", 0, "SKIP", 0, "TIMEOUT", 0, "ANSWER", 0, "DONE", 0, "STOP", 0
-                BYTE    "LETGO", 0, "CAUGHT", 0, "BACK", 0
-tokSegEv       BYTE    "BEGIN", 0, "END", 0, "SKIP", 0
-tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG", 0
-tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAULTED", 0, "ESTOP", 0
+                BYTE    "LETGO", 0, "CAUGHT", 0, "BACK", 0, TOK_END
+tokSegEv       BYTE    "BEGIN", 0, "END", 0, "SKIP", 0, TOK_END
+#ifdef TOKCHK_NEG_LONG
+' -D TOKCHK_NEG (tier dual-tokneg): the exit table with WATCHDOG lengthened past its field's TOKMAX_EXIT (8) -- the self-check must find it
+tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG_TIMER", 0, TOK_END
+#else
+tokExit         BYTE    "COMPLETE", 0, "ABORTED", 0, "WATCHDOG", 0, TOK_END
+#endif
+tokStat         BYTE    "MOVING", 0, "HOLDING", 0, "OFF", 0, "UNKNOWN", 0, "FAULTED", 0, "ESTOP", 0, TOK_END
 ' PL-97, second instance: this table was SHORT of PART_COUNT the moment PART_ALIGN joined the enum, so
 '  an ALIGN build printed adjacent DAT in the part field of BM-BANNER, BM-PLAN, BM-EXIT, every SIGNOFF
 '  and the watchdog record. Same mechanism as tokFinds below -- the record vocabulary has no self-check.
 tokPart         BYTE    "NONE", 0, "A", 0, "CLOCK", 0, "B", 0, "BRAKE", 0, "C", 0, "D", 0, "FLOOR", 0, "UI", 0
-                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0, "START", 0, "SPIN", 0, "PACK", 0, "REG", 0, "KICK", 0
+                BYTE    "ALIGN", 0, "LEAD", 0, "LIM", 0, "FRESP", 0, "START", 0, "SPIN", 0, "PACK", 0, "REG", 0, "KICK", 0, TOK_END
 ' ALIGN leg speed class (ASPD_*), direction (ADIR_*) and leg outcome (ALEG_*), task 3590
-tokASpd         BYTE    "SLOW", 0, "FAST", 0
-tokADir         BYTE    "REVERSE", 0, "FORWARD", 0
-tokALeg         BYTE    "OK", 0, "STALLED", 0, "SHORT", 0, "CLIPPED", 0, "NOSTART", 0
+tokASpd         BYTE    "SLOW", 0, "FAST", 0, TOK_END
+tokADir         BYTE    "REVERSE", 0, "FORWARD", 0, TOK_END
+tokALeg         BYTE    "OK", 0, "STALLED", 0, "SHORT", 0, "CLIPPED", 0, "NOSTART", 0, TOK_END
 ' THE OPERATOR'S OWN LINE, one per leg, written out in full rather than composed. Eight legs, eight
 '  strings: it is the thing a person reads while standing at the rig, so it says the wheel, the
 '  direction and the pace in plain words and needs nothing else on screen to be understood. Composing
@@ -2998,13 +3041,13 @@ sAgRightFwdFast BYTE    "TURN RIGHT WHEEL FORWARD, FAST -- keep turning until ou
 sAgRightRevFast BYTE    "TURN RIGHT WHEEL REVERSE, FAST -- keep turning until output resumes", 0
 ' driver state DCS_* 0..7; SLOW_TO_CHG shortened to fit the 10-byte st field
 tokDcs          BYTE    "UNKNOWN", 0, "STOPPED", 0, "SPIN_UP", 0, "AT_SPEED", 0, "SPIN_DN", 0
-                BYTE    "SLOW_CHG", 0, "FAULTED", 0, "ESTOP", 0
-tokCp           BYTE    "INIT", 0, "INST_ACK", 0, "READY", 0, "ZERO", 0, "ATSPEED", 0, "SETTLE", 0
+                BYTE    "SLOW_CHG", 0, "FAULTED", 0, "ESTOP", 0, TOK_END
+tokCp          BYTE    "INIT", 0, "INST_ACK", 0, "READY", 0, "ZERO", 0, "ATSPEED", 0, "SETTLE", 0
                 BYTE    "WINDOW", 0, "CAPTURE", 0, "REST", 0, "STOPPED", 0, "COOL", 0, "DRAIN", 0
                 BYTE    "OPER", 0, "POLL", 0, "LIB_START", 0, "LIB_STOP", 0, "LIB_CMD", 0, "LIB_QUERY", 0
                 BYTE    "LIB_OFFS", 0, "LIB_RAMP", 0, "LIB_HOLD", 0, "LIB_ESTOP", 0, "LIB_RSTFLT", 0
                 BYTE    "STR_START", 0, "STR_DRIVE", 0, "STR_STOP", 0, "STR_QUERY", 0, "EMIT", 0
-                BYTE    "PANEL", 0
+                BYTE    "PANEL", 0, TOK_END
 ' BM-PLAN finds, per segment (finding ids joined by "_"), indexed by SEG_*
 tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-3_C-6", 0, "S-3", 0
                 BYTE    "C-5_Z_S-1", 0, "C-3_AB", 0, "M_AF_S-5_Z", 0, "FIELD_Q", 0, "S-9a", 0, "AC", 0
@@ -3040,11 +3083,52 @@ tokFinds        BYTE    "NONE", 0, "NONE", 0, "C-4_S-9a", 0, "W", 0, "C-1_C-5_S-
                 BYTE    "PL-106_111_132_95", 0, "PL-150_144_95", 0, "PL-93_X-5_PL-117", 0
                 ' SRC_REV 70: RAMP -- the floor session's ramp legs: what the jerk-limited ramp achieves on the floor at three
                 '  acceleration and three deceleration settings (PL-160, Plan A R16)
-                BYTE    "PL-160_RAMPS", 0
+                BYTE    "PL-160_RAMPS", 0, TOK_END
+
+' BM-PLAN's planned seconds (est_s, design sec 4.4) and worst-case log KB (est_kb, sec 12.4), one row per SEG_* in enum
+'  order, read by emitPlan() (SRC_REV 71: two lookupz() lists there, which no pass could count; the rows are the same
+'  numbers). A row is its two words; the row after the last is EST_END twice, and the self-check counts rows to it. The reasons
+'  behind the figures are in emitPlan()'s notes.
+estPlan         WORD    0, 0                                    ' SEG_NONE
+                WORD    5, 2                                    ' SEG_PREFLT
+                WORD    540, 4_700                              ' SEG_STOPMODE
+                WORD    60, 3                                   ' SEG_LIVE
+                WORD    420, 190                                ' SEG_LADDER
+                WORD    60, 8                                   ' SEG_CLOCK
+                WORD    420, 1_960                              ' SEG_FAULTB
+                WORD    150, 420                                ' SEG_OVERSHT
+                WORD    120, 130                                ' SEG_OUTSIDE
+                WORD    120, 16                                 ' SEG_BASELINE
+                WORD    120, 790                                ' SEG_POSTFLT
+                WORD    180, 1_180                              ' SEG_FLOOR
+                WORD    120, 100                                ' SEG_UICHECK
+                WORD    240, 6                                  ' SEG_STEERSEG
+                WORD    180, 6                                  ' SEG_LIMIT
+                WORD    160, 30                                 ' SEG_LOWSPD
+                WORD    240, 25                                 ' SEG_ALIGN
+                WORD    270, 135                                ' SEG_LEAD
+                WORD    20, 1                                   ' SEG_TAKE
+                WORD    360, 90                                 ' SEG_LIMTOP
+                WORD    300, 1_950                              ' SEG_LIMRAMP
+                WORD    360, 45                                 ' SEG_LIMLOW
+                WORD    320, 2_330                              ' SEG_FLTRESP
+                WORD    30, 200                                 ' SEG_FLTPLAT
+                WORD    60, 25                                  ' SEG_SKCHECK
+                WORD    200, 120                                ' SEG_SPIN
+                WORD    120, 10                                 ' SEG_INCLINE
+                WORD    150, 5                                  ' SEG_PACK
+                WORD    40, 230                                 ' SEG_REGRESS
+                WORD    90, 45                                  ' SEG_KICK
+                WORD    90, 230                                 ' SEG_OBSTACLE
+                WORD    180, 330                                ' SEG_GRAB
+                WORD    60, 120                                 ' SEG_FAULTRUN
+                WORD    30, 10                                  ' SEG_RAMP
+                WORD    EST_END, EST_END
 
 DAT { fixed tokens }
 
 sUnknownTok     BYTE    "?", 0
+sTokNoBad       BYTE    "NONE", 0                               ' BM-TOKCHK's first_bad when no table is at fault
 sCfgBench       BYTE    "BENCH", 0
 sCfgUser        BYTE    "USER", 0
 sFrameMotor     BYTE    "MOTOR", 0
@@ -3220,7 +3304,7 @@ sSfCellDbgMaskL BYTE    "R18-DUAL-DBGMASK-L", 0
 sSfCellLeadBrkt BYTE    "R18-DUAL-LEAD-BRKT", 0
 sSfCritLeadBrkt BYTE    "MIN_BRACKETED", 0
 ' LEAD rung verdict (LEADV_*), task 3583
-tokLeadV        BYTE    "BRACKETED", 0, "EDGE", 0, "NOMEAS", 0
+tokLeadV        BYTE    "BRACKETED", 0, "EDGE", 0, "NOMEAS", 0, TOK_END
 ' task 3604: the LIMITS part's cells -- the two every part carries, the traces, the top speed and the PWM clip
 sSfCellNoStallM BYTE    "R18-DUAL-NOSTALL-M", 0
 sSfCellDbgMaskM BYTE    "R18-DUAL-DBGMASK-M", 0
@@ -3429,6 +3513,9 @@ sSfCellDbgMaskR BYTE    "R21-DUAL-DBGMASK-R", 0
 sSfCellNoStallT BYTE    "R21-DUAL-NOSTALL-T", 0
 sSfCellDbgMaskT BYTE    "R21-DUAL-DBGMASK-T", 0
 sSfCellTrKickT  BYTE    "R21-DUAL-TRKICK-T", 0
+' SRC_REV 71 (task 3651): the record labels' own self-check, declared and judged by EVERY build (PART_NONE's included)
+sSfCellTokTab   BYTE    "R21-DUAL-TOKTAB", 0
+sSfCritTokTab   BYTE    "TABLES_CLEAN", 0
 sSfCritPkCal    BYTE    "CAL_POINT_MV", 0
 sSfCritPkSecond BYTE    "SECOND_POINT_MV", 0
 sSfCritPkAbsent BYTE    "UNPLUG_NOT_ABSENT", 0
@@ -3444,10 +3531,31 @@ sSfFail         BYTE    "FAIL", 0
 sSfNomeas       BYTE    "NOMEAS", 0
 sSfTrue         BYTE    "TRUE", 0
 sSfNa           BYTE    "NA", 0
+' THE END OF THE SIGN-OFF STRING RUN (SRC_REV 71). Every string from sSfBin to here is one zero-terminated string after
+'  another, and tokenTablesSelfTest() reads them in order to this sentinel, holding each cell id (R, two digits and a hyphen
+'  begin it) to TOKMAX_CELL and every other string to TOKMAX_CRIT. A cell or criterion string goes ABOVE this line.
+                BYTE    TOK_END
 
 CON { token-table geometry and wait kinds }
 
-    TOKEN_SCAN_MAX = 32                                     ' longest packed token is 24 bytes
+    ' tokenAt() steps over at most TOKEN_SCAN_MAX bytes of each token before the one it returns, so a token longer than
+    '  that misplaces every token after it; the self-check holds every packed token to it. 40, since SRC_REV 71: the longest
+    '  is sFenWords' fourth word, 37 bytes (32 read it as a 32-byte token and landed inside it).
+    TOKEN_SCAN_MAX = 40
+    ' The sentinel that closes every packed token table: the byte after the last token's terminator. A table is its tokens, then
+    '  TOK_END, so the self-check finds a table's end, and counts its tokens, without trusting the enum count it checks against.
+    TOK_END = 0
+    ' estPlan (BM-PLAN's est_s and est_kb, one row per SEG_*): a row is EST_ROW_WORDS words, EST_SECS then EST_KB, and the row
+    '  after the last is EST_END in both (a value no plan reaches), so the self-check counts rows without trusting SEG_COUNT
+    EST_SECS = 0
+    EST_KB = 1
+    EST_ROW_WORDS = 2
+    EST_END = $FFFF
+    ' The self-check's own limits: TOKMAX_TABNAME is the longest table name BM-TOKCHK's first_bad prints (tokAbiLaunch, 12,
+    '  is the longest there is); SF_RUN_MAX_STRINGS bounds the walk of the sign-off string run (about 320 strings today),
+    '  so a run that lost its TOK_END is found, not read to the end of the hub
+    TOKMAX_TABNAME = 16
+    SF_RUN_MAX_STRINGS = 600
 
   ' What a watched wait ends on, besides its time bound and a safety event:
   '  UNTIL_TIME     - only the time bound
@@ -4107,6 +4215,8 @@ PRI initRunState() | slotIdx
     bOutMarked := FALSE
     bFlDrove := FALSE
     bQuietMasks := (user.MOTOR_DBG_MASK == QUIET_DBG_MASK) and (user.STEER_DBG_MASK == QUIET_DBG_MASK)
+    bSfTokTabOk := FALSE                                    ' SRC_REV 71: TOKTAB is TRUE only once the self-check has run and found nothing
+    sfTokTabN := 0
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         slotLife[slotIdx] := 0
         bSlotRetired[slotIdx] := FALSE
@@ -9964,8 +10074,8 @@ DAT ' ---- LIMITS tables ----
 limRampUps      LONG    RAMP_DEF_ACCEL_MM_S2, RAMP_DEF_ACCEL_MM_S2 * 2, RAMP_DEF_ACCEL_MM_S2 * 4    ' mm/s^2 (SRC_REV 61)
 limRampDowns    LONG    RAMP_DEF_DECEL_MM_S2, RAMP_DEF_DECEL_MM_S2 * 2
 limLowIncre     LONG    544_628, 400_000, 250_000, 100_000                  ' the old confgurePowerLimits() floor, then below it (Visit 9 moved the floor to 100_000)
-tokEdge         BYTE    "NONE", 0, "FAULT", 0, "HOLD", 0, "SLOW", 0, "NOWIN", 0
-tokFolK         BYTE    "RUNG", 0, "OVER", 0
+tokEdge         BYTE    "NONE", 0, "FAULT", 0, "HOLD", 0, "SLOW", 0, "NOWIN", 0, TOK_END
+tokFolK         BYTE    "RUNG", 0, "OVER", 0, TOK_END
 
 VAR { LIMITS state -- cog 0 only; index = motor slot }
 
@@ -10734,7 +10844,6 @@ CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 361
     FR_SPEED_X4           = 1                               ' X-4 runs once per wheel, at the middle rung
     FR_SPEED_X6           = 1                               ' X-6 and its bounds too, so X-2's middle rung is its full-short bound
     FR_PHASES             = 3
-    FR_WINS               = 3                               ' FRW_PRE, FRW_MOVE, FRW_REST
     FR_BRAKE_PCT          = wheelL.BRAKE_PCT_DEFAULT        ' 10: the graded short's %, the driver's own default
     FR_BRAKE_STEPS        = 4                               ' frBrakePcts: 10, 25, 50, 100
     FR_GRADED_POINTS      = FR_BRAKE_STEPS + 1              ' the coast bound (X6C) as point 0, then the four brake %s
@@ -10894,6 +11003,7 @@ CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 361
   '  FRW_MOVE - from FR_SETTLE_SAMPLES after the fault to rest: the wheel coasting or braked
   '  FRW_REST - from rest to the capture's end, the bridge in its post-fault state
     #0, FRW_PRE, FRW_MOVE, FRW_REST
+    FR_WINS = FRW_REST + 1                                  ' (SRC_REV 71: was a literal 3, beside FR_SPEEDS above)
     TOKMAX_FRWIN = 4
 
     FR_MODE_COUNT = wheelL.FR_GRADED + 1                    ' tokFrMode is indexed by the library's FR_*
@@ -10909,13 +11019,13 @@ DAT ' ---- FAULTRESP tables ----
 frRungIdx       LONG    3, 5, 7
 ' X-6's brake %s, ascending: setFaultResponse(FR_GRADED, pct) before each trial
 frBrakePcts     LONG    10, 25, 50, 100
-tokFrCell       BYTE    "X-2", 0, "X-3", 0, "X-4", 0, "X-6", 0, "X6C", 0
-tokFrOut        BYTE    "FAULT", 0, "NO_FAULT", 0, "ABORT_I", 0, "NOT_RUN", 0
-tokFrPath       BYTE    "NONE", 0, "FAULTED", 0, "RESYNC", 0, "RESYNC_N", 0, "RESYNC_FLT", 0
-tokFrMode       BYTE    "SHIPPED", 0, "GRADED", 0
-tokFrWin        BYTE    "PRE", 0, "MOVE", 0, "REST", 0
-tokHold         BYTE    "OFF", 0, "HOLDING", 0, "SLIPPED", 0, "LIMITED", 0
-tokPfOut        BYTE    "NO_FAIL", 0, "RETRY", 0, "PROBE", 0, "DEAD", 0, "UNDECIDED", 0
+tokFrCell       BYTE    "X-2", 0, "X-3", 0, "X-4", 0, "X-6", 0, "X6C", 0, TOK_END
+tokFrOut        BYTE    "FAULT", 0, "NO_FAULT", 0, "ABORT_I", 0, "NOT_RUN", 0, TOK_END
+tokFrPath       BYTE    "NONE", 0, "FAULTED", 0, "RESYNC", 0, "RESYNC_N", 0, "RESYNC_FLT", 0, TOK_END
+tokFrMode       BYTE    "SHIPPED", 0, "GRADED", 0, TOK_END
+tokFrWin        BYTE    "PRE", 0, "MOVE", 0, "REST", 0, TOK_END
+tokHold         BYTE    "OFF", 0, "HOLDING", 0, "SLIPPED", 0, "LIMITED", 0, TOK_END
+tokPfOut        BYTE    "NO_FAIL", 0, "RETRY", 0, "PROBE", 0, "DEAD", 0, "UNDECIDED", 0, TOK_END
 #endif
 
 ' PL-152: this VAR block stays in every build -- the pf* longs below are the PREFLT nudge's staging, which every part
@@ -13540,19 +13650,19 @@ CON { --- START: the startup study's B-cells through the steering object (task 3
 #ifdef DBG_PACKTOK
 DAT ' ---- the pack status tokens, START's and PACK's (PL-152: in those two parts' images only) ----
 
-tokPack         BYTE    "NOT_FITTED", 0, "ABSENT", 0, "PRESENT", 0
+tokPack         BYTE    "NOT_FITTED", 0, "ABSENT", 0, "PRESENT", 0, TOK_END
 #endif
 
 #ifdef DBP_START
 DAT ' ---- START tables ----
 
-tokSkNegKind    BYTE    "NONE", 0, "PHASE", 0, "SWAP", 0                                ' indexed by SKNEG_*
-tokPrbPhase     BYTE    "NONE", 0, "U", 0, "V", 0, "W", 0                               ' by PRB_*
-tokHallSwap     BYTE    "NONE", 0, "HALLS_01", 0, "HALLS_12", 0, "HALLS_02", 0          ' by HSW_*
-tokWndState     BYTE    "NOT_RUN", 0, "MEASURED", 0, "NOT_VISIBLE", 0, "TRIPPED", 0, "UNSETTLED", 0   ' by WND_*
-tokSkMode       BYTE    "DEFAULT", 0, "OPTOUT", 0, "REFUSE", 0, "FIRST", 0                            ' by SKM_* (task 3621)
-tokWalkLeg      BYTE    "OUT", 0, "BACK", 0                                                           ' by WLEG_* (PL-137)
-tokWalkEnd      BYTE    "NOT_RUN", 0, "LIMIT", 0, "TIMEOUT", 0, "GUARD", 0, "FAULT", 0, "ESTOP", 0, "OTHER", 0   ' by WLE_*
+tokSkNegKind    BYTE    "NONE", 0, "PHASE", 0, "SWAP", 0, TOK_END                       ' indexed by SKNEG_*
+tokPrbPhase     BYTE    "NONE", 0, "U", 0, "V", 0, "W", 0, TOK_END                      ' by PRB_*
+tokHallSwap     BYTE    "NONE", 0, "HALLS_01", 0, "HALLS_12", 0, "HALLS_02", 0, TOK_END ' by HSW_*
+tokWndState     BYTE    "NOT_RUN", 0, "MEASURED", 0, "NOT_VISIBLE", 0, "TRIPPED", 0, "UNSETTLED", 0, TOK_END   ' by WND_*
+tokSkMode       BYTE    "DEFAULT", 0, "OPTOUT", 0, "REFUSE", 0, "FIRST", 0, TOK_END                   ' by SKM_* (task 3621)
+tokWalkLeg      BYTE    "OUT", 0, "BACK", 0, TOK_END                                                  ' by WLEG_* (PL-137)
+tokWalkEnd      BYTE    "NOT_RUN", 0, "LIMIT", 0, "TIMEOUT", 0, "GUARD", 0, "FAULT", 0, "ESTOP", 0, "OTHER", 0, TOK_END   ' by WLE_*
 
 VAR { START state -- cog 0 only }
 
@@ -14914,7 +15024,7 @@ CON { --- PACK: the pack voltage sensor, fitted and certified (task 3611, R20.4)
 #ifdef DBP_PACK
 DAT ' ---- PACK tables and the operator's lines (task 3611) ----
 
-tokPkPair       BYTE    "NONE", 0, "CAL", 0, "SECOND", 0                                ' indexed by PKP_*
+tokPkPair       BYTE    "NONE", 0, "CAL", 0, "SECOND", 0, TOK_END                       ' indexed by PKP_*
 sPkRule         BYTE    "1000xMETER/UNCAL", 0                                           ' BM-PKMARK: PACK_SENSE_CAL_PERMILLE's rule
 ' THE OPERATOR'S LINES, written out whole, as ALIGN's are: each is what a person reads at the rig with his hand on the
 '  lead, so each says the step, what to do and what the program will do, and needs nothing else on screen.
@@ -15617,12 +15727,12 @@ CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task
 
   ' SPIN_SPEED_*: a leg's speed class; its power, window and scheduled lead are spinPower, spinWinMs and spinSchedLead
     #0, SPIN_SPEED_SLOW, SPIN_SPEED_MED, SPIN_SPEED_BRISK
-    SPIN_SPEEDS           = 3
+    SPIN_SPEEDS           = SPIN_SPEED_BRISK + 1
     TOKMAX_SPSPEED        = 6
   ' SPIN_DIR_*: RIGHT, clockwise from above (both motors positive), then LEFT (both negative); a pair's first leg is
   '  RIGHT. The order is load-bearing: gen_dual_assets.py's NXT_ / SPN_ state words are indexed by it
     #0, SPIN_DIR_RIGHT, SPIN_DIR_LEFT
-    SPIN_DIRS             = 2
+    SPIN_DIRS             = SPIN_DIR_LEFT + 1
     TOKMAX_SPDIR          = 5
   ' SPOFF_*: the commutation pair a pair of legs runs
   '  SPOFF_SCHED  - the confirmed offsets: the shipped lead schedule (Z -4, L from the Visit 8 / 8b table), untouched
@@ -15630,7 +15740,7 @@ CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task
   '                 written live: the CONTROL, expected to cost clearly more current and to split by direction
   '  SPOFF_FIXED  - today's fixed pair, 14 / 338 (Z -4, L 18), written live: what the schedule replaced at the quarter
     #0, SPOFF_SCHED, SPOFF_LEGACY, SPOFF_FIXED
-    SPOFF_COUNT           = 3
+    SPOFF_COUNT           = SPOFF_FIXED + 1
     TOKMAX_SPOFF          = 6
     SPIN_LEGACY_NEG       = 43                              ' the legacy pair, MIRRORED ON PURPOSE (this build compiles the
     SPIN_LEGACY_POS       = 317                             '  shipped one): offset_fwd, then offset_rev
@@ -15664,7 +15774,7 @@ CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task
   '  SPSTOP_BLOCKED    - SRC_REV 62: the protective stop latched (an incline climb the slope stalled)
     #0, SPSTOP_NOT_RUN, SPSTOP_LIMIT, SPSTOP_OPERATOR, SPSTOP_ABORT, SPSTOP_OVERTRAVEL, SPSTOP_TIMEOUT, SPSTOP_FAULT, ...
         SPSTOP_HARNESS, SPSTOP_BLOCKED
-    SPSTOP_COUNT          = 9
+    SPSTOP_COUNT          = SPSTOP_BLOCKED + 1
     TOKMAX_SPSTOP         = 10
     SPIN_MIRROR_MS        = 10                              ' after an ARM, before the mirror is read: several instrument passes
     SPIN_ATSPEED_MS       = 4_000                           ' both wheels AT_SPEED after the command; the quarter's is about 1 s
@@ -15753,7 +15863,7 @@ CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task
   '  both, measured by him. WHEEL SLIP IS NOT SEEN: a tyre that slides on a loose surface moves the platform with no
   '  hall tick, and one that spins in place ticks with no motion, so to the halls either reads as rest or as creep.
     #0, CRK_COAST, CRK_LOWCEIL, CRK_HOLD
-    CRK_COUNT             = 3
+    CRK_COUNT             = CRK_HOLD + 1
     TOKMAX_CRK            = 7
     CREEP_CEIL_PCT        = wheelL.HOLD_CEILING_PCT         ' 10: the provisional ceiling under test
     CREEP_LOW_CEIL_PCT    = 1                               ' the control's: 1 % of duty_max, under duty_min (about 5.8 %)
@@ -15773,7 +15883,7 @@ CON { --- SPIN: the tethered spin-in-place floor tier, loaded and attended (task
   '  CRSTOP_OPERATOR - STOP on the panel, and the phases were shorted
   '  CRSTOP_ABORT    - the 10 A abort or a stalled instrument
     #0, CRSTOP_NOT_RUN, CRSTOP_TIMER, CRSTOP_BOUND, CRSTOP_OPERATOR, CRSTOP_ABORT
-    CRSTOP_COUNT          = 5
+    CRSTOP_COUNT          = CRSTOP_ABORT + 1
     TOKMAX_CRSTOP         = 8
 
 CON { --- the floor situations (SRC_REV 62; the load cells since SRC_REV 58): OBSTACLE, GRAB, INCLINE, FAULTRUN --- }
@@ -15823,7 +15933,7 @@ CON { --- the floor situations (SRC_REV 62; the load cells since SRC_REV 58): OB
   '  69: only FAULTRUN's leg out is run now -- GRAB's drive back is gone (he returns the platform by hand) and INCLINE is
   '  compiled out -- and the other kinds keep their values so a log reads as it did
     #0, FLL_BACK, FLL_FR_OUT, FLL_INC_UP, FLL_INC_DOWN
-    FLL_COUNT             = 4
+    FLL_COUNT             = FLL_INC_DOWN + 1
     TOKMAX_FLL            = 8
 
   ' SRC_REV 69, THE LEAD-IN AND THE PLAIN LINES (Stephen 2026-09-30, R3: "let's go ahead and add a 10-second lead-in. Nothing
@@ -15968,7 +16078,7 @@ CON { --- the floor situations (SRC_REV 62; the load cells since SRC_REV 58): OB
     BLK_DECIM             = 2                               ' 4 ms samples: the ring holds 16 s, the whole leg
   ' BLK_*: the trial kind, in order; BM_STATE_OBS_COAST + kind is its state word
     #0, BLK_COAST, BLK_BRAKE
-    BLK_KINDS             = 2                               ' SRC_REV 69: was BLK_TRIALS, a loop bound; a run is one kind
+    BLK_KINDS             = BLK_BRAKE + 1                   ' SRC_REV 69: was BLK_TRIALS, a loop bound; a run is one kind
 #ifdef DBP_SPIN
     FLOOR_BLK_KIND        = FLOOR_ACT - FLA_OBST_COAST      ' the kind an OBSTACLE image runs: FLA_OBST_COAST is BLK_COAST, _SHORT BLK_BRAKE
 #endif
@@ -15984,11 +16094,11 @@ CON { --- the floor situations (SRC_REV 62; the load cells since SRC_REV 58): OB
   '  BLKSTOP_TIMEOUT    - still driving at FL_LEG_MS, and the harness stopped it
     #0, BLKSTOP_NOT_RUN, BLKSTOP_LATCHED, BLKSTOP_NO_LATCH, BLKSTOP_LIMIT, BLKSTOP_OPERATOR, BLKSTOP_ABORT, ...
         BLKSTOP_OVERTRAVEL, BLKSTOP_TIMEOUT
-    BLKSTOP_COUNT         = 8
+    BLKSTOP_COUNT         = BLKSTOP_TIMEOUT + 1
     TOKMAX_BLKSTOP        = 10
   ' the bridge a phase window reads (BM-BLKCLR's bridge): COAST at or above BLK_PH_SPLIT_MV, SHORT under it
     #0, BRIDGE_NA, BRIDGE_COAST, BRIDGE_SHORT
-    BRIDGE_COUNT          = 3
+    BRIDGE_COUNT          = BRIDGE_SHORT + 1
     TOKMAX_BRIDGE         = 5
 
   ' HELDATSPD, PL-95: the drive must not report AT_SPEED while its field is held. Over every OBSTACLE drive (command to
@@ -16104,7 +16214,7 @@ CON { --- the floor situations (SRC_REV 62; the load cells since SRC_REV 58): OB
   '  LDO_STALLED  - the protective stop latched (STALLED)
   '  LDO_ABORT    - STOP, the abort, the travel guard or an instrument stall ended it, or its window was cut short
     #0, LDO_NOT_RUN, LDO_OVERLOAD, LDO_FAULT, LDO_LIGHT, LDO_STALLED, LDO_ABORT
-    LDO_COUNT             = 6
+    LDO_COUNT             = LDO_ABORT + 1
     TOKMAX_LDO            = 8
   ' LDSTOP_*: what ended a loaded trial's drive
   '  LDSTOP_NOT_RUN    - it never drove
@@ -16117,7 +16227,7 @@ CON { --- the floor situations (SRC_REV 62; the load cells since SRC_REV 58): OB
   '  LDSTOP_TIMEOUT    - still moving at LOAD_LEG_MS, and the harness stopped it
     #0, LDSTOP_NOT_RUN, LDSTOP_LIMIT, LDSTOP_OPERATOR, LDSTOP_ABORT, LDSTOP_OVERTRAVEL, LDSTOP_FAULT, LDSTOP_BLOCKED, ...
         LDSTOP_TIMEOUT
-    LDSTOP_COUNT          = 8
+    LDSTOP_COUNT          = LDSTOP_TIMEOUT + 1
     TOKMAX_LDSTOP         = 10
 
   ' 3. INCLINE (segment INCLINE; SRC_REV 36's CREEP, where he carried the platform onto the incline for each trial). Up
@@ -16249,14 +16359,14 @@ CON { --- the floor sessions: FLOOR_ACT_AUTO and FLOOR_ACT_OBSTACLE (SRC_REV 70;
     TOKMAX_RSET           = 7
   ' RSET_*: what a BM-RAMPSET is: a leg's own setting, or the built-in rates' restore
     #0, RSET_LEG, RSET_RESTORE
-    RSET_COUNT            = 2
+    RSET_COUNT            = RSET_RESTORE + 1
 
   ' FEN_*: which drive a BM-FENCE is about; FENEV_*: its plan (before the leg) or its estimate (after it)
     #0, FEN_SPIN, FEN_FR_OUT, FEN_FR_BACK, FEN_FR_REDRIVE, FEN_OBST, FEN_OBST_BACK, FEN_RAMP
     FEN_COUNT             = FEN_RAMP + 1
     TOKMAX_FENWHAT        = 9
     #0, FENEV_PLAN, FENEV_DONE
-    FENEV_COUNT           = 2
+    FENEV_COUNT           = FENEV_DONE + 1
     TOKMAX_FENEV          = 4
 
   ' SBK_*: what became of an obstacle trial's drive back (sessBackState)
@@ -16293,35 +16403,35 @@ spinSchedLead   LONG    205, 191, 51
 '  SLOW fault pair, and with it the kind column, moved to FAULTRUN)
 spinPairOffs    LONG    SPOFF_SCHED, SPOFF_SCHED, SPOFF_LEGACY, SPOFF_SCHED, SPOFF_FIXED
 spinPairSpeed   LONG    SPIN_SPEED_SLOW, SPIN_SPEED_MED, SPIN_SPEED_MED, SPIN_SPEED_BRISK, SPIN_SPEED_BRISK
-tokSpOff        BYTE    "SCHED", 0, "LEGACY", 0, "FIXED", 0
-tokSpSpeed      BYTE    "SLOW", 0, "MEDIUM", 0, "BRISK", 0
-tokSpDir        BYTE    "RIGHT", 0, "LEFT", 0
+tokSpOff        BYTE    "SCHED", 0, "LEGACY", 0, "FIXED", 0, TOK_END
+tokSpSpeed      BYTE    "SLOW", 0, "MEDIUM", 0, "BRISK", 0, TOK_END
+tokSpDir        BYTE    "RIGHT", 0, "LEFT", 0, TOK_END
 tokSpStop       BYTE    "NOT_RUN", 0, "LIMIT", 0, "OPERATOR", 0, "ABORT", 0, "OVERTRAVEL", 0, "TIMEOUT", 0, "FAULT", 0
-                BYTE    "HARNESS", 0, "BLOCKED", 0
-tokCrk          BYTE    "COAST", 0, "LOWCEIL", 0, "HOLD", 0
-tokCrStop       BYTE    "NOT_RUN", 0, "TIMER", 0, "BOUND", 0, "OPERATOR", 0, "ABORT", 0
+                BYTE    "HARNESS", 0, "BLOCKED", 0, TOK_END
+tokCrk          BYTE    "COAST", 0, "LOWCEIL", 0, "HOLD", 0, TOK_END
+tokCrStop       BYTE    "NOT_RUN", 0, "TIMER", 0, "BOUND", 0, "OPERATOR", 0, "ABORT", 0, TOK_END
 ' SRC_REV 58, the floor run's load cells (SRC_REV 62, the floor situations): each table follows its CON enum
-tokBlk          BYTE    "COAST", 0, "BRAKE", 0
+tokBlk          BYTE    "COAST", 0, "BRAKE", 0, TOK_END
 tokBlkStop      BYTE    "NOT_RUN", 0, "LATCHED", 0, "NO_LATCH", 0, "LIMIT", 0, "OPERATOR", 0, "ABORT", 0, "OVERTRAVEL", 0
-                BYTE    "TIMEOUT", 0
-tokBridge       BYTE    "NA", 0, "COAST", 0, "SHORT", 0
-tokLdo          BYTE    "NOT_RUN", 0, "OVERLOAD", 0, "FAULT", 0, "LIGHT", 0, "STALLED", 0, "ABORT", 0
+                BYTE    "TIMEOUT", 0, TOK_END
+tokBridge       BYTE    "NA", 0, "COAST", 0, "SHORT", 0, TOK_END
+tokLdo          BYTE    "NOT_RUN", 0, "OVERLOAD", 0, "FAULT", 0, "LIGHT", 0, "STALLED", 0, "ABORT", 0, TOK_END
 tokLdStop       BYTE    "NOT_RUN", 0, "LIMIT", 0, "OPERATOR", 0, "ABORT", 0, "OVERTRAVEL", 0, "FAULT", 0, "BLOCKED", 0
-                BYTE    "TIMEOUT", 0
+                BYTE    "TIMEOUT", 0, TOK_END
 ' SRC_REV 62: which leg a BM-FLLEG is (FLL_*)
-tokFll          BYTE    "BACK", 0, "FR_OUT", 0, "INC_UP", 0, "INC_DOWN", 0
+tokFll          BYTE    "BACK", 0, "FR_OUT", 0, "INC_UP", 0, "INC_DOWN", 0, TOK_END
 
 ' SRC_REV 69: the floor actions, each table in FLA_* order. tokFloorAct is BM-BANNER's and BM-PLAN's action token (at most
 '  TOKMAX_FLOORACT bytes); sFloorWords is what the RESULT line calls the action, in plain words.
 tokFloorAct     BYTE    "NONE", 0, "OBST_COAST", 0, "OBST_SHORT", 0, "GRAB", 0, "FAULTRUN", 0, "SPIN_SLOW_RIGHT", 0
                 BYTE    "SPIN_SLOW_LEFT", 0, "SPIN_MED_RIGHT", 0, "SPIN_MED_LEFT", 0, "SPIN_FAST_RIGHT", 0
                 BYTE    "SPIN_FAST_LEFT", 0, "SPIN_LEGACY_RIGHT", 0, "SPIN_LEGACY_LEFT", 0, "SPIN_FIXED_RIGHT", 0
-                BYTE    "SPIN_FIXED_LEFT", 0, "AUTO", 0, "OBSTACLE", 0, "AUTO_SPINS", 0, "AUTO_FAULT", 0, "AUTO_RAMP", 0
+                BYTE    "SPIN_FIXED_LEFT", 0, "AUTO", 0, "OBSTACLE", 0, "AUTO_SPINS", 0, "AUTO_FAULT", 0, "AUTO_RAMP", 0, TOK_END
 sFloorWords     BYTE    "NO ACTION", 0, "OBSTACLE COAST", 0, "OBSTACLE SHORT", 0, "GRAB", 0, "FAULT RUN", 0
                 BYTE    "SPIN SLOW RIGHT", 0, "SPIN SLOW LEFT", 0, "SPIN MEDIUM RIGHT", 0, "SPIN MEDIUM LEFT", 0
                 BYTE    "SPIN FAST RIGHT", 0, "SPIN FAST LEFT", 0, "SPIN LEGACY RIGHT", 0, "SPIN LEGACY LEFT", 0
                 BYTE    "SPIN FIXED RIGHT", 0, "SPIN FIXED LEFT", 0, "AUTO SESSION", 0, "OBSTACLE SESSION", 0
-                BYTE    "AUTO SPINS", 0, "AUTO FAULT RUN", 0, "AUTO RAMP LEGS", 0
+                BYTE    "AUTO SPINS", 0, "AUTO FAULT RUN", 0, "AUTO RAMP LEGS", 0, TOK_END
 ' the pair each SPIN action's kind runs (FLOOR_SPIN_KIND indexes it): SLOW, MEDIUM and BRISK (the quarter) on the SCHED
 '  offsets, then the LEGACY control (MEDIUM) and the FIXED control (BRISK)
 spinActPair     LONG    SPIN_PAIR_SLOW, SPIN_PAIR_MED, SPIN_PAIR_BRISK, SPIN_PAIR_LEGACY, SPIN_PAIR_FIXED
@@ -16680,11 +16790,11 @@ VAR { GRAB ONE SIDE (SRC_REV 58's LOAD; PL-150 / PL-144; SRC_REV 63: the overloa
 DAT ' ---- floor session tables ----
 
 ' BM-FENCE's ev and what tokens, in FENEV_* and FEN_* order; sFenWords is what the plain FENCE line calls the drive
-tokFenEv        BYTE    "PLAN", 0, "DONE", 0
-tokFenWhat      BYTE    "SPIN", 0, "FR_OUT", 0, "FR_BACK", 0, "FR_REDRV", 0, "OBST", 0, "OBST_BACK", 0, "RAMP", 0
+tokFenEv        BYTE    "PLAN", 0, "DONE", 0, TOK_END
+tokFenWhat      BYTE    "SPIN", 0, "FR_OUT", 0, "FR_BACK", 0, "FR_REDRV", 0, "OBST", 0, "OBST_BACK", 0, "RAMP", 0, TOK_END
 sFenWords       BYTE    "the spin", 0, "the fault run's leg out", 0, "the fault run's leg back", 0
                 BYTE    "the fault run's drive on to its start", 0, "the drive into the obstacle", 0
-                BYTE    "the drive back from the obstacle", 0, "the ramp leg", 0
+                BYTE    "the drive back from the obstacle", 0, "the ramp leg", 0, TOK_END
 
 VAR { the floor sessions' state (SRC_REV 70: FLOOR_ACT_AUTO, FLOOR_ACT_OBSTACLE) -- cog 0 only }
 
@@ -19582,7 +19692,7 @@ rampPower       LONG    RAMP_POWER, 0 - RAMP_POWER, RAMP_POWER, 0 - RAMP_POWER
 rampDir         LONG    SIGN_POS, SIGN_NEG, SIGN_POS, SIGN_NEG                  ' ...and the sign of that power
 rampAccel       LONG    RAMP_ACCEL_LO, RAMP_ACCEL_MID, RAMP_ACCEL_HI, RAMP_ACCEL_MID
 rampDecel       LONG    RAMP_DECEL_LO, RAMP_DECEL_MID, RAMP_DECEL_HI, RAMP_DECEL_MID
-tokRampSet      BYTE    "LEG", 0, "RESTORE", 0
+tokRampSet      BYTE    "LEG", 0, "RESTORE", 0, TOK_END
 
 PRI segRamp() | whyCode
 ' RAMP (part SPIN, SRC_REV 70; SESSION 2 part 3, the section's CON, "the ramp legs"): four straight legs of FL_LEG_MM, out and back
@@ -24214,8 +24324,8 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
     '  cannot silently drop fault off the end of the copy (at src_rev 44 a literal 21 did, after R20.1's foldback_frames)
     ABI_STATUS_LONGS = wheelL.DRVR_STATUS_LONGS_COUNT + 1   ' drive_u .. drv_stop_fp (24 at DRIVER_REV 39), then fault
     ABI_PARAMS_LONGS = wheelL.DRVR_PARAMS_LONGS_COUNT       ' offset_fwd .. sense_zero (27; SRC_REV 59, was a literal 25)
-    ABI_STATUS_NAMED = 24                                   ' the status longs tokAbiStatus names: drive_u .. drv_stop_fp
-    ABI_PARAMS_NAMED = 27                                   ' the parameter longs tokAbiParams names: offset_fwd .. sense_zero
+    ABI_STATUS_NAMED = wheelL.DRVR_STATUS_LONGS_COUNT       ' the status longs tokAbiStatus names: drive_u .. drv_stop_fp (24 at DRIVER_REV 39)
+    ABI_PARAMS_NAMED = wheelL.DRVR_PARAMS_LONGS_COUNT       ' the parameter longs tokAbiParams names: offset_fwd .. sense_zero (27)
     ABI_TARGET_IDX   = ABI_LAUNCH_LONGS - 1                 ' targetIncre: the launch run's last long (SRC_REV 70: bSpinStopBegun())
     TARGET_SIGN_BIT  = 30                                   ' targetIncre's sign bit; bit 31 is the driver's sync flag (gettgtincr's SIGNX 30)
     ABI_STATUS_BASE  = ABI_LAUNCH_LONGS                     ' the status run's first long in a wheel's abiSnap row
@@ -24235,24 +24345,24 @@ CON { --- ABI dump: what each driver holds in the hub runs it shares with Spin2 
 
 DAT ' ---- ABI dump tables ----
 
-tokAbiWhere     BYTE    "SKSTART", 0, "PREFLT", 0, "TIMEOUT", 0, "NOMOTION", 0
+tokAbiWhere     BYTE    "SKSTART", 0, "PREFLT", 0, "TIMEOUT", 0, "NOMOTION", 0, TOK_END
 ' isp_bldc_motor.spin2 VAR names, declaration order, one table per run (SRC_REV 59): the launch run, the status run
 '  (ABI_STATUS_NAMED of them; fault, after it, is named by its place), the parameter run (ABI_PARAMS_NAMED)
-tokAbiLaunch    BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "targetIncre", 0
+tokAbiLaunch    BYTE    "pinbase", 0, "params_ptr", 0, "targetAngle", 0, "targetIncre", 0, TOK_END
 tokAbiStatus    BYTE    "drive_u", 0, "drive_v", 0, "drive_w", 0
                 BYTE    "sense_u_mV", 0, "sense_v_mV", 0, "sense_w_mV", 0, "sense_i_mV", 0
                 BYTE    "hall", 0, "pos", 0, "duty", 0, "err", 0, "loop_ticks", 0, "loop_ctcks", 0, "drv_state", 0
                 BYTE    "hall_missed", 0, "hall_illegal", 0, "drv_incr_now", 0, "lag_held", 0, "duty_capped", 0
                 BYTE    "fault_resyncs", 0, "foldback_frames", 0, "drv_accel_now", 0
-                BYTE    "drv_stop_passes", 0, "drv_stop_fp", 0
-tokAbiParams    BYTE    "offset_fwd", 0, "offset_rev", 0, "duty_min", 0, "duty_max", 0, "servo_shift", 0
+                BYTE    "drv_stop_passes", 0, "drv_stop_fp", 0, TOK_END
+tokAbiParams   BYTE    "offset_fwd", 0, "offset_rev", 0, "duty_min", 0, "duty_max", 0, "servo_shift", 0
                 BYTE    "ff_ceiling", 0, "dead_gap", 0
                 BYTE    "accel_dn", 0, "cfg_ctcks", 0, "stop_mode", 0, "e_stop", 0, "accel_up", 0, "jerk_up", 0
                 BYTE    "jerk_dn", 0, "i_limit_k", 0
                 BYTE    "duty_floor", 0, "hold_duty", 0, "hold_short", 0, "fault_mode", 0, "brake_on", 0
                 BYTE    "probe_phase", 0, "force_seq", 0, "fault_clr", 0
-                BYTE    "probe_sink", 0, "probe_y", 0, "drv_release", 0, "sense_zero", 0
-sAbiFault       BYTE    "fault", 0
+                BYTE    "probe_sink", 0, "probe_y", 0, "drv_release", 0, "sense_zero", 0, TOK_END
+sAbiFault      BYTE    "fault", 0
 ' the one long lineAddNum() cannot negate: NEGX printed as the signed decimal it is
 sAbiNegx        BYTE    "-2_147_483_648", 0
 
@@ -24483,15 +24593,15 @@ DAT ' ---- reporting tables (task 3621) ----
 
 tokEvStage      BYTE    "SKCHECK", 0, "FRTRIAL", 0, "FRHOOK", 0, "FRPLAT", 0, "D_FOLD", 0, "D_DERATE", 0, "D_BLOCK", 0
                 BYTE    "STEERSEG", 0, "WHEEL", 0, "PACK", 0, "OBSTACLE", 0, "GRAB", 0, "FAULTRUN", 0
-                BYTE    "SPIN", 0, "RAMP", 0, "BACK", 0
+                BYTE    "SPIN", 0, "RAMP", 0, "BACK", 0, TOK_END
 ' the library's EV_*, EV_NONE first (EV_FAULT_RESYNC printed RESYNC, EV_CURRENT_LIMIT CUR_LIMIT)
 tokEvKind       BYTE    "NONE", 0, "LOST", 0, "STOP", 0, "RESYNC", 0, "FAULT", 0, "HOLD_SLIP", 0, "HOLD_LIMIT", 0
                 BYTE    "CUR_LIMIT", 0, "PATH_LIMIT", 0, "HALL_MISSED", 0, "HALL_ILLEGAL", 0, "WALK_GUARD", 0
-                BYTE    "LATE_PASS", 0, "PACK", 0, "CHECK_RETRY", 0, "FOLDBACK", 0
-tokEvWheel      BYTE    "LEFT", 0, "RIGHT", 0, "PLAT", 0
+                BYTE    "LATE_PASS", 0, "PACK", 0, "CHECK_RETRY", 0, "FOLDBACK", 0, TOK_END
+tokEvWheel      BYTE    "LEFT", 0, "RIGHT", 0, "PLAT", 0, TOK_END
 ' the library's SR_*, SR_NONE first (SR_FAULT_CONTROLLED printed FAULT_CTRL)
 tokSr           BYTE    "NONE", 0, "COMMANDED", 0, "AT_LIMIT", 0, "FAULT_CTRL", 0, "FAULT_LOST", 0, "BLOCKED", 0
-                BYTE    "LINK_LOST", 0, "EMERGENCY", 0, "PARTNER", 0
+                BYTE    "LINK_LOST", 0, "EMERGENCY", 0, "PARTNER", 0, TOK_END
 
 VAR { the driver's reporting (task 3621) -- one drain's staging, cog 0 only }
 
@@ -25907,7 +26017,7 @@ PRI sideToken(side) : pTok
 ' @param side - SIDE_* value
 ' @returns pTok - NONE, LEFT, RIGHT or BOTH
 
-    pTok := tokenAt(@tokSide, SIDE_BOTH + 1, side)
+    pTok := tokenAt(@tokSide, SIDE_COUNT, side)
 
 PRI segToken(seg) : pTok
 ' Segment token.
@@ -25923,7 +26033,7 @@ PRI dcsToken(eDrvrState) : pTok
 ' @param eDrvrState - DCS_* value
 ' @returns pTok - state token, "?" outside 0..7
 
-    pTok := tokenAt(@tokDcs, DCS_MAX + 1, eDrvrState)
+    pTok := tokenAt(@tokDcs, DCS_COUNT, eDrvrState)
 
 PRI boardToken(eBoardRev) : pTok
 ' Board-revision token.
@@ -25957,6 +26067,261 @@ PRI statusToken(eStatus) : pTok
     else
         pTok := tokenAt(@tokStat, STAT_COUNT, STAT_UNKNOWN)
 
+VAR { the record labels' self-check (SRC_REV 71, task 3651) -- cog 0 only }
+
+    LONG    bSfTokTabOk                                     ' TOKTAB: every table, row run and string walked was as many and as long as it must be
+    LONG    sfTokTabN                                       ' tables walked (the packed ones, and estPlan)
+    LONG    sfTokEntryN                                     ' tokens (and estPlan rows) counted over them
+    LONG    sfTokCountBad                                   ' tables whose entries were not their enum's count
+    LONG    sfTokLenBad                                     ' tokens longer than their field
+    LONG    pTokFirstBad                                    ' the first table at fault, its name; 0 when none
+    LONG    sfTokStrN                                       ' sign-off strings walked
+    LONG    sfTokStrBad                                     ' ...of them longer than their field (TOKMAX_CELL or TOKMAX_CRIT), or a run with no end
+    LONG    sfTokStrFirst                                   ' the first such string's place in the run, 1-based; 0 when none
+
+PRI tokLength(pToken) : tokLen | scanIdx
+' The length of a zero-terminated token, read no further than TOKEN_SCAN_MAX + 1 bytes: a longer one reads as that, which
+' no field holds. Reads only DAT.
+'
+' @param pToken - pointer to the token
+' @returns tokLen - bytes before the terminator, at most TOKEN_SCAN_MAX + 1
+'
+' @local scanIdx - index into the token
+
+    tokLen := 0
+    repeat scanIdx from 0 to TOKEN_SCAN_MAX
+        if BYTE[pToken][scanIdx] == 0
+            quit
+        tokLen += 1
+
+PRI tokTabWalk(pName, pTable, tokenCount, maxLen) | pEntry, entryCnt, tokLen, bBad
+' Walk one packed token table to its TOK_END sentinel: count its tokens against tokenCount, the count its enum gives it, and
+' measure each against maxLen, the longest its field prints. Reads at most one token past tokenCount, so a table that is
+' long, or has no sentinel, is found and not walked into the DAT after it. The first table at fault is remembered by name.
+'
+' @param pName - pointer to the table's name, for BM-TOKCHK
+' @param pTable - pointer to the packed table
+' @param tokenCount - the tokens the table must hold
+' @param maxLen - the longest token its field prints (TOKEN_SCAN_MAX where the table has no field of its own)
+'
+' @local pEntry - the token being measured
+' @local entryCnt - tokens counted
+' @local tokLen - the token's length
+' @local bBad - this table has a fault
+
+    bBad := FALSE
+    pEntry := pTable
+    entryCnt := 0
+    repeat tokenCount + 1
+        if BYTE[pEntry] == TOK_END
+            quit
+        tokLen := tokLength(pEntry)
+        if tokLen > maxLen
+            sfTokLenBad += 1
+            bBad := TRUE
+        pEntry += tokLen + 1
+        entryCnt += 1
+    if entryCnt <> tokenCount
+        sfTokCountBad += 1
+        bBad := TRUE
+    sfTokTabN += 1
+    sfTokEntryN += entryCnt
+    if bBad and (pTokFirstBad == 0)
+        pTokFirstBad := pName
+
+PRI estRowsWalk(pName, pTable, rowCount) | entryCnt, bBad
+' Walk the estPlan rows to their EST_END sentinel and count them against rowCount (SEG_COUNT): the same check as
+' tokTabWalk(), for a table of words. Reads at most one row past rowCount.
+'
+' @param pName - pointer to the table's name, for BM-TOKCHK
+' @param pTable - pointer to the table
+' @param rowCount - the rows the table must hold
+'
+' @local entryCnt - rows counted
+' @local bBad - this table has a fault
+
+    bBad := FALSE
+    entryCnt := 0
+    repeat rowCount + 1
+        if WORD[pTable][(entryCnt * EST_ROW_WORDS) + EST_SECS] == EST_END
+            quit
+        entryCnt += 1
+    if entryCnt <> rowCount
+        sfTokCountBad += 1
+        bBad := TRUE
+    sfTokTabN += 1
+    sfTokEntryN += entryCnt
+    if bBad and (pTokFirstBad == 0)
+        pTokFirstBad := pName
+
+PRI bIsCellId(pText) : bCell
+' Whether a sign-off string is a cell id: R, two digits and a hyphen (R14-DUAL-NOSTALL-A). Every other string in the run is a
+' criterion, units, study or verdict token.
+'
+' @param pText - pointer to the string
+' @returns bCell - TRUE for a cell id
+
+    bCell := (BYTE[pText][0] == "R") and (BYTE[pText][1] >= "0") and (BYTE[pText][1] <= "9") and (BYTE[pText][2] >= "0") and (BYTE[pText][2] <= "9") and (BYTE[pText][3] == "-")
+
+PRI signoffStringsWalk() | pEntry, entryCnt, tokLen, maxLen
+' Walk the sign-off string run (sSfBin to its TOK_END) and hold every cell id to TOKMAX_CELL and every other string to
+' TOKMAX_CRIT: a longer one prints "?" in its SIGNOFF record, as sSfCritSpPeak's 24 characters did against 18. Bounded by
+' SF_RUN_MAX_STRINGS; a run still going at the bound has lost its sentinel and is a fault.
+'
+' @local pEntry - the string being measured
+' @local entryCnt - strings counted
+' @local tokLen - the string's length
+' @local maxLen - the longest its field prints
+
+    pEntry := @sSfBin
+    entryCnt := 0
+    repeat SF_RUN_MAX_STRINGS
+        if BYTE[pEntry] == TOK_END
+            quit
+        maxLen := bIsCellId(pEntry) ? TOKMAX_CELL : TOKMAX_CRIT
+        tokLen := tokLength(pEntry)
+        entryCnt += 1
+        if tokLen > maxLen
+            sfTokStrBad += 1
+            if sfTokStrFirst == 0
+                sfTokStrFirst := entryCnt
+        pEntry += tokLen + 1
+    if BYTE[pEntry] <> TOK_END
+        sfTokStrBad += 1
+        if sfTokStrFirst == 0
+            sfTokStrFirst := entryCnt + 1
+    sfTokStrN := entryCnt
+
+PRI tokenTablesSelfTest()
+' BM-TOKCHK: the record labels check themselves, before anything moves (SRC_REV 71, task 3651; PL-96 and PL-97's four instances).
+' Every packed token table this build compiles is walked to its TOK_END, its tokens counted against its enum's count and each
+' measured against its field's TOKMAX_*; estPlan's rows are counted against SEG_COUNT; and every sign-off cell id and criterion
+' string is measured against TOKMAX_CELL and TOKMAX_CRIT. R21-DUAL-TOKTAB judges the result (bSfTokTabOk), TRUE only when nothing
+' was found. Each walk sits under the #ifdef its table sits under, so a build checks the tables it holds, and a new table is
+' added here when it is added to the file. A table with no field of its own (the ABI names, the plain-line words) is held to
+' TOKEN_SCAN_MAX, the longest token tokenAt() can step over. Worst case 174 bytes: tag 9 + seq 15 + tables 15 + tokens 15 +
+' bad_count 18 + bad_len 16 + first_bad 27 (TOKMAX_TABNAME) + strings 16 + str_bad 16 + first_str 18 + ok 9.
+
+    beat(CP_INIT)
+    sfTokTabN := 0
+    sfTokEntryN := 0
+    sfTokCountBad := 0
+    sfTokLenBad := 0
+    pTokFirstBad := 0
+    sfTokStrN := 0
+    sfTokStrBad := 0
+    sfTokStrFirst := 0
+    tokTabWalk(@"tokSide", @tokSide, SIDE_COUNT, TOKMAX_MOTOR)
+    tokTabWalk(@"tokSeg", @tokSeg, SEG_COUNT, TOKMAX_SEG)
+    tokTabWalk(@"tokWhy", @tokWhy, WHY_COUNT, TOKMAX_WHY)
+    tokTabWalk(@"tokInstEv", @tokInstEv, INST_EV_COUNT, TOKMAX_INSTEV)
+    tokTabWalk(@"tokInstSt", @tokInstSt, INST_ST_COUNT, TOKMAX_INSTST)
+    tokTabWalk(@"tokRes", @tokRes, RES_COUNT, TOKMAX_RESULT)
+    tokTabWalk(@"tokCause", @tokCause, CAUSE_COUNT, TOKMAX_CAUSE)
+    tokTabWalk(@"tokMode", @tokMode, MODE_COUNT, TOKMAX_REQMODE)
+    tokTabWalk(@"tokTend", @tokTend, TEND_COUNT, TOKMAX_TEND)
+    tokTabWalk(@"tokRst", @tokRst, RST_COUNT, TOKMAX_RST)
+    tokTabWalk(@"tokRstep", @tokRstep, RSTEP_COUNT, TOKMAX_STEP)
+    tokTabWalk(@"tokAbr", @tokAbr, ABR_COUNT, TOKMAX_REASON)
+    tokTabWalk(@"tokScope", @tokScope, SCOPE_COUNT, TOKMAX_SCOPE)
+    tokTabWalk(@"tokAns", @tokAns, ANS_COUNT, TOKMAX_ANSWER)
+    tokTabWalk(@"tokInput", @tokInput, INPUT_COUNT, TOKMAX_INPUT)
+    tokTabWalk(@"tokSlower", @tokSlower, SLOWER_COUNT, TOKMAX_SLOWER)
+    tokTabWalk(@"tokStopBy", @tokStopBy, STOPBY_COUNT, TOKMAX_STOPBY)
+    tokTabWalk(@"tokPrompt", @tokPrompt, PROMPT_COUNT, TOKMAX_PROMPT)
+    tokTabWalk(@"tokUiKind", @tokUiKind, UIK_COUNT, TOKMAX_UIKIND)
+    tokTabWalk(@"tokUiRes", @tokUiRes, UIR_COUNT, TOKMAX_UIRES)
+    tokTabWalk(@"tokDStep", @tokDStep, DST_COUNT, TOKMAX_DSTEP)
+    tokTabWalk(@"tokDRes", @tokDRes, DRES_COUNT, TOKMAX_DRES)
+    tokTabWalk(@"tokFltCause", @tokFltCause, FC_COUNT, TOKMAX_FCAUSE)
+    tokTabWalk(@"tokButton", @tokButton, BM_BTN_COUNT, TOKMAX_BUTTON)
+    tokTabWalk(@"tokOpEv", @tokOpEv, OPEV_COUNT, TOKMAX_OPEREV)
+    tokTabWalk(@"tokSegEv", @tokSegEv, SEGEV_COUNT, TOKMAX_SEGEV)
+    tokTabWalk(@"tokExit", @tokExit, EXIT_COUNT, TOKMAX_EXIT)
+    tokTabWalk(@"tokStat", @tokStat, STAT_COUNT, TOKMAX_STAT)
+    tokTabWalk(@"tokPart", @tokPart, PART_COUNT, TOKMAX_PART)
+    tokTabWalk(@"tokASpd", @tokASpd, ASPD_COUNT, TOKMAX_ASPD)
+    tokTabWalk(@"tokADir", @tokADir, ADIR_COUNT, TOKMAX_ADIR)
+    tokTabWalk(@"tokALeg", @tokALeg, ALEG_COUNT, TOKMAX_ALEG)
+    tokTabWalk(@"tokDcs", @tokDcs, DCS_COUNT, TOKMAX_STATE)
+    tokTabWalk(@"tokCp", @tokCp, CP_COUNT, TOKMAX_CP)
+    tokTabWalk(@"tokFinds", @tokFinds, SEG_COUNT, TOKMAX_FINDS)
+    tokTabWalk(@"tokLeadV", @tokLeadV, LEADV_COUNT, TOKMAX_LEADV)
+    tokTabWalk(@"tokAbiWhere", @tokAbiWhere, ABIW_COUNT, TOKMAX_ABIWHERE)
+    tokTabWalk(@"tokAbiLaunch", @tokAbiLaunch, ABI_LAUNCH_LONGS, TOKEN_SCAN_MAX)
+    tokTabWalk(@"tokAbiStatus", @tokAbiStatus, ABI_STATUS_NAMED, TOKEN_SCAN_MAX)
+    tokTabWalk(@"tokAbiParams", @tokAbiParams, ABI_PARAMS_NAMED, TOKEN_SCAN_MAX)
+    tokTabWalk(@"tokEvStage", @tokEvStage, EVST_COUNT, TOKMAX_EVSTAGE)
+    tokTabWalk(@"tokEvKind", @tokEvKind, EV_KIND_SLOTS, TOKMAX_EVKIND)
+    tokTabWalk(@"tokEvWheel", @tokEvWheel, EV_WHEELS, TOKMAX_EVWHEEL)
+    tokTabWalk(@"tokSr", @tokSr, SR_TOK_COUNT, TOKMAX_SR)
+    estRowsWalk(@"estPlan", @estPlan, SEG_COUNT)
+#ifdef DBP_LIMITS
+    tokTabWalk(@"tokEdge", @tokEdge, EDGE_COUNT, TOKMAX_EDGE)
+    tokTabWalk(@"tokFolK", @tokFolK, FOLK_COUNT, TOKMAX_FOLK)
+#endif
+#ifdef DBG_FRPLAT
+    tokTabWalk(@"tokFrCell", @tokFrCell, FRC_COUNT, TOKMAX_FRCELL)
+    tokTabWalk(@"tokFrOut", @tokFrOut, FRO_COUNT, TOKMAX_FROUT)
+    tokTabWalk(@"tokFrPath", @tokFrPath, FRP_COUNT, TOKMAX_FRPATH)
+    tokTabWalk(@"tokFrMode", @tokFrMode, FR_MODE_COUNT, TOKMAX_FRMODE)
+    tokTabWalk(@"tokFrWin", @tokFrWin, FR_WINS, TOKMAX_FRWIN)
+    tokTabWalk(@"tokHold", @tokHold, HS_COUNT, TOKMAX_HOLD)
+    tokTabWalk(@"tokPfOut", @tokPfOut, PFO_COUNT, TOKMAX_PFOUT)
+#endif
+#ifdef DBG_PACKTOK
+    tokTabWalk(@"tokPack", @tokPack, PACK_TOK_COUNT, TOKMAX_PACK)
+#endif
+#ifdef DBP_START
+    tokTabWalk(@"tokSkNegKind", @tokSkNegKind, SKNEG_COUNT, TOKMAX_SKNEG_KIND)
+    tokTabWalk(@"tokPrbPhase", @tokPrbPhase, PRB_TOK_COUNT, TOKMAX_SKNEG_WHICH)
+    tokTabWalk(@"tokHallSwap", @tokHallSwap, HSW_TOK_COUNT, TOKMAX_SKNEG_WHICH)
+    tokTabWalk(@"tokWndState", @tokWndState, WND_TOK_COUNT, TOKMAX_WND)
+    tokTabWalk(@"tokSkMode", @tokSkMode, SKM_COUNT, TOKMAX_SKMODE)
+    tokTabWalk(@"tokWalkLeg", @tokWalkLeg, WLEG_TOK_COUNT, TOKMAX_WLEG)
+    tokTabWalk(@"tokWalkEnd", @tokWalkEnd, WLE_TOK_COUNT, TOKMAX_WLE)
+#endif
+#ifdef DBP_PACK
+    tokTabWalk(@"tokPkPair", @tokPkPair, PKP_COUNT, TOKMAX_PKPAIR)
+#endif
+#ifdef DBP_SPIN
+    tokTabWalk(@"tokSpOff", @tokSpOff, SPOFF_COUNT, TOKMAX_SPOFF)
+    tokTabWalk(@"tokSpSpeed", @tokSpSpeed, SPIN_SPEEDS, TOKMAX_SPSPEED)
+    tokTabWalk(@"tokSpDir", @tokSpDir, SPIN_DIRS, TOKMAX_SPDIR)
+    tokTabWalk(@"tokSpStop", @tokSpStop, SPSTOP_COUNT, TOKMAX_SPSTOP)
+    tokTabWalk(@"tokCrk", @tokCrk, CRK_COUNT, TOKMAX_CRK)
+    tokTabWalk(@"tokCrStop", @tokCrStop, CRSTOP_COUNT, TOKMAX_CRSTOP)
+    tokTabWalk(@"tokBlk", @tokBlk, BLK_KINDS, TOKMAX_BLK)
+    tokTabWalk(@"tokBlkStop", @tokBlkStop, BLKSTOP_COUNT, TOKMAX_BLKSTOP)
+    tokTabWalk(@"tokBridge", @tokBridge, BRIDGE_COUNT, TOKMAX_BRIDGE)
+    tokTabWalk(@"tokLdo", @tokLdo, LDO_COUNT, TOKMAX_LDO)
+    tokTabWalk(@"tokLdStop", @tokLdStop, LDSTOP_COUNT, TOKMAX_LDSTOP)
+    tokTabWalk(@"tokFll", @tokFll, FLL_COUNT, TOKMAX_FLL)
+    tokTabWalk(@"tokFloorAct", @tokFloorAct, FLA_COUNT, TOKMAX_FLOORACT)
+    tokTabWalk(@"sFloorWords", @sFloorWords, FLA_COUNT, TOKEN_SCAN_MAX)
+#endif
+#ifdef DBG_FENCE
+    tokTabWalk(@"tokFenEv", @tokFenEv, FENEV_COUNT, TOKMAX_FENEV)
+    tokTabWalk(@"tokFenWhat", @tokFenWhat, FEN_COUNT, TOKMAX_FENWHAT)
+    tokTabWalk(@"sFenWords", @sFenWords, FEN_COUNT, TOKEN_SCAN_MAX)
+#endif
+#ifdef DBF_RAMP
+    tokTabWalk(@"tokRampSet", @tokRampSet, RSET_COUNT, TOKMAX_RSET)
+#endif
+    signoffStringsWalk()
+    bSfTokTabOk := (sfTokCountBad == 0) and (sfTokLenBad == 0) and (sfTokStrBad == 0)
+    recBegin(@"BM-TOKCHK")
+    benchLog.numField(@"tables", sfTokTabN, LIM_SMALL)
+    benchLog.numField(@"tokens", sfTokEntryN, LIM_SMALL)
+    benchLog.numField(@"bad_count", sfTokCountBad, LIM_SMALL)
+    benchLog.numField(@"bad_len", sfTokLenBad, LIM_SMALL)
+    benchLog.tokenField(@"first_bad", (pTokFirstBad == 0) ? @sTokNoBad : pTokFirstBad, TOKMAX_TABNAME)
+    benchLog.numField(@"strings", sfTokStrN, LIM_SMALL)
+    benchLog.numField(@"str_bad", sfTokStrBad, LIM_SMALL)
+    benchLog.numField(@"first_str", sfTokStrFirst, LIM_SMALL)
+    benchLog.boolField(@"ok", bSfTokTabOk)
+    emitRecord()
+
 PRI emitHeaderRecords() | orderIdx
 ' Emit the header before anything moves: BM-BANNER, BM-BUILD, one SIGNOFF-DECL per judged cell, one
 ' BM-PLAN per segment of this part, the BM-LADDER table when the part ladders, and the panic line.
@@ -25966,6 +26331,7 @@ PRI emitHeaderRecords() | orderIdx
     emitBanner()
     emitBuild()
     emitSignoffDecls()
+    tokenTablesSelfTest()                                   ' SRC_REV 71: BM-TOKCHK, before anything moves; R21-DUAL-TOKTAB judges it
     ' PL-152: an #ifdef chain on the DBP_* symbols where this was a case on PART_ID and `if PART_ID ==` tests -- the
     '  same records, in the same order, selected at compile time
 #ifdef DBP_A
@@ -26244,8 +26610,11 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     '  the start: about 60 s; one trace, 120 KB. SPIN: ten legs (was twelve), 280 -> 200 s, two traces, 120 KB.
     ' SRC_REV 69, the PART_SPIN images: each runs ONE action once, so the four rows above no longer describe it. Its plan is
     '  the part chain's FLOOR_EST_S and FLOOR_EST_KB, derived there for that action, with the LEAD_IN_MS lead-in in them.
-    estS := lookupz(seg: 0, 5, 540, 60, 420, 60, 420, 150, 120, 120, 120, 180, 120, 240, 180, 160, 240, 270, 20, 360, 300, 360, 320, 30, 60, 200, 120, 150, 40, 90, 90, 180, 60, 30)
-    estKb := lookupz(seg: 0, 2, 4_700, 3, 190, 8, 1_960, 420, 130, 16, 790, 1_180, 100, 6, 6, 30, 25, 135, 1, 90, 1_950, 45, 2_330, 200, 25, 120, 10, 5, 230, 45, 230, 330, 120, 10)
+    estS := 0                                               ' a seg outside the table plans nothing, as lookupz() read it
+    estKb := 0
+    if (seg >= 0) and (seg < SEG_COUNT)                     ' SRC_REV 71: the figures are the estPlan rows (DAT), counted by the self-check
+        estS := WORD[@estPlan][(seg * EST_ROW_WORDS) + EST_SECS]
+        estKb := WORD[@estPlan][(seg * EST_ROW_WORDS) + EST_KB]
 #ifdef DBP_SPIN
     estS := FLOOR_EST_S                                     ' SRC_REV 69: this image's own action's plan (the part chain)
     estKb := FLOOR_EST_KB
@@ -27657,12 +28026,15 @@ PRI clockCell(pCell200, pCell270, pCell300) : pCell
 
 PRI emitSignoffDecls()
 ' One SIGNOFF-DECL per cell this build judges, before anything moves. A build that judges no cell (PART_NONE,
-' or a CLOCK build at an unswept clock: SF_JUDGES_CELLS) declares nothing. Each cell id is a DAT string passed
-' by @label on the emitter's own line, so the CLOCK part names each clock's labels under its SF_CLOCK_SLOT.
+' or a CLOCK build at an unswept clock: SF_JUDGES_CELLS) declares nothing but R21-DUAL-TOKTAB, which every build declares
+' and judges (SRC_REV 71: the record labels' self-check; the negative tier dual-tokneg is a PART_NONE build). Each cell id
+' is a DAT string passed by @label on the emitter's own line, so the CLOCK part names each clock's labels under its
+' SF_CLOCK_SLOT.
 '
 ' PL-152: an #ifdef chain on the DBP_* symbols where this was a case on PART_ID -- the same declarations, in the same
-' order, for each part. A PART_NONE build (SF_JUDGES_CELLS FALSE) compiles none.
+' order, for each part. A PART_NONE build (SF_JUDGES_CELLS FALSE) compiles none of them.
 
+    emitSignoffDecl(@sSfCellTokTab)
 #ifndef DBP_NONE
     if SF_JUDGES_CELLS
 #ifdef DBP_A
@@ -27909,8 +28281,9 @@ PRI emitSignoffDecl(pCell)
 
 PRI emitSignoffs() | slotIdx, side
 ' Every declared cell's SIGNOFF instances, once, on cog 0's end path after the wheels, the steering
-' object and the instrument are stopped. A build that judges no cell (SF_JUDGES_CELLS FALSE) emits none.
-' A cell whose segment did not run prints NOMEAS, measured NA, n 0. Per part:
+' object and the instrument are stopped. A build that judges no cell (SF_JUDGES_CELLS FALSE) emits none but TOKTAB.
+' A cell whose segment did not run prints NOMEAS, measured NA, n 0. Every build, PART_NONE's included, first prints
+' TOKTAB BOOL (R21-DUAL-TOKTAB, SRC_REV 71: the record labels' self-check, n the tables walked). Per part:
 '  A      NOSTALL BOOL; DBGMASK BOOL; INSTLIVE BOOL per motor; IDLEFLT / REVB / INTEG COUNT per motor;
 '         NOFOLD / RATELAW BOOL per motor; IDLEMOVE-A and TRKICK COUNT per motor; TRACES COUNT; LAGBOUND
 '         COUNT per motor
@@ -27951,6 +28324,9 @@ PRI emitSignoffs() | slotIdx, side
 ' @local side - SIDE_LEFT or SIDE_RIGHT
 
     beat(CP_EMIT)
+    ' SRC_REV 71: the record labels' self-check, in every build -- PART_NONE's too, the one the negative tier dual-tokneg is.
+    '  Measured always: tokenTablesSelfTest() ran before anything else in the run (emitHeaderRecords()). n is the tables walked
+    emitSignoffBool(@sSfCellTokTab, SIDE_NONE, @sSfCritTokTab, TRUE, bSfTokTabOk, sfTokTabN)
     if SF_JUDGES_CELLS
         emitSignoffBool(partNoStallCell(), SIDE_NONE, @sSfCritCog0End, TRUE, TRUE, SIGNOFF_ONE_INSTANCE)
         emitSignoffBool(partDbgMaskCell(), SIDE_NONE, @sSfCritQuiet, TRUE, bQuietMasks, SIGNOFF_ONE_INSTANCE)

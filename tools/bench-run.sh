@@ -189,6 +189,7 @@ Usage:  tools/bench-run.sh <tier>
                    dual-limits-top  as dual-limits' LIMTOP only: the climb and the power check that confirm moved limits  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-reg       motion harness part REG: PREFLT, REGRESS -- two turns by distance, then one fault forced per wheel and the same power sent again (PL-151, PL-66), under a minute  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-kick      motion harness part KICK: PREFLT, KICK -- the seven top-of-range speed changes per wheel and direction, for the kick fix (PL-78, PL-87), under 2 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-tokneg    the record labels' self-check's own negative: no part runs, nothing moves, seconds; two token tables are built wrong on purpose (one a token short, one with a token too long) and the R21-DUAL-TOKTAB cell must print FAIL  [NOTHING MOVES, UNATTENDED]
                    demo-single    the single-motor release demo on the RIGHT wheel: wiring check, 15 s forward and 15 s reverse at full power (PL-149), about 1 minute  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    demo-rc        the FlySky RC demo, driven by you with the transmitter (in this release, Stephen 2026-09-27); SBUS receiver on P58  [ATTENDED]
                    floor-rc       the RC demo's control loop ON THE FLOOR, driven by you with the transmitter, with a 25 Hz telemetry line of both wheels (RC-TEL) and every drive event (RC-EVT); SBUS receiver on P58; runs until you close the terminal  [WHEELS DOWN, ATTENDED]
@@ -609,6 +610,16 @@ case "$TIER" in
     dual-kick)      BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_KICK)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED, YOU DO NOTHING: first each wheel gets a short slow nudge on its own (under 1 s each). Then ONE WHEEL AT A TIME, left then right, each direction in turn (4 runs): the wheel spins up from rest to high speed, then steps UP through four faster speeds to its top speed (about 300 rpm commanded) and back DOWN three steps, holding each speed about 2 seconds, then stops. The other wheel stays still. The 10 A abort and the fold-back limiter both apply. Run cap 5 minutes, expected under 2"
+                    ;;
+    # dual-tokneg (task 3651, HOLD-SPEED plan sec 4) -- the negative case of the record labels' start-up self-check
+    #  (tokenTablesSelfTest(), cell R21-DUAL-TOKTAB, which every dual tier prints and which must PASS there). -D TOKCHK_NEG
+    #  builds the harness with two of its own token tables WRONG on purpose: the scope table one token short of its count,
+    #  and the exit table with one token past its field's width. The cell must print FAIL, and BM-TOKCHK must say so (bad_count 1,
+    #  bad_len 1, first_bad tokScope). No part flag, so no part runs: nothing is started and nothing moves, the run ends in
+    #  seconds. It is the same source as every dual tier and nothing else: a one-off tier for a visit's pack, run once.
+    dual-tokneg)    BENCH_FILE="test_bench_dual.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D TOKCHK_NEG)
+                    PRECONDITION="NOTHING MOVES -- UNATTENDED, YOU DO NOTHING: no wheel or steering object is started and no motor is commanded; the motors may stay connected or be disconnected, it makes no difference. The harness prints its records, builds two of its own token tables wrong on purpose, and must print R21-DUAL-TOKTAB FAIL. Finishes in seconds"
                     ;;
     # demo-single / demo-dual (PL-149) -- the two release demos, run as shipped. Under -D BENCH_CFG each reads the bench
     #  config instead of the end-user one (demo_single_motor drives the bench's RIGHT motor, as it names no single motor)

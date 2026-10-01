@@ -42,7 +42,7 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-96 + PL-97 | A record label can print `?` or adjacent memory with no signal (four instances, the latest at `test_bench_dual` SRC_REV 70) | One start-up self-check over every token table, with a verdict in the log |
+| PL-96 + PL-97 | A record label can print `?` or adjacent memory with no signal (four instances, the latest at `test_bench_dual` SRC_REV 70) | BUILT 2026-10-01 (SRC_REV 71); the 6.1.0 visit's cell PASS and `dual-tokneg` FAIL certify it |
 | PL-68 | No bench log names the commit it was built from | The runner echoes the commit and tree state; the design goes to Stephen before it is built (overlay P2: the runner fronts his tools) |
 
 **In 6.1.0 — simple fixes**
@@ -809,7 +809,15 @@ a review before its first run, not a slot before a bench session.
 
 ### PL-96 -- an over-length record token prints as `?` with no signal, so a label can be lost silently
 
-> **Status (2026-10-01):** IN 6.1.0, together with PL-97, as one start-up self-check (STEPHEN 2026-10-01: harness work
+> **Status (2026-10-01): BUILT, certified by the 6.1.0 visit** («#3651», `test_bench_dual` SRC_REV 71). Every count is
+> derived from its enum; all 80 token tables end in a sentinel; `tokenTablesSelfTest()` walks every table the build
+> holds, plus the sign-off cell and criterion strings, and prints `BM-TOKCHK` and cell `R21-DUAL-TOKTAB` in every dual
+> build. Its negative is the one-off tier `dual-tokneg` (one table a token short, one token too long), which must print
+> FAIL. Found while building it: `sFenWords`' fourth word was 37 bytes against `tokenAt()`'s 32-byte scan, so fence
+> words 4 and up printed wrong text; the scan bound is now 40. Footprints unchanged within 4 bytes (dual-a 6,649,
+> floor-auto 6,858, limit 12,404). The bench owes: the first dual log's cell PASS, and `dual-tokneg`'s FAIL.
+>
+> **Earlier status (2026-10-01):** IN 6.1.0, together with PL-97, as one start-up self-check (STEPHEN 2026-10-01: harness work
 > for this plan's runs). **A fourth instance since this entry:** `sSfCritSpPeak` was `START_I_OVER_STEADY_X100`, 24
 > bytes against `TOKMAX_CRIT` 18, and printed `?` until SRC_REV 70 shortened it (`test_bench_dual.spin2:3338`).
 >
@@ -845,7 +853,7 @@ first.
 
 ### PL-97 -- a token table shorter than its enum walks off the end and prints adjacent DAT as text
 
-> **Status (2026-10-01):** IN 6.1.0, together with PL-96 (one mechanism).
+> **Status (2026-10-01): BUILT with PL-96** («#3651»; see PL-96's status). **Earlier:** IN 6.1.0, together with PL-96 (one mechanism).
 >
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench record vocabulary)
 
