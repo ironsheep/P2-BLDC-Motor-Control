@@ -53,7 +53,7 @@ Video of author running the system: [Control our 2-wheel BLDC robot platform fro
 
 Head to the BLDC Motor repository [releases page](https://github.com/ironsheep/P2-BLDC-Motor-Control/releases) and download the `serial-control-archive-set.zip` file from the Assets section of the latest release. *(only present in v2.0.0 and later releases)*
 
-Create a working directory and unpack this .zip there. In this .zip file you'll find an archive (.zip) of the P2 project files you need and a `pythonSrc.zip` of RPi side files you need.  We'll use all of these files in later steps.  Meanwhile, let's setup your RPi.
+Create a working directory and unpack this .zip there. It holds one folder, `serial-control-archive-set/`, with two folders inside: `p2Src/`, the P2 project files, and `pythonSrc/`, the RPi side files. Each has a `_README_.txt` saying what it holds. We'll use all of these files in later steps.  Meanwhile, let's setup your RPi.
 
 ## Configuring your RPi
 
@@ -85,7 +85,7 @@ mkdir -p ~/projects/platform-drive    # make new directory (inclu. ~/projects/ i
 cd ~/projects/platform-drive
 ```
 
-Head back to the folder where you unpacked the `serial-control-archive-set.zip` file. Let's  unpack the `pythonSrc.zip` file found within.  Now copy the files from the newly created ./pythnSrc folder into this new directory on your RPi. One if the files should be a `requirements.txt` file and the other should be the demo script `P2-BLDC-Motor-Control-Demo.py`.  Finish up your system prep by ensuring the files needed for you drive script are installed with the following commands:
+Head back to the folder where you unpacked the `serial-control-archive-set.zip` file. Copy the files from its `serial-control-archive-set/pythonSrc/` folder into this new directory on your RPi: the demo script `P2-BLDC-Motor-Control-Demo.py` and its `requirements.txt`. Finish up your system prep by ensuring the files needed for your drive script are installed with the following commands:
 
 ```shell
 cd ~/projects/platform-drive            # make sure we are where the new files arrived
@@ -113,11 +113,11 @@ Pick two pins on your P2 dev board to be used for RPi serial communications. The
 
 The code for this project is setup for the P2 Mini Edge Breakout board with the two BLDC motor controllers installed at each of the dual-header locations. This leave one single header where you just connected the serial wires from the RPi.
 
-Head back to the folder where you unpacked the `serial-control-archive-set.zip` file. Let's  unpack the *archive.zip file found within.
+Head back to the folder where you unpacked the `serial-control-archive-set.zip` file, and open its `serial-control-archive-set/p2Src/` folder.
 
-In the subfolder just created locate the `isp_steering_serial.spin2` file. Using Propeller tool select this file as our top-level file then compile and download to FLASH.  
+There, `isp_steering_serial.spin2` is the top-level file. Compile it and download it to FLASH with PNut-TS, which needs nothing more: the file selects the two-wheel configuration itself. With PNut, first select that configuration in `isp_bldc_motor_userconfig.spin2`, as [Building with PNut](DEVELOP.md#building-with-pnut) describes.
 
-**NOTE:** *this top-level file `isp_steering_serial.spin2` contains all pin-mappings. If you are not set up as the demo specified then make your pinout changes here before you flash the code.*
+**NOTE:** *the pins are set in two files. The serial pins to the RPi are in `isp_steering_serial.spin2`. The motor boards' pin groups, the motor type and the drive voltage are in `isp_bldc_motor_userconfig.spin2`. If you are not set up as the demo specified, make your changes there before you flash the code.*
 
 This should be all you need to test your new installation.  The demo file will drive the motors as if the platform is driving in a square (drive straight, turn right, drive strait, turn right, etc.)
 

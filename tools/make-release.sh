@@ -18,9 +18,10 @@
 #   release-notes.md                the version's CHANGELOG.md entry, which becomes the release page
 #
 # Each archive holds one folder named after it, flat like a Propeller Tool archive, with a _README_ per
-# top-level program drawing its object tree. A top's files are found from its OBJ blocks by
-# tools/release_closure.py, and then, when pnut-ts is on the PATH, every top is compiled from inside the
-# staged folder: an archive that is missing a file fails here, not in a user's hands.
+# top-level program drawing its object tree (and one in pythonSrc/ naming its two files). A top's files are
+# found from its OBJ blocks by tools/release_closure.py. The release gates compile every top before the
+# tag; when pnut-ts is on the PATH here as well, every top is also compiled from inside its staged folder,
+# and its _README_ says so.
 #
 # The GitHub workflow .github/workflows/release.yml runs exactly this script on a pushed tag. Every
 # external command is echoed, prefixed "+ ", immediately before it runs, so a run can be replayed by hand.
@@ -92,8 +93,8 @@ COMMIT=$(git rev-parse --short "$REF")
 STAMP=$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M' "$REF")
 
 PNUT="${PNUT_TS:-$(command -v pnut-ts || true)}"
-PNUT_NOTE="not compiled here (pnut-ts not found)"
-[ -n "$PNUT" ] && PNUT_NOTE="each top compiled from this folder by $("$PNUT" --version 2>/dev/null | head -1 | sed 's/^pnut-ts: *//')"
+PNUT_NOTE=""   # the release gates compile every top before the tag; this note only reports a check made here
+[ -n "$PNUT" ] && PNUT_NOTE="; each top compiled from this folder by $("$PNUT" --version 2>/dev/null | head -1 | sed 's/^pnut-ts: *//')"
 
 readme() {   # $1 = top name, $2 = destination file: the archive's _README_ for one top-level program
     {
@@ -101,7 +102,7 @@ readme() {   # $1 = top name, $2 = destination file: the archive's _README_ for 
         echo
         echo "  Project  : \"$1\""
         echo "  Release  : $VERSION_TAG  (commit $COMMIT, $STAMP)"
-        echo "  Built by : tools/make-release.sh; $PNUT_NOTE"
+        echo "  Built by : tools/make-release.sh$PNUT_NOTE"
         echo
         python3 "$ROOT/tools/release_closure.py" "$SRC" "$1.spin2" tree | sed 's/^/    /'
         echo
@@ -139,6 +140,20 @@ mkdir -p "$WORK/stage/serial-control-archive-set/pythonSrc"
 for f in $SET_SERIAL_PYTHON; do
     cp -p "$WORK/tree/$f" "$WORK/stage/serial-control-archive-set/pythonSrc/"
 done
+{   # the host side has no object tree: its _README_ names the two files and where the P2 side is
+    echo "P2-BLDC-Motor-Control -- Project Archive"
+    echo
+    echo "  Project  : \"P2-BLDC-Motor-Control-Demo.py\" (the RPi side of serial control)"
+    echo "  Release  : $VERSION_TAG  (commit $COMMIT, $STAMP)"
+    echo "  Built by : tools/make-release.sh"
+    echo
+    echo "    P2-BLDC-Motor-Control-Demo.py   the demo: drives the platform over the serial link"
+    echo "    requirements.txt                its Python packages: sudo pip3 install -r requirements.txt"
+    echo
+    echo "  The P2 side is ../p2Src (top-level file isp_steering_serial.spin2). Setup: SERIAL-CONTROL.md"
+    echo
+    echo "  https://github.com/ironsheep/P2-BLDC-Motor-Control"
+} > "$WORK/stage/serial-control-archive-set/pythonSrc/_README_.txt"
 
 # ---- 4. the zips and the notes ----------------------------------------------------------------------------------
 mkdir -p "$OUT"
