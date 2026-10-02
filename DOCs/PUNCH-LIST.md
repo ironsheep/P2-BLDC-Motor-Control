@@ -43,7 +43,7 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 | Entry | What it is | What closes it |
 | --- | --- | --- |
 | PL-96 + PL-97 | A record label can print `?` or adjacent memory with no signal (four instances, the latest at `test_bench_dual` SRC_REV 70) | BUILT 2026-10-01 (SRC_REV 71); the 6.1.0 visit's cell PASS and `dual-tokneg` FAIL certify it |
-| PL-68 | No bench log names the commit it was built from | The runner echoes the commit and tree state; the design goes to Stephen before it is built (overlay P2: the runner fronts his tools) |
+| PL-68 | No bench log names the commit it was built from | BUILT 2026-10-02; the 6.1.0 visit's banners certify it |
 
 **In 6.1.0 — simple fixes**
 
@@ -684,7 +684,14 @@ next attended log's `BM-PLAN`.
 
 ### PL-68 -- no bench log names the commit it was built from, so a visit ran on an older commit unnoticed
 
-> **Status (2026-10-01):** IN 6.1.0, harness work for this plan's runs. **Design RULED (STEPHEN 2026-10-01, "re pl68
+> **Status (2026-10-02): BUILT** («#3652», c60c0df and its follow-up); the 6.1.0 visit's logs certify it. Every harness
+> banner prints the commit (`test_bench_dual`: a `BM-COMMIT` record after `BM-BANNER`); `src/isp_bench_commit.spin2`
+> reads `NOT_A_PACK` in the tree and is rewritten only in the pack's archive copy. MEASURED: a pack from c60c0df holds
+> `c60c0df` in `dual-a.bin` and `t0.bin` and no `NOT_A_PACK`; a source-tree build holds `NOT_A_PACK`; `git status` is
+> clean after the pack build. The runner echoes `git rev-parse --short HEAD` and the `src`/`tools` status before a
+> source-tree compile (both limbs exercised), and skips it in a pack build.
+>
+> **Earlier status (2026-10-01):** IN 6.1.0, harness work for this plan's runs. **Design RULED (STEPHEN 2026-10-01, "re pl68
 > yes A"):** the pack builder writes a tiny object holding the commit into its temporary `git archive` copy (never this
 > tree), and every harness banner prints it; a tracked default copy reads "not a pack", so a build from the tree says
 > so; the runner also echoes `git rev-parse HEAD` and the tree's clean state before any source-tree compile.

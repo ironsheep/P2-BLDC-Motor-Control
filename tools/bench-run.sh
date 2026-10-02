@@ -786,8 +786,11 @@ if [ -n "$MEASURE_ONLY" ]; then
     DEBUG_BYTES=$(( $(wc -c < "$MEASURE_DEBUG" | tr -d ' ') - PLAIN_BYTES ))
 else
     # PL-68: a source-tree build prints NOT_A_PACK in its banner, so the log names its commit here: HEAD, and
-    #  whether src/ and tools/ match it (with changes, the binary is NOT that commit)
-    if run git -C "$SRC_DIR/.." rev-parse --short HEAD; then
+    #  whether src/ and tools/ match it (with changes, the binary is NOT that commit). A pack build (BENCH_PACK_DIR)
+    #  compiles in a git-archive copy, not a checkout: its banner and BENCH-PACKAGE carry the commit instead.
+    if [ -n "$PACK_DIR" ]; then
+        :
+    elif run git -C "$SRC_DIR/.." rev-parse --short HEAD; then
         echo "+ git -C $SRC_DIR/.. status --porcelain -- src tools"
         TREE_CHANGES=$(git -C "$SRC_DIR/.." status --porcelain -- src tools)
         if [ -z "$TREE_CHANGES" ]; then
