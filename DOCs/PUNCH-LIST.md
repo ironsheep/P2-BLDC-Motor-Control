@@ -1944,8 +1944,14 @@ the driver that ships.
 
 ### PL-179 -- under D-5 a blocked platform does not stop itself: the protective stop never latched
 
-> **Status (2026-10-02): ⛔ FIX, 6.1.0** («#3662»); found by the 6.1.0 visit (`DOCs/analyses/bench/2026-10-02/VISIT-6.1.0-EVALUATION.md`
-> §3.2, F-1). A regression in a safety function, so 6.1.0 does not ship without it.
+> **Status (2026-10-02): BUILT, DRIVER_REV 48; awaits the second visit** («#3662»). Cause SETTLED at the desk
+> (`DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md` §4.10.3): at a low limit the fold-back acts in single frames (the stall's
+> own counters: 1,677 / 914 fold frames in ~9.5 s, so at most 18 % / 10 % of passes), and the count needed 1,000 in a
+> row. STEPHEN 2026-10-02 (*"yes, a"*) ruled all three parts: **F-a** the count's limiter half is sticky from the first
+> limiter action after a tick until the next tick; **C4** the limit hold stays armed until the rotor ticks forward;
+> **S-1** (PL-180). MODELLED: a solid object latches 1,010-1,116 ms after contact (4 of 4; 15 of 16 in the full grid),
+> against never. DERIVED: with C4 and S-1 neutralised the image is equivalent to DRIVER_REV 47 (`tools/pasm_equiv`, 112
+> of 112), so nothing else changed. **Earlier:** ⛔ FIX, found by the 6.1.0 visit (evaluation §3.2, F-1).
 
 **MEASURED 2026-10-02** (`debug_261002-103634.log`, DRIVER_REV 47, 2 A obstacle limit): in the COAST obstacle trial both
 wheels stood still against the object for about 9.2 s (trace `k` 675-2,975, `pos` frozen, state SPIN_UP), the lag at 64-77
@@ -1960,8 +1966,16 @@ none after. On DRIVER_REV 46 the same trial stood 1,183 / 1,092 ms (`2026-09-30/
 
 ### PL-180 -- lag faults on hard transients, and a slow-down current kick, new at DRIVER_REV 47
 
-> **Status (2026-10-02): ROOT CAUSE FIRST, 6.1.0** («#3662», with PL-179); found by the 6.1.0 visit (evaluation §3.2,
-> §3.4, §2.2; F-2, F-3).
+> **Status (2026-10-02): two of three BUILT, DRIVER_REV 48; the reversal fault UNEXPLAINED** («#3662»; design §4.10.4-5).
+> - **The contact fault: consistent with, modelled.** Between fold-back frames the field walked back from 64 through
+>   |err| 82..88, where one tick against it faults; C4 keeps it at 64 while blocked. Modelled lag faults against a
+>   yielding object 7 → 0 of 16 (DRIVER_REV 46: 1).
+> - **The slow-down kick: consistent with, modelled.** The PL-55 ceiling held duty down until the lag reached
+>   `LAG_SOFT`, where D-2's boost started from the clamped duty. S-1 lifts it at `SERVO_SETPOINT`: modelled +115 → +52 mV.
+> - **The FlySky reversal fault: NOT reproduced, cause not established.** No 6.1 change acts in a slow-down (D-5 acts
+>   only in SPIN_UP / AT_SPEED; the "D-2 against D-5" hypothesis is refuted). The next FlySky drive's hard reversals are
+>   its reading; if it recurs it is root-caused from that drive's log.
+> **Earlier:** root cause first; found by the 6.1.0 visit (evaluation §3.2, §3.4, §2.2; F-2, F-3).
 
 **MEASURED 2026-10-02:**
 - **The BRAKE obstacle trial faulted at contact:** RIGHT re-synced and faulted about 80 ms after the wheels stopped
@@ -1988,7 +2002,10 @@ model's slow / medium legs at the floor's inertia, with and without D-2.
 
 ### PL-182 -- LIMGIVE's sampler scores a hold during the spin-up as the field giving way
 
-> **Status (2026-10-02): OPEN, harness, 6.1.0** (evaluation §3.1, F-5). Re-premise before LIMGIVE runs again.
+> **Status (2026-10-02): CORRECTED, `test_bench_dual` SRC_REV 78** («#3664»): limb (a) counts a give-way only after the
+> wheel's driver has read AT_SPEED on the leg (`bLgArrived`; the held pass itself reads SPIN_UP, since `holdDecay` turns
+> AT_SPEED into SPIN_UP, so the arrival is latched rather than the sample's state tested). It still FAILs a decay at speed
+> with no limiter (D-3's limiter test removed, by reading). Spin leg 2 (slow) is now traced. **Earlier:** OPEN (F-5).
 
 **MEASURED 2026-10-02:** SPINHOLD LEFT FAIL (1 leg) and LIMGIVE FAIL (2 of 31,278 samples) are one held pass each, on
 LEFT, in slow spin leg 2 and slow ramp leg 1 (`BM-LIMW` seq 43, 1_126); neither leg lost speed (`fol_pct` 107; arrival
@@ -1999,7 +2016,11 @@ next visit traces one slow leg so a breakaway hold is told from a hold at speed.
 
 ### PL-183 -- SPINPEAK's 1.80 limit is a wheels-up number; the floor reads the platform's spin-up current
 
-> **Status (2026-10-02): OPEN, harness, 6.1.0** (evaluation §3.1, F-6). Re-premise before SPINPEAK runs again.
+> **Status (2026-10-02): CORRECTED, `test_bench_dual` SRC_REV 78** («#3664»): SPINPEAK reads the ARRIVAL (two samples from
+> the first AT_SPEED sample), and judges the peak's excess over the steady mean in mV against TRKICK's 50 (criterion
+> `ARRIVE_I_OVER_MV`), not a ratio: at a 12-19 mV floor tail one count is 5-8 %, and the ratio read 1.47-1.96 on single
+> noisy samples. On the 2026-10-02 legs the excess is 7-13 mV (PASS); its negative is TRKICK's on-file pre-fix arrival kicks
+> of 64-183 mV. **Earlier:** OPEN (F-6).
 
 **MEASURED 2026-10-02**, the first measurement (two-turn legs): 3.74 / 4.06 (leg 7) and 3.39 / 3.25 (leg 8) against
 1.80 (`BM-SPINSTART` seq 420-421, 762-763). The trace (tid 7) shows a plateau of about 180 ms while SPIN_UP pushes the
@@ -2020,8 +2041,11 @@ pairs, both directions, before any claim about the schedule's saving at the quar
 
 ### PL-186 -- in a fast pivot turn the coasting inner wheel is driven backward, so the platform spins about its centre
 
-> **Status (2026-10-02): OPEN, 6.1.0** (evaluation §3.4, F-14; «#3663»). Cause found at the desk; what the inner wheel
-> should do is a behaviour choice for Stephen (P5).
+> **Status (2026-10-02): BUILT, awaits the second visit** («#3663»). STEPHEN 2026-10-02 chose option (a), *"yes your
+> recommendation"*: the FlySky demos (and `test_bench_rc`, SRC_REV 7) select `holdAtStop(true)`, and `DRIVE-OBJECTS.md`'s
+> `driveDirection()` row says a pivot needs hold. Cell `RC-PIVOT` judges it (a wheel at rest in a pivot moving faster than
+> 50 tps FAILs; desk arithmetic on the logs: the 2026-10-02 drive fails 65 of 547, the 2026-09-30 drive passes 126 of
+> 126). If hold does not stop the spin, option (b), a pivot-only hold in the drive, is the fallback.
 
 **Stephen, 2026-10-02:** in a full left or right turn, *"it would run really well for a little bit, and then ... the
 robot would start spinning around its physical center instead of around the stock wheel."* **MEASURED**
@@ -2038,7 +2062,10 @@ status ("HOLDING while rolling"); no hold was ever engaged.
 
 ### PL-185 -- a hand cannot slow the platform at the grab's 4 A limit, so the grab cells measure nothing
 
-> **Status (2026-10-02): OPEN, harness, 6.1.0** (evaluation §3.3, F-9); dropped from the next sheet until re-premised.
+> **Status (2026-10-02): CORRECTED, `test_bench_dual` SRC_REV 78** («#3664»): `LOAD_LIMIT_A` 4 → 2 A (derived: 2 A drove
+> the platform to the obstacle on both 2026-10-02 trials; the hand reached the 4 A fold-back briefly, so at 2 A it is past it
+> for most of the hold). `tools/gen_dual_assets.py` matches; the `dual-floor` UI panel bitmap it renders still reads 4 A
+> until regenerated where its font exists (that tier is not on the next sheet). **Earlier:** OPEN (F-9).
 
 **MEASURED 2026-10-02**, two runs (`debug_261002-103814.log`, `-103915.log`): `RESULT: GRAB -- too light`, `l_pct` 99 /
 `r_pct` 101 and 99 / 98. While held, LEFT's duty rose from about 2,000 to 3,300-4,700 and its sense current from 7-12 to

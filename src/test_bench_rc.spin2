@@ -8,7 +8,7 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... 27 Sep 2026
-''   Updated.... 30 Sep 2026
+''   Updated.... 02 Oct 2026
 ''
 ''   Revision history:
 ''               27 Sep 2026 -- SRC_REV=1, FMT 1: first cut (tier floor-rc).
@@ -36,6 +36,12 @@
 ''               02 Oct 2026 -- SRC_REV=6, FMT 3: the demo's knob deadband (PL-169), copied as the demo has it: a knob's
 ''                              rate is sent only when it moved more than RC_RATE_DEADBAND_MM_S2 from the rate last
 ''                              sent or reached an end of its range (bRateMoved()). No record changes.
+''               02 Oct 2026 -- SRC_REV=7, FMT 4: the demo's hold at rest (PL-186), copied as the demo has it:
+''                              holdAtStop(true), so a full turn pivots about the held inner wheel (Stephen, 2026-10-02,
+''                              chose this over a pivot-only hold in the drive). New record RC-PIVOT, once before RC-END:
+''                              the pivot samples with the inner wheel at rest, how many of them it moved faster than
+''                              PIVOT_TPS_MAX, and a verdict (pivotSample(), emitPivot()). swB stays in RC-TEL as a
+''                              reading; no run sheet asks him to flip it (doctrine overlay P1, 2026-10-02).
 ''
 '' =================================================================================================
 
@@ -132,6 +138,11 @@
               increment per drive pass per pass, testGetAccelNow())
    RC-EVT     seq,ms,wheel,kind,value -- wheel LEFT|RIGHT|PLATFORM, kind the EV_* name, value the SR_* name for
               EV_STOP, else the number
+   RC-PIVOT   samples,moving,max_tps,unheld,tps_max,verdict,why -- labelled pairs, once, just before RC-END (SRC_REV 7):
+              the RC-TEL samples in which one wheel was commanded power 0 and at rest (DCS_STOPPED) while the other was
+              driven at |power| > PIVOT_DRIVE_MIN; of those, the samples in which the wheel at rest turned faster than
+              tps_max (moving) and its fastest |tps| (max_tps), and those in which it was not held (unheld: hs HS_OFF).
+              verdict PASS when it never moved, FAIL when it did, NOMEAS (why NO_PIVOT) when no such sample was taken
    RC-END     records,late,skipped,max_late_us,max_pass_us,acked -- labelled pairs, once, at the natural end
   seq numbers RC-TEL and RC-EVT together, 1, 2, 3 ...: a gap means a lost line. ms is getms(), the clock the event
   log stamps with. Numbers carry an underscore every three digits, as udec_() prints them. Flags print 0 / 1.
@@ -259,9 +270,11 @@ PUB main() | statusOK, basePinLt, basePinRt, voltage, motor, detectModeLt, detec
             ' override the default top speeds (75 %) with 100 %: the sticks reach the platform's full speed
             wheels.setMaxSpeed(100)
             wheels.setMaxSpeedForDistance(100)
-            ' coast at rest: the default, set here so you can find it. holdAtStop(true) holds each wheel's position at
-            '  rest instead, drawing current to do it
-            wheels.holdAtStop(false)
+            ' hold at rest: a full left or right stick stops the inner wheel and drives the outer one, and a held inner
+            '  wheel makes the platform pivot about it. A coasting one (holdAtStop(false), the library's default) is
+            '  pushed backward by the turn once the outer wheel is fast, and the platform spins about its centre. A held
+            '  wheel draws current to hold its position
+            wheels.holdAtStop(true)
 
             ' wait until both drivers are ready to be commanded, before anything moves
             waitUntilMotorReady()
@@ -902,8 +915,22 @@ CON { --- the logger: everything below is test_bench_rc's own; nothing above cal
 
 CON { build identity }
 
-    SRC_REV     = 6                                           ' hand-bumped whenever this file changes; printed in RC-BANNER (6: the knob deadband, PL-169)
-    FMT_VERSION = 3                                            ' RC- record-format version: bumped when a record changes shape (3: RC-BANNER gains commit)
+    SRC_REV     = 7                                           ' hand-bumped whenever this file changes; printed in RC-BANNER (7: hold at rest, RC-PIVOT, PL-186)
+    FMT_VERSION = 4                                            ' RC- record-format version: bumped when a record changes shape (4: RC-PIVOT added)
+
+CON { the pivot judge (SRC_REV 7, PL-186) }
+
+    ' A full left or right stick gives the inner wheel power 0 and the outer one the stick's speed
+    '  (isp_steering_2wheel.spin2 calcPowerForDirection()). A pivot sample: one wheel commanded 0 and at rest, the
+    '  other driven harder than this.
+    PIVOT_DRIVE_MIN     = 40
+    ' The wheel at rest "moved" when its rate over one 40 ms sample exceeds this, ticks/s. One hall tick in a sample
+    '  reads 25 tps (the header's RATE section), so 50 is two ticks in 40 ms. THE NUMBER IS MEASURED, and so is its
+    '  negative: the 2026-09-30 drive (debug_260930-182653.log, coasting at rest, pivots at |speed| up to 66) read the
+    '  wheel at rest at no more than 25 tps on all 126 pivot samples; the 2026-10-02 drive (debug_261002-104014.log,
+    '  coasting, pivots at |speed| 89-100) read 65 of 547 above 50, up to 250, the platform spinning about its centre.
+    '  So this cell FAILs on the coasting drive that spun and passes the one that did not.
+    PIVOT_TPS_MAX       = 50
 
 CON { logger cog }
 
@@ -958,6 +985,10 @@ VAR { logger shared memory -- one writer each }
     LONG    logSkipped                                      ' whole periods that got no sample
     LONG    logMaxLateTicks
     LONG    logMaxPassTicks                                 ' the longest pass: its reads, its RC-TEL and its RC-EVTs
+    LONG    pvSamples                                       ' SRC_REV 7, RC-PIVOT: pivot samples (one wheel 0 and at rest, the other driven)
+    LONG    pvMoving                                        ' ...of them, the wheel at rest turning faster than PIVOT_TPS_MAX
+    LONG    pvMaxTps                                        ' ...the wheel at rest's fastest |tps| in them
+    LONG    pvUnheld                                        ' ...of them, the wheel at rest not held (hs HS_OFF)
     ' owned by cog 0
     LONG    logCogId                                        ' cogspin()'s return; < 0 when it failed or was never tried
     LONG    bLogAcked                                       ' the logger acknowledged EXIT before its cogstop
@@ -1039,6 +1070,7 @@ PRI loggerStart()
     logSkipped := 0
     logMaxLateTicks := 0
     logMaxPassTicks := 0
+    pvSamples := pvMoving := pvMaxTps := pvUnheld := 0
     bLogAcked := FALSE
     debug(zstr_(@sFieldsTel))
     debug(zstr_(@sFieldsEvt))
@@ -1080,10 +1112,30 @@ PRI loggerStop() | startMs
         cogstop(logCogId)
 
 PRI emitEnd()
-' RC-END: the logger's totals, once, at the program's natural end -- how many records it emitted (the last seq), and
-' whether it ever fell behind. All 0 when it never started.
+' RC-PIVOT, then RC-END: the logger's totals, once, at the program's natural end -- the pivot judge's counts and verdict,
+' how many records it emitted (the last seq), and whether it ever fell behind. All 0 when it never started.
 
+    emitPivot()
     debug("RC-END,records,", udec_(logSeq), ",late,", udec_(logLate), ",skipped,", udec_(logSkipped), ",max_late_us,", udec_(logMaxLateTicks / TICKS_PER_US), ",max_pass_us,", udec_(logMaxPassTicks / TICKS_PER_US), ",acked,", zstr_(boolToken(bLogAcked)))
+
+PRI emitPivot() | pVerdict, pWhy
+' RC-PIVOT (SRC_REV 7, PL-186): the pivot judge's counts and its verdict, once, before RC-END. The counts are the
+' logger's, read here after loggerStop() (the logger has parked, or been stopped, so none is still changing).
+' Worst case about 120 bytes.
+'
+' Local Variables:
+' @local pVerdict - "PASS", "FAIL" or "NOMEAS"
+' @local pWhy - "NONE", or "NO_PIVOT" when no pivot sample was taken
+
+    pWhy := @"NONE"
+    if pvSamples == 0
+        pVerdict := @"NOMEAS"
+        pWhy := @"NO_PIVOT"
+    elseif pvMoving > 0
+        pVerdict := @"FAIL"
+    else
+        pVerdict := @"PASS"
+    debug("RC-PIVOT,samples,", udec_(pvSamples), ",moving,", udec_(pvMoving), ",max_tps,", udec_(pvMaxTps), ",unheld,", udec_(pvUnheld), ",tps_max,", udec_(PIVOT_TPS_MAX), ",verdict,", zstr_(pVerdict), ",why,", zstr_(pWhy))
 
 PRI boolToken(bFlag) : pToken
 ' Name a boolean for a labelled record field: TRUE or FALSE, never a number (the bench's decision 13).
@@ -1231,6 +1283,7 @@ PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPc
             lgPwr[slotIdx] := lgCi[slotIdx] := lgFi[slotIdx] := lgPos[slotIdx] := lgTps[slotIdx] := 0
             lgMa[slotIdx] := lgErr[slotIdx] := lgDuty[slotIdx] := lgShort[slotIdx] := lgFol[slotIdx] := 0
             lgHs[slotIdx] := lgFlt[slotIdx] := lgAcc[slotIdx] := 0
+    pivotSample()                                               ' SRC_REV 7: RC-PIVOT's counts, from this sample
 
     ' 4. one line, built here and sent with ONE zstr_(): a debug() takes at most 31 expressions and RC-TEL carries 49
     logSeq++
@@ -1272,6 +1325,30 @@ PRI logSample() | nowCt, periodTicks, rngMin, rngMax, slotIdx, nDelta, nFollowPc
         lineNum(lgFlt[slotIdx])
         lineNum(lgAcc[slotIdx])
     debug(zstr_(@lgLine))
+
+PRI pivotSample() | restIdx, slotIdx, nRate
+' RC-PIVOT's counts from the sample just read (logger cog, SRC_REV 7): when one wheel is commanded power 0 and at rest
+' (DCS_STOPPED) while the other is driven harder than PIVOT_DRIVE_MIN, count the sample; count it as moving when the
+' wheel at rest turned faster than PIVOT_TPS_MAX in it, keep its fastest |tps|, and count it unheld when its hold is
+' HS_OFF. A wheel still slowing to rest is not at rest, so the turn's own slow-down is never counted.
+'
+' Local Variables:
+' @local restIdx - the slot of the wheel at rest, or -1 when this is not a pivot sample
+' @local slotIdx - a wheel's slot; SLOT_RIGHT - slotIdx is its partner's
+' @local nRate - the wheel at rest's |tps|
+
+    restIdx := -1
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        if (lgPwr[slotIdx] == 0) and (lgDcs[slotIdx] == wheels.DCS_STOPPED) and (abs(lgPwr[SLOT_RIGHT - slotIdx]) > PIVOT_DRIVE_MIN)
+            restIdx := slotIdx
+    if restIdx >= 0
+        nRate := abs(lgTps[restIdx])
+        pvSamples++
+        pvMaxTps #>= nRate
+        if nRate > PIVOT_TPS_MAX
+            pvMoving++
+        if lgHs[restIdx] == wheels.HS_OFF
+            pvUnheld++
 
 PRI logEvents() | eKind, nMs, eWheel, nValue, nRead
 ' Drain the LOGGER COG's own event cursor, at most LOG_EVENTS_PER_PASS a pass, one RC-EVT each (logger cog). The log

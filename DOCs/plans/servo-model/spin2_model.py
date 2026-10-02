@@ -21,6 +21,18 @@ usage (run from any directory; spin_model.py must sit beside this file):
 D-5 (design doc 4.9), off by default so every earlier command reproduces its numbers: d5=1 the limit hold (lag_lim,
 the candidates' d5_back / d5_step / d5_sticky), blk_lim=1 the blocked count that also counts a front pass on which a
 limiter acted. The design's runs add `d5=1 blk_lim=1` to the D-1..D-3 flags.
+
+«#3662» (design doc 4.10), off by default so every earlier command reproduces its numbers:
+  pasm=1     the DRIVER_REV 47 arithmetic the model lacked (4.10.2): (a) the fold-back on the DC-link reading against a
+             threshold scaled by max(duty, duty_floor); (b) the PL-55 duty ceiling in SPIN_DN / SLOW_TO_CHG; (c) lim_seen
+             re-taken after a pass in another state; (d) the blocked count's limiter half only in SPIN_UP / AT_SPEED;
+             (e) the D-5 set-back signed by err_; (f) the field's direction (fwdrev) follows its last move
+  v_dt=V     the bridge's dead-time voltage, opposing the phase current (FITTED, 4.10.2; ke is refitted with it)
+  blk_fix=1  candidate F-a, the blocked count's limiter half sticky from a limiter until the next hall tick;
+  blk_fix=2  candidate F-b, a limiter within the last blk_win front passes
+  diag=1     block mode: each wheel's limiter pattern over its stand (the separating reading for F-1)
+  python3 spin2_model.py stepdn   [key=value ...]   -- wheels up, the ladder's speed steps (F-3)
+  python3 spin2_model.py reversal [key=value ...]   -- the floor, straight, a slow-down / reversal from -175 tps (F-2)
 """
 import math, sys
 from spin_model import P, Drive, lead_tenths, l_eff, ke_from_ladder, FRAME, PASS, SECTOR, TWO32, SLOW, MED, BRISK
@@ -52,10 +64,69 @@ Q.update(m=7.7, r=0.08255, track=0.387, Jw=0.006, Iz=0.26,     # Iz: NOT measure
                                   #  sets back again, limiter or not) until the rotor ticks forward past that sector
          blk_lim=0,               # 1 = D-5's blocked count: bFrontProtect also counts a front pass on which a limiter acted
                                   #  (duty_capped + foldback advanced since its previous pass), with no hall tick
+         # «#3662» (design doc 4.10). Off by default: every earlier command reproduces its numbers
+         pasm=0,                  # 1 = the as-built arithmetic (see the module doc): fold on the DC-link reading
+                                  #  (:8000-8033, currentLimitK :6304, setFoldLimit :6323), the PL-55 ceiling (:7798-7817,
+                                  #  capture :8985-8991), the lim_seen re-take (:8763-8766), bFrontProtect's state rule
+                                  #  (:2907), the set-back's sign (:8842), fwdrev (:7967-7968)
+         frame_cnt=6136,          # clocks per PWM frame at 270 MHz (init() :4394)
+         duty_floor=2454,         # dutyFloorEst, m = 0.1 (init() :4511); setFoldLimit() raises it for a small limit
+         r_sense=150,             # Rev B, mV per A of DC link (the obstacle and ladder runs are Rev B)
+         v_dt=0.0,                # V, the bridge's dead-time voltage, opposing the phase current. 0 = none (as before)
+         blk_fix=0,               # the blocked-count candidates (4.10.4): 1 = F-a, sticky; 2 = F-b, a window
+         blk_win=50,              # F-b: front passes a limiter keeps the count alive
+         diag=0,                  # block mode: 1 = print each wheel's limiter pattern over its stand
+         i_noise=0.0,             # pasm=1: the DC-link reading's noise, uniform +- i_noise mV per frame (0 = none)
+         rv_acc=0, rv_dec=0,      # reversal mode: one (acceleration, deceleration) pair, mm/s^2; 0 = the FlySky grid
+         cap_lift=0,              # candidate S-1 (4.10.6): 0 = the PL-55 ceiling lifts at LAG_SOFT (as built); N = it
+                                  #  lifts once the pass's lag_s reaches N (SERVO_SETPOINT 48: the rotor trails its point)
+         boost_run=0,             # candidate S-2 (4.10.6): 1 = D-2's boost only in SPIN_UP / AT_SPEED
          )
 
 PATH_RELEASE_SLOTS, PATH_RELEASE_STEP, PATH_BEHIND = 4, 20, 100
 SHORT_SLOTS = 4
+FOLD_MIN_MV = 4                  # :7287
+RUNNING = ('SPIN_UP', 'AT_SPEED')
+RAMPING_DOWN = ('SPIN_DN', 'SLOW_TO_CHG')
+
+
+def ke_fit(p):
+    """ke as spin_model.ke_from_ladder fits it (rung 20e6 at L 18 needs duty 170 per 1e6 at 18.5 V), with the bridge's
+    dead-time voltage v_dt opposing the current (a fixed point of the steady dq equations). v_dt = 0: that function."""
+    if not p['v_dt']:
+        return ke_from_ladder(p)
+    incr = 20e6
+    we = incr / TWO32 * (44000 / PASS) * 2 * math.pi
+    delta = math.radians(90 + (48 - p['e90_L18']) * 360 / 256)
+    Va = 18.5 * (170 * incr / 1e6) / (16 * 3068)
+    X = we * p['Lh']; R = p['R']; Z2 = R * R + X * X
+    wm = we / p['pp']
+    lo, hi = 1e-4, 1.0
+    for _ in range(80):
+        ke = (lo + hi) / 2
+        kt = 1.5 * p['pp'] * ke
+        idd, iq = 0.0, 0.0
+        for _ in range(40):
+            im = max(math.hypot(idd, iq), 0.05)
+            Vd = Va * math.cos(delta) - p['v_dt'] * idd / im
+            Vq = Va * math.sin(delta) - p['v_dt'] * iq / im
+            idd = (R * Vd + X * (Vq - ke * we)) / Z2
+            iq = (R * (Vq - ke * we) - X * Vd) / Z2
+        need = (0.20 + 0.018 * wm) / kt
+        if iq > need:
+            lo = ke
+        else:
+            hi = ke
+    return (lo + hi) / 2
+
+
+def fold_threshold(p):
+    """(k, floor): the driver's fold factor and duty floor for p['i_limit'] amps (currentLimitK() :6321, setFoldLimit()
+    :6338). The fold acts on a frame whose whole-mV net DC-link reading is above (max(duty, floor) * k) >> 16 (:8000-8033)."""
+    amps = int(p['i_limit'])
+    k = max(1, min(0xFFFF, (3 * amps * p['r_sense'] * 0x10000) // (16 * p['frame_cnt'])))
+    floor = min(max(p['duty_floor'], ((FOLD_MIN_MV << 16) + k - 1) // k), 0xFFFF)
+    return k, floor
 
 
 class Wheel:
@@ -75,14 +146,30 @@ class Wheel:
         w.capped_seen = 0; w.capped = 0; w.boosts = 0
         w.setbacks = 0                    # D-5: passes the limit hold set the field back
         w.lim_sector = None               # D-5 C4 (d5_sticky): the sector the limit hold armed in, None when clear
+        # «#3662» (pasm=1): the PL-55 ceiling's capture and value, fwdrev, and the counters the new modes read
+        w.duty0 = 0; w.incr0 = 0; w.duty_cap = p['duty_max']
+        w.pdir = w.sign                   # the direction the error is read in and the physics' frame (fwdrev)
+        w.folds = 0                       # fold-back frames (the model's w.capped counts both limiters)
+        w.cap_frames = 0                  # frames the duty ceiling clamped (duty_capped)
+        w.lim_tick = False                # F-a: a limiter acted since the last hall tick
+        w.lim_ago = 1 << 30               # F-b: front passes since a limiter acted
+        w.flips = 0
+        w.hold_win = 0                    # held passes with the lag reading 82..88 (I-5's window, integer reading)
+        w.win_frames = 0                  # frames the driven lag reads in that band: a backward tick there faults
+        w.ring = []                       # diag=1: the last frames' (t, err, sector, field speed, state, duty, note)
+        w.back_in_win = 0                 # backward hall ticks taken while the lag read in that band
 
     def permille(w):
         return min(abs(w.drv.v) * 1000 // abs(w.cmd), 1000) if w.cmd else 1000
 
 
-def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=None):
-    ke = ke_from_ladder(p); kt = 1.5 * p['pp'] * ke
+def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=None, prog=None, mon=None):
+    """prog: optional [(t s, target), ...] commands taken in time order (the straight drive's sign rule applies);
+    mon: optional dict the run fills with the transient readings the stepdn / reversal modes print."""
+    ke = ke_fit(p); kt = 1.5 * p['pp'] * ke
     W = [Wheel(p, p['RL'], *pairs, target), Wheel(p, p['RR'], *pairs, -target if p['straight'] else target)]
+    fk, ffloor = fold_threshold(p)
+    prog = list(prog) if prog else []
     rr = p['r'] ** 2
     a = p['Jw'] + p['m'] * rr / 4 + p['Iz'] * rr / p['track'] ** 2
     b = p['m'] * rr / 4 - p['Iz'] * rr / p['track'] ** 2
@@ -92,7 +179,13 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
     every = int(sample_ms / 1000 / FRAME)
     slot = int(p['slot_ms'] * 44)
     samples = []
+    if mon is not None:
+        mon['w'] = [dict(lag_pk=-999, idc_pk=0.0, iph_pk=0.0, duty_pk=0, soft=0, c0=None, c1=None, post=[], pre=[])
+                    for _ in W]
+        mon['fault'] = None
+        mon.setdefault('post', (99.0, 99.0)); mon.setdefault('pre', (99.0, 99.0))
     rnd = 12345 + 7919 * (int(p['seed']) - 1)          # seed=1 (the default) is the sequence every earlier run used
+    rnd_i = 777 + 7919 * int(p['seed'])                 # «#3662»: the sense noise's own sequence (i_noise)
     noise = [0.0, 0.0]
     # the obstacle and the protective stop (obst=1)
     if p['obst']:
@@ -101,20 +194,59 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             w.contact_t = None; w.last_tick_t = 0.0; w.blk_pos = 0; w.blk_n = 0; w.F = 0.0
             w.err_pk = 0; w.ticks_fwd = 0; w.ticks_back = 0; w.tick_sector = 0; w.blk_best = 0
             w.blk_cap = 0                 # D-5 (blk_lim): the limiter counts as the previous front pass read them
+            # «#3662» diag: the stand's front passes (no tick since the last), those a limiter acted on, the longest
+            #  run of limited passes and the longest gap between them, the |err| range, the fold frames
+            w.dg = dict(n=0, lim=0, run=0, run_pk=0, gap=0, gap_pk=0, e_lo=999, e_hi=-999, soft=0, folds0=None)
         blk = dict(latch_t=None, wheel=None, stand=None, fault_t=None, fault_wheel=None)
     for f in range(n):
         t = f * FRAME
+        # ---- «#3662»: a programmed command (stepdn, reversal), taken as the front cog writes one
+        while prog and t >= prog[0][0]:
+            _, tg = prog.pop(0)
+            for i, w in enumerate(W):
+                c = -tg if (p['straight'] and i == 1) else tg
+                w.cmd = c; w.tgt = c
+                if c:
+                    w.sign = 1 if c > 0 else -1
         # ---- the front cog's protective stop, once per 1 ms front pass (bFrontProtect() :2898-2904)
         if p['obst'] and f % 44 == 0:
             for i, w in enumerate(W):
                 pos = math.floor(w.thr / SECTOR)
                 lim_f = w.capped != w.blk_cap        # D-5 (blk_lim): a limiter acted since the previous front pass
                 w.blk_cap = w.capped
-                if w.tgt != 0 and (abs(w.e) >= p['lag_soft'] or (p['blk_lim'] and lim_f)) and pos == w.blk_pos \
-                        and w.drv.state in ('SPIN_UP', 'AT_SPEED', 'SPIN_DN'):
+                st = w.drv.state
+                if p['pasm'] and st not in RUNNING:
+                    lim_f = False                    # (d) the limiter half counts only in SPIN_UP / AT_SPEED (:2907)
+                lim_c = lim_f
+                if p['blk_fix'] == 1:
+                    # F-a: once a limiter has acted with no tick since, every pass counts until the next tick
+                    if pos != w.blk_pos or w.tgt == 0 or st not in RUNNING:
+                        w.lim_tick = False
+                    elif lim_f:
+                        w.lim_tick = True
+                    lim_c = w.lim_tick
+                elif p['blk_fix'] == 2:
+                    # F-b: a limiter within the last blk_win front passes
+                    w.lim_ago = 0 if lim_f else w.lim_ago + 1
+                    lim_c = w.lim_ago < p['blk_win'] and st in RUNNING
+                if w.tgt != 0 and (abs(w.e) >= p['lag_soft'] or ((p['blk_lim'] or p['blk_fix']) and lim_c)) \
+                        and pos == w.blk_pos and w.drv.state in ('SPIN_UP', 'AT_SPEED', 'SPIN_DN'):
                     w.blk_n += 1
                 else:
                     w.blk_n = 0
+                if p['diag'] and w.contact_t is not None and pos == w.blk_pos and t >= w.contact_t + 0.3:
+                    d = w.dg
+                    if d['folds0'] is None:
+                        d['folds0'] = (w.folds, t)
+                    d['n'] += 1; d['lim'] += lim_f; d['soft'] += abs(w.e) >= p['lag_soft']
+                    d['run'] = d['run'] + 1 if lim_f else 0
+                    d['gap'] = 0 if lim_f else d['gap'] + 1
+                    d['run_pk'] = max(d['run_pk'], d['run']); d['gap_pk'] = max(d['gap_pk'], d['gap'])
+                    d['e_lo'] = min(d['e_lo'], abs(w.e)); d['e_hi'] = max(d['e_hi'], abs(w.e))
+                    d['d_lo'] = min(d.get('d_lo', 1 << 20), w.duty); d['d_hi'] = max(d.get('d_hi', 0), w.duty)
+                    d['t1'] = t; d['folds1'] = w.folds
+                elif p['diag'] and pos != w.blk_pos:
+                    w.dg['run'] = 0; w.dg['gap'] = 0         # a tick: the stand restarts
                 w.blk_pos = pos
                 w.blk_best = max(w.blk_best, w.blk_n)
                 if w.blk_n >= p['blocked_passes'] and blk['latch_t'] is None:
@@ -126,7 +258,7 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             for w in W:
                 if w.kind == 'SCHED':
                     w.L = lead_tenths(abs(w.drv.v)) / 10
-                    w.e90 = p['e90_L18'] + (l_eff(w.L, w.Z, w.sign) - 18) * 256 / 360
+                    w.e90 = p['e90_L18'] + (l_eff(w.L, w.Z, w.pdir if p['pasm'] else w.sign) - 18) * 256 / 360
                 if w.drv.held != w.last_held:
                     w.hold_slots_ago = 0
                 elif w.hold_slots_ago < SHORT_SLOTS:
@@ -168,7 +300,12 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                     w.started = True
                     w.thf = (math.floor(w.thr / SECTOR) + 0.5) * SECTOR
                     w.drv.state = 'SPIN_UP'
+                prev = w.drv.state
+                if p['pasm'] and prev not in RUNNING:
+                    w.capped_seen = w.capped          # (c) gettgtincr's re-take: frames in another state are no limit
                 at_rest = w.drv.jerk_step(w.tgt, w.e)
+                if p['pasm'] and not at_rest and w.drv.state in RAMPING_DOWN and prev not in RAMPING_DOWN:
+                    w.duty0 = w.duty; w.incr0 = abs(w.drv.v)    # (b) jerkStep's .report: where the ramp-down starts
                 if not at_rest:
                     # D-5 (d5): while a limiter has the duty, in the states holdDecay walks, the hold is lag_lim
                     dir_ = -1 if w.drv.v < 0 else 1
@@ -178,14 +315,25 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                         and w.drv.state in ('SPIN_UP', 'AT_SPEED')
                     hold_at = p['lag_lim'] if lim_hold else p['lag_hold']
                     if lag_s < hold_at:
+                        if p['pasm'] and w.drv.v != 0 and (1 if w.drv.v > 0 else -1) != w.pdir:
+                            # (f) fwdrev turns with the field's move (:7967-7968): the error is read against the
+                            #  other direction's offset. The model keeps the voltage's angle on the rotor continuous
+                            #  (its two directions' e90 are mirror fits), so its reading moves by 128 - 2 e90 counts
+                            #  where the driver's moves by 2L (4.10.9)
+                            nd = -w.pdir
+                            e90n = p['e90_L18'] + (l_eff(w.L, w.Z, nd) - 18) * 256 / 360
+                            w.thf -= w.pdir * (w.e90 + e90n - 128)
+                            w.pdir = nd; w.e90 = e90n; w.flips += 1
                         w.thf += w.drv.v / TWO32 * 256
                     else:
+                        if p['pasm'] and 82 <= lag_s <= 88:
+                            w.hold_win += 1
                         if lim_hold and p['d5_back'] and lag_s > p['lag_lim']:
                             # the set-back: angle_ -= sign(drv_incr) * (lag_s - lag_lim) << 24, so err reads lag_lim
                             back = lag_s - p['lag_lim']
                             if p['d5_step'] > 0:
                                 back = min(back, p['d5_step'])
-                            w.thf -= back * dir_
+                            w.thf -= back * (dir_ if not p['pasm'] else (1 if w.e >= 0 else -1))   # (e) :8842
                             w.setbacks += 1
                             if p['d5_sticky']:
                                 w.lim_sector = math.floor(w.thr / SECTOR)
@@ -201,19 +349,33 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                             elif w.drv.state == 'AT_SPEED':
                                 w.drv.state = 'SPIN_UP'
                     w.capped_seen = w.capped
+                if p['pasm']:
+                    w.capped_seen = w.capped          # passEnd's snapshot, every pass
+                    # (b) the PL-55 ceiling for this pass's frames: duty0 x |drv_incr| / incr0 while ramping down,
+                    #  lifted when the pass's lag_s >= LAG_SOFT (:7798-7817)
+                    w.duty_cap = p['duty_max']
+                    if w.drv.state in RAMPING_DOWN and lag_s < (p['cap_lift'] or p['lag_soft']) and w.incr0:
+                        w.duty_cap = max(p['duty_min'], min(p['duty_max'], w.duty0 * abs(w.drv.v) // w.incr0))
                 w.ff = min(abs(w.drv.v) * p['duty_ff_line'] // p['ff_incr'], p['duty_max'])
                 if w.drv.state == 'AT_SPEED' and w.t_arrive is None:
                     w.t_arrive = t
-            sgn = w.sign
+            sgn = w.pdir if p['pasm'] else w.sign
             e_true = (w.thf - w.thr) * sgn
             delta = math.radians(90 + (e_true - w.e90) * 360 / 256) * sgn
             Va = p['Vbus'] * w.duty / (16 * 3068)
             we = w.wm * p['pp']
             Vd = Va * math.cos(delta); Vq = Va * math.sin(delta)
+            if p['v_dt']:
+                # «#3662»: the dead-time voltage, against the phase current (linear below 50 mA)
+                im = max(math.hypot(w.idd, w.iq), 0.05)
+                Vd -= p['v_dt'] * w.idd / im; Vq -= p['v_dt'] * w.iq / im
             Lh = p['Lh']; R = w.R
-            w.idd += (Vd - R * w.idd + we * Lh * w.iq) / Lh * FRAME
-            w.iq += (Vq - R * w.iq - we * Lh * w.idd - ke * we) / Lh * FRAME
-            w.pin = 1.5 * (Vd * w.idd + Vq * w.iq)
+            if p['pasm'] and w.drv.state == 'STOPPED':
+                w.idd = w.iq = w.pin = 0.0             # «#3662»: at rest the bridge takes the stop mode; modelled as a coast
+            else:
+                w.idd += (Vd - R * w.idd + we * Lh * w.iq) / Lh * FRAME
+                w.iq += (Vq - R * w.iq - we * Lh * w.idd - ke * we) / Lh * FRAME
+                w.pin = 1.5 * (Vd * w.idd + Vq * w.iq)
             fr = p['Tc'] * (1 + p['Tnoise'] * noise[i]) * math.tanh(w.wm / p['w0']) + p['Bv'] * w.wm
             if i == 0 and p['step_T'] > 0 and p['step_t'] <= t < p['step_off']:
                 fr += p['step_T'] * math.tanh(w.wm / p['w0'])
@@ -238,11 +400,23 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             w.wm += (aL if i == 0 else aR) * FRAME
             w.thr += w.wm * p['pp'] * 256 / (2 * math.pi) * FRAME
             sector = math.floor(w.thr / SECTOR)
+            e_old = w.e
             w.e = math.floor(w.thf - (sector + 0.5) * SECTOR)
             if p['wrap']:
                 w.e = ((w.e + 128) % 256) - 128        # err_ is a wrapped 8-bit angle (:7926-7930)
-            if abs(w.e) >= p['fault']:
-                w.faulted = True
+            if abs(w.e) >= p['fault'] and not (p['pasm'] and w.drv.state == 'STOPPED'):
+                w.faulted = True                       # (an undriven bridge takes no fault, :7983)
+            if p['diag'] and (not w.ring or w.ring[-1][1] != w.e or w.ring[-1][2] != sector):
+                w.ring.append((round(t, 5), w.e, sector, w.drv.v, w.drv.state, w.duty, w.setbacks, w.drv.held))
+                del w.ring[:-24]
+            # I-5's window in the driver's integer reading (err_ = ... SAR 24 floors, :7979): a tick away from the field
+            #  takes |err| from 82..88 to 125..131, wrapped: a lag fault. Either sign of err (the floor makes the
+            #  negative side 81.33..87.33 real counts, the positive 82.33..88.33)
+            if p['pasm'] and w.drv.state != 'STOPPED' and 82 <= abs(w.e) <= 88:
+                w.win_frames += 1
+            if p['pasm'] and sector != w.last_sector:
+                if 82 <= abs(e_old) <= 88 and (w.last_sector - sector) * (1 if e_old > 0 else -1) > 0:
+                    w.back_in_win += 1                 # a tick away from the field from inside the window
             if sector != w.last_sector:
                 # D-A: the lag at the edge, exact: the rotor is on the sector boundary, half a sector from the table
                 #  angle the frame's err_ is formed from (sawtooth-free, one sample per hall tick)
@@ -259,16 +433,28 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             if p['obst'] and w.contact_t is not None:
                 w.err_pk = max(w.err_pk, abs(w.e))
             # ---- the fold-back (S-2): over the limit, duty -= duty >> 6 and the trim is skipped this frame
-            if math.hypot(w.idd, w.iq) > p['i_limit']:
+            if p['pasm']:
+                # (a) the driver's test: the whole-mV net DC-link reading above (max(duty, floor) x k) >> 16 (:8000-8033)
+                rd = max(w.pin, 0.0) / p['Vbus'] * p['r_sense']
+                if p['i_noise']:
+                    rnd_i = (rnd_i * 1103515245 + 12345) & 0x7FFFFFFF
+                    rd += ((rnd_i / 0x7FFFFFFF) * 2 - 1) * p['i_noise']
+                over = math.floor(rd) > ((max(w.duty, ffloor) * fk) >> 16)
+            else:
+                over = math.hypot(w.idd, w.iq) > p['i_limit']
+            if over:
                 w.duty -= w.duty >> 6
+                if p['pasm'] and w.duty > w.duty_cap:
+                    w.duty = w.duty_cap; w.capped += 1; w.cap_frames += 1   # .dutyLimits after a fold too
                 w.duty = max(w.duty, p['duty_min'])
                 w.acc = (w.duty - w.ff - w.pterm) << p['acc_shift']
                 w.capped += 1                      # D-C: the limit acted (foldback_cnt advanced)
+                w.folds += 1
                 continue
             # ---- the trim (DRIVER_REV 46), plus the proposed proportional term
             x = abs(w.e) - p['setpoint']
             w.acc += x * (w.duty >> p['preshift'])
-            if p['dB']:
+            if p['dB'] and (not p['boost_run'] or w.drv.state in RUNNING):
                 lag_f = -w.e if w.drv.v < 0 else w.e
                 if lag_f >= p['lag_soft']:
                     w.boosts += 1
@@ -279,16 +465,46 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                 pterm = ((w.lag_edge - p['setpoint']) * (w.duty >> p['preshift'])) >> p['kp_shift']
             w.pterm = pterm
             want = (w.acc >> p['acc_shift']) + w.ff + pterm
-            d2 = max(p['duty_min'], min(p['duty_max'], want))
+            d2 = max(p['duty_min'], min(w.duty_cap if p['pasm'] else p['duty_max'], want))
             if d2 != want:
                 w.acc = (d2 - w.ff - pterm) << p['acc_shift']
                 if d2 < want:
                     w.capped += 1
+                    w.cap_frames += 1
+            if p['pasm'] and w.drv.state == 'STOPPED':
+                d2 = p['duty_min']; w.acc = (d2 - w.ff - pterm) << p['acc_shift']    # .endAtZero, then undriven
             w.duty = d2
         if p['obst'] and any(w.faulted for w in W):
             k_ = [w.faulted for w in W].index(True)
             blk.update(fault_t=t, fault_wheel=('L', 'R')[k_])
+            if p['diag']:
+                print(f"    diag fault context {'LR'[k_]} (t, err, sector, drv_incr, state, duty, set-backs, held):")
+                for r_ in W[k_].ring:
+                    print(f"      {r_}")
             break
+        if mon is not None:
+            for i, w in enumerate(W):
+                m = mon['w'][i]
+                if mon['t_from'] <= t < mon['t_to']:
+                    if m['c0'] is None:
+                        m['c0'] = (w.drv.held, w.cap_frames, w.folds, w.boosts, w.back_in_win, w.hold_win,
+                                   w.win_frames)
+                    lag = -w.e if w.drv.v < 0 else w.e
+                    m['lag_pk'] = max(m['lag_pk'], lag)
+                    m['idc_pk'] = max(m['idc_pk'], max(w.pin, 0.0) / p['Vbus'])
+                    m['iph_pk'] = max(m['iph_pk'], math.hypot(w.idd, w.iq))
+                    m['duty_pk'] = max(m['duty_pk'], w.duty)
+                    m['soft'] += lag >= p['lag_soft']
+                    m['c1'] = (w.drv.held, w.cap_frames, w.folds, w.boosts, w.back_in_win, w.hold_win,
+                               w.win_frames)
+                if mon['post'][0] <= t < mon['post'][1]:
+                    m['post'].append(max(w.pin, 0.0) / p['Vbus'])
+                if mon['pre'][0] <= t < mon['pre'][1]:
+                    m['pre'].append(max(w.pin, 0.0) / p['Vbus'])
+            if mon['fault'] is None and any(w.faulted for w in W):
+                k_ = [w.faulted for w in W].index(True)
+                mon['fault'] = (t, 'LR'[k_], W[k_].drv.state)
+                break
         if f % every == 0:
             samples.append((t, [(w.duty, w.e * w.sign, max(w.pin, 0) / p['Vbus'], w.thr * w.sign / SECTOR,
                                  w.drv.v, w.drv.held, w.drv.state, math.hypot(w.idd, w.iq), w.capped) for w in W], scale))
@@ -305,7 +521,8 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
         blk['t_end'] = t
         blk['wheels'] = [dict(contact=w.contact_t, last_tick=w.last_tick_t, fwd=w.ticks_fwd, back=w.ticks_back,
                               err_pk=w.err_pk, held=w.drv.held, limited=w.capped, blk_best=w.blk_best, F=w.F,
-                              setbacks=w.setbacks)
+                              setbacks=w.setbacks, dg=w.dg, folds=w.folds, back_in_win=w.back_in_win,
+                              hold_win=w.hold_win, win_frames=w.win_frames)
                          for w in W]
         res['block'] = blk
         return res
@@ -393,13 +610,15 @@ def block_params(p):
 def block_set(q, verbose=False):
     """ob_n realizations, contact points spread over one hall sector; returns the summary line"""
     sector_m = 2 * math.pi * q['r'] / 90
-    lat = []; stands = []; nolatch = 0; faults = 0; back = 0; best = 0
+    lat = []; stands = []; nolatch = 0; faults = 0; back = 0; best = 0; win_ms = 0.0; win_ticks = 0
     for j in range(int(q['ob_n'])):
         qj = dict(q); qj['ob_x'] = q['ob_x'] + sector_m * j / q['ob_n']
         b = run(qj, SLOW, q['ob_t'], ('SCHED', None, -4), 0.5)['block']
         cs = [x['contact'] for x in b['wheels'] if x['contact'] is not None]
         c0 = min(cs) if cs else None
         back += sum(x['back'] for x in b['wheels'])
+        win_ms += sum(x['win_frames'] for x in b['wheels']) / 44
+        win_ticks += sum(x['back_in_win'] for x in b['wheels'])
         if b['latch_t'] is not None:
             lat.append(b['latch_t'] - c0); stands.append(b['stand'])
             out = (f"LATCH {b['wheel']} at {b['latch_t']:.3f} s: {1000 * (b['latch_t'] - c0):6.0f} ms after contact, "
@@ -418,12 +637,47 @@ def block_set(q, verbose=False):
                 f"err_pk {x['err_pk']} held {x['held']} limited {x['limited']} longest count {x['blk_best']} F {x['F']:.1f} N"
                 + (f" set-backs {x['setbacks']}" if x['setbacks'] else '')
                 for n_, x in zip('LR', b['wheels'])), flush=True)
+            if q['diag']:
+                for n_, x in zip('LR', b['wheels']):
+                    d = x['dg']
+                    if not d['n']:
+                        continue
+                    secs = d['t1'] - d['folds0'][1]
+                    fps = (d['folds1'] - d['folds0'][0]) / secs if secs > 0 else float('nan')
+                    print(f"    diag {n_}: stand {d['n']} front passes; a limiter acted on {d['lim']} "
+                          f"({100 * d['lim'] / d['n']:.1f} %), |err| >= LAG_SOFT on {d['soft']}; longest limited run "
+                          f"{d['run_pk']}, longest gap {d['gap_pk']}; |err| {d['e_lo']}..{d['e_hi']}; duty "
+                          f"{d['d_lo']}..{d['d_hi']}; fold frames "
+                          f"{fps:.0f}/s; |err| in 82..88 for {x['win_frames'] / 44:.1f} ms (held there "
+                          f"{x['hold_win']}), back ticks from it {x['back_in_win']}",
+                          flush=True)
     lat.sort(); stands.sort()
     s = f"latched {len(lat)} of {int(q['ob_n'])}, no latch {nolatch}, fault {faults}; contact-to-latch ms "
     s += (f"min {1000 * lat[0]:.0f} median {1000 * lat[len(lat) // 2]:.0f} max {1000 * lat[-1]:.0f}; "
           f"stand ms {1000 * stands[0]:.0f}-{1000 * stands[-1]:.0f}" if lat else 'none')
     s += f"; back ticks {back}" + (f"; longest count without latch {best}" if nolatch else '')
+    if q['diag']:
+        s += f"; |err| in 82..88 for {win_ms:.0f} ms over all contacts, ticks from it {win_ticks}"
     return 'SUMMARY: ' + s
+
+
+def mon_line(mon):
+    """«#3662»: one transient's readings per wheel (run(mon=...)): the lag's peak in the direction of motion, held passes
+    (and the time |err| read 82..88), ticks away from the field from that band, ceiling-clamped and fold frames, boost frames, the
+    peaks, and the DC-link current's peak over the destination's steady mean (A, and mV at the Rev B 150 mV/A)"""
+    out = []
+    for n_, m in zip('LR', mon['w']):
+        if m['c0'] is None or m['c1'] is None:
+            out.append(f"{n_} --")
+            continue
+        c = [b_ - a_ for a_, b_ in zip(m['c0'], m['c1'])]
+        post = sum(m['post']) / len(m['post']) if m['post'] else float('nan')
+        kick = m['idc_pk'] - post
+        out.append(f"{n_} lag_pk {m['lag_pk']:4} held {c[0]:3} in-82-88 {c[6] / 44:5.1f} ms back-from-it {c[4]} cap {c[1]:4} "
+                   f"fold {c[2]:4} boost {c[3]:5}; duty_pk {m['duty_pk']:5} Iph_pk {m['iph_pk']:5.2f} A DC_pk {m['idc_pk']:.3f} A"
+                   + (f" over steady {kick:+.3f} A ({kick * 150:+.0f} mV)" if m['post'] else ''))
+    f_ = mon['fault']
+    return '\n      '.join(out) + (f"\n      FAULT {f_[1]} at {f_[0]:.3f} s in {f_[2]}" if f_ else '')
 
 
 def parse(argv):
@@ -444,7 +698,11 @@ if __name__ == '__main__':
              f"dC {p['dC']} acc_shift {p['acc_shift']}")
           + (f"  D-5 d5 {p['d5']} lag_lim {p['lag_lim']} d5_back {p['d5_back']} d5_step {p['d5_step']} "
              f"d5_sticky {p['d5_sticky']}"
-             if p['d5'] else '') + (f"  blk_lim {p['blk_lim']}" if p['blk_lim'] else ''))
+             if p['d5'] else '') + (f"  blk_lim {p['blk_lim']}" if p['blk_lim'] else '')
+          + (f"  PASM pasm {p['pasm']} v_dt {p['v_dt']} i_noise {p['i_noise']} (fold k {fold_threshold(p)[0]} "
+             f"floor {fold_threshold(p)[1]} at i_limit {p['i_limit']})" if p['pasm'] or p['v_dt'] else '')
+          + (f"  cap_lift {p['cap_lift']}" if p['cap_lift'] else '') + (f"  boost_run {p['boost_run']}" if p['boost_run'] else '')
+          + (f"  blk_fix {p['blk_fix']}" + (f" blk_win {p['blk_win']}" if p['blk_fix'] == 2 else '') if p['blk_fix'] else ''))
     if mode in ('legs', 'design'):
         out = legs(p)
         bad = [k for k in (1, 2, 3, 4, 7) if not signature(out[k])] if mode == 'legs' else []
@@ -534,6 +792,50 @@ if __name__ == '__main__':
             for s_ in (1e9, 20.0, 10.0):
                 qk = dict(q); qk.update(ob_k=k_, ob_slip=s_)
                 print(f"ob_k {k_:6.0f} ob_slip {s_:10.0f} | {block_set(qk)}", flush=True)
+    elif mode == 'stepdn':
+        # «#3662» F-3: wheels up (as wheelsup), the schedule, the ladder's steps at the built-in ramps (accel 1,000,
+        #  decel 1,470 mm/s^2); the step at 2.5 s, its transition read over 2.5-4.0 s, the destination's steady 4.0-4.5 s
+        q = dict(p); q.update(m=0.0, Iz=0.0, Tc=0.20, Vbus=18.5)
+        print('-- stepdn: wheels up, schedule, built-in ramps; MEASURED (dual-a seq 16_708-16_719, 17_291): 80->20 tr_err_pk '
+              '101, tr_i_over 79 / 89 mV, tr_lag 26, tr_cap 367; 40->20 91, 25 mV, 0, 139; 20->80 71, 3 mV, 0, 0')
+        for a_, b_, ts, te in ((80_000_000, 20_000_000, 2.5, 4.0), (40_000_000, 20_000_000, 2.5, 4.0),
+                               (20_000_000, 80_000_000, 2.5, 4.0), (147_000_000, 0, 3.5, 5.6)):
+            # the last: PL-55's own case, a stop from 89 % of full power (Visit 2: over 10 A before the ceiling); its
+            #  'over steady' is the peak, the wheel being at rest after
+            mon = dict(t_from=ts, t_to=te, post=(te, te + 0.5))
+            run(q, -a_, te + 0.5, ('SCHED', None, -4), 0.5, prog=[(ts, -b_)], mon=mon)
+            print(f"  {a_ // 1_000_000:3} -> {b_ // 1_000_000:3}e6: {mon_line(mon)}", flush=True)
+    elif mode == 'reversal':
+        # «#3662» F-2: the floor, a straight drive at -175 tps (power 42: 68,391,000 per pass, RC-TEL l_ci_k), then at
+        #  2.5 s one of three commands: 'logged' -- the FlySky's at 31,110-31,870 ms (power 56, 98, 18, 0 at 0, 280, 520,
+        #  760 ms); 'reverse' -- to +175 tps; 'stop'. Ramps at the FlySky knobs' rates (setAcceleration /
+        #  setDeceleration: 33.958 steps per mm/s^2, jerk over RAMP_TAU_MS = 478 passes)
+        V175 = 68_391_000
+        seqs = (('logged', [(0.0, 91_711_000), (0.28, 161_668_000), (0.52, 28_416_000), (0.76, 0)], 2.5),
+                ('reverse', [(0.0, V175)], 3.5), ('stop', [(0.0, 0)], 2.0))
+        rates = [(p['rv_acc'], p['rv_dec'])] if p['rv_acc'] else [(1497, 1048), (1000, 1000), (2900, 1000),
+                                                                   (1000, 2600), (2900, 2600)]
+        print('-- reversal: floor, straight, from -175 tps; MEASURED (floor-rc, 31,110-32,134 ms, acc 1,497 / dec 1,048): '
+              'RIGHT re-synced in SPIN_DN at r_err 100, then FAULTED at 125')
+        n_f = 0; n_t = 0; tot = dict(win=0.0, held=0, boost=0, cap=0, iph=0.0, lag=-999)
+        for acc_mm, dec_mm in rates:
+            q = dict(p); q.update(straight=1)
+            q['accel_up'] = acc_mm * 33_958 // 1000; q['jerk_up'] = max(1, q['accel_up'] // 478)
+            q['accel_dn'] = dec_mm * 33_958 // 1000; q['jerk_dn'] = max(1, q['accel_dn'] // 478)
+            for name, sq, dur in seqs:
+                T0 = 2.5
+                mon = dict(t_from=T0, t_to=T0 + dur)
+                run(q, -V175, T0 + dur, ('SCHED', None, -4), 0.5, prog=[(T0 + a_, b_) for a_, b_ in sq], mon=mon)
+                n_t += 1; n_f += mon['fault'] is not None
+                for m in mon['w']:
+                    if m['c0'] is not None and m['c1'] is not None:
+                        c = [b_ - a_ for a_, b_ in zip(m['c0'], m['c1'])]
+                        tot['win'] += c[6] / 44; tot['held'] += c[0]; tot['boost'] += c[3]; tot['cap'] += c[1]
+                        tot['iph'] = max(tot['iph'], m['iph_pk']); tot['lag'] = max(tot['lag'], m['lag_pk'])
+                print(f"  acc {acc_mm:4} dec {dec_mm:4} {name:7}: {mon_line(mon)}", flush=True)
+        print(f"SUMMARY: lag faults in {n_f} of {n_t} transients; over all, both wheels: |err| in 82..88 for "
+              f"{tot['win']:.0f} ms, held {tot['held']}, ceiling-clamped {tot['cap']}, boost {tot['boost']} frames; "
+              f"lag_pk {tot['lag']}, Iph_pk {tot['iph']:.1f} A")
     elif mode == 'wheelsup':
         q = dict(p); q.update(m=0.0, Iz=0.0, Tc=0.20, Vbus=18.5)
         print('-- wheels up (no platform, J 0.006, Tc 0.20, 18.5 V), schedule; manual 6.4: swing 178-399, err_pk 76-86 at 10/20e6')

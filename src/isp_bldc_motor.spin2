@@ -2861,15 +2861,15 @@ PUB frontRefusal() : eStatus
     if (eStatus == NO_ERROR) and (isFrontEStopped() == TRUE)
         eStatus := ERR_EMERGENCY_STOPPED
 
-PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum
+PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum, bRun
 '' FRONT COG ONLY: once per pass -- the thermal derate of the current limit, and the blocked-motor test
 ''
 '' The phase current is estimated as a lower bound from the DC-link reading and the modulation depth,
 '' I_phase >= I_dc / (0.75 x m) with m = duty / (4 x frame_cnt) (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.4).
 '' Its ~1 s average above the continuous limit lowers the driver's fold-back to that limit, and the peak
-'' limit returns below I_RESTORE_PCT of it. A motor commanded to move that stays at the lag limit, or at a
-'' limiter, with no hall tick for BLOCKED_PASSES is blocked; the caller latches the protective stop. Records no
-'' error; a derate's engage and release are logged as EV_CURRENT_LIMIT (R20.1).
+'' limit returns below I_RESTORE_PCT of it. A motor commanded to move that stays at the lag limit, or that a
+'' limiter has acted on since its last hall tick, with no hall tick for BLOCKED_PASSES is blocked; the caller latches
+'' the protective stop. Records no error; a derate's engage and release are logged as EV_CURRENT_LIMIT (R20.1).
 ''
 '' @returns bBlocked - T/F where T means this motor has been blocked for BLOCKED_PASSES
 
@@ -2879,6 +2879,7 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum
 ' @local phaseMa - this pass's phase-current lower bound, mA
 ' @local nowPos - the driver's hall position this pass
 ' @local nowLimSum - the driver's duty_capped + foldback_frames this pass (mod 2^32)
+' @local bRun - T/F where T means the driver is in SPIN_UP or AT_SPEED, the states the limit hold acts in
 
     if rSenseForBoard <> VALUE_NOT_SET
         dutyEff := duty #> dutyFloorEst
@@ -2897,14 +2898,22 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum
             frontQueueEvent(EV_CURRENT_LIMIT, limitPeakA)
 
     ' The blocked count: a pass with a drive commanded, a driving state and no hall tick since the previous pass, on
-    '  which the field is held past LAG_SOFT OR (PL-167 D-5b) a limiter acted since the previous pass. Under D-5 a wheel
-    '  stopped at its limit is held at LAG_LIM, below LAG_SOFT, so |err| alone never counts it; a limiter acts there on
-    '  every pass (HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.9.5). The limiter half counts only in SPIN_UP or AT_SPEED, the
-    '  states D-5's limit hold acts in: in SPIN_DN the field is still held at LAG_HOLD (so |err| counts a stall there),
-    '  and the PL-55 ceiling clamping a slow-down is not a blocked wheel. A tick, or a pass with neither, restarts it.
+    '  which the field is held past LAG_SOFT OR (PL-179 F-a) a limiter has acted since the wheel's last hall tick. Under
+    '  D-5 a wheel stopped at its limit is held at LAG_LIM, below LAG_SOFT, so |err| alone never counts it; and the
+    '  fold-back at a low limit acts in single frames, not on every pass (the 2026-10-02 stall: 18 % of passes at most,
+    '  HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.10.3), so the limiter half is STICKY: set by the first limiter action after a
+    '  tick, cleared by the next tick (I-8: it latches BLOCKED_PASSES passes after that first action, whatever the
+    '  limiter does after it). The limiter half counts only in SPIN_UP or AT_SPEED, the states the limit hold acts in:
+    '  in SPIN_DN the field is still held at LAG_HOLD (so |err| counts a stall there), and the PL-55 ceiling clamping a
+    '  slow-down is not a blocked wheel. A tick, or a pass with neither, restarts the count.
     nowPos := pos
     nowLimSum := duty_capped + foldback_frames
-    if ((targetIncre & !SYNC_BIT) <> 0) and ((abs(err) >= LAG_SOFT) or ((nowLimSum <> blockedLimiterSum) and ((drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED)))) and (nowPos == blockedPos) and ((drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED) or (drv_state == DCS_SPIN_DN))
+    bRun := (drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED)
+    if (nowPos <> blockedPos) or ((targetIncre & !SYNC_BIT) == 0) or (bRun == FALSE)
+        bLimSinceTick := FALSE                                                  ' a tick, no drive, or not running (I-8)
+    elseif nowLimSum <> blockedLimiterSum
+        bLimSinceTick := TRUE                                                   ' a limiter acted with no tick since
+    if ((targetIncre & !SYNC_BIT) <> 0) and ((abs(err) >= LAG_SOFT) or bLimSinceTick) and (nowPos == blockedPos) and (bRun or (drv_state == DCS_SPIN_DN))
         blockedPasses++
     else
         blockedPasses := 0
@@ -2926,6 +2935,7 @@ PUB frontProtectiveStop(eProtectiveCode)
     if protectiveCode == NO_ERROR
         protectiveCode := eProtectiveCode                                       ' 2. latch last; the first cause sticks
     blockedPasses := 0
+    bLimSinceTick := FALSE
 
 PUB frontClearProtective()
 '' FRONT COG ONLY: forget the latched protective cause; the caller then releases the emergency stop that secured the motor
@@ -2933,6 +2943,7 @@ PUB frontClearProtective()
 
     protectiveCode := NO_ERROR
     blockedPasses := 0
+    bLimSinceTick := FALSE
 
 PUB frontSetCurrentLimits(peakAmps, contAmps)
 '' FRONT COG ONLY: replace both current limits (TEST-USE), and restart the average at the peak limit
@@ -4525,6 +4536,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     blockedPasses := 0
     blockedPos := 0
     blockedLimiterSum := 0                                                  ' PL-167 D-5b: the driver zeroes both counts at start
+    bLimSinceTick := FALSE                                                  ' PL-179 F-a
     ' R19.4: nothing checked and nothing probed until runStartChecks()
     probe_phase := PRB_NONE
     probe_sink := PRB_NONE                                                  ' R19.4 1e: no return phase, and the probe's own 50 %
@@ -6803,7 +6815,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 47      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 48      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7044,6 +7056,19 @@ CON { driver internal Constants }
                                             '     441 -> 443 of 496 (servoBoost's CALL, lim_seen); run image 457
                                             '     -> 486 of 512 (servoBoost 7, holdGate 16, the snapshots 6);
                                             '     start image 144 unchanged; all read from the compiler.
+                                            '     PASM (cog + LUT) and Spin2 change; no ABI change
+                                            ' 48: PL-179 / PL-180, after the 6.1.0 visit
+                                            '     (HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.10). F-a: the blocked
+                                            '     count's limiter half is sticky from the first limiter action
+                                            '     after a hall tick until the next tick (bLimSinceTick), so a
+                                            '     fold-back that acts in single frames still latches the stop.
+                                            '     C4: once the limit hold sets the field back it stays armed
+                                            '     (lim_arm, lim_pos) until the rotor ticks forward, so the field
+                                            '     never walks back into the 82..88 fault window between folds.
+                                            '     S-1: the PL-55 ramp-down ceiling lifts at SERVO_SETPOINT, not
+                                            '     LAG_SOFT, so a slow-down no longer kicks. Cog 443 -> 446 of
+                                            '     496 (lim_arm, lim_pos, .clearRun's disarm); run image 486 ->
+                                            '     499 of 512; start image 144 -> 145; read from the compiler.
                                             '     PASM (cog + LUT) and Spin2 change; no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
@@ -7471,6 +7496,8 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    blockedLimiterSum           ' front-written: PL-167 D-5b, duty_capped + foldback_frames (mod 2^32) at the previous
                                         '  pass, for the blocked test. Spin2 only: outside both PASM-addressed runs, inside
                                         '  the range isAbiLayoutValid() checks (protectiveCode .. holdLimitMs)
+    LONG    bLimSinceTick               ' front-written: PL-179 F-a, T/F where T means a limiter acted in SPIN_UP / AT_SPEED
+                                        '  with no hall tick since; every pass counts until a tick. Spin2 only, in that range
     LONG    cmdTimeoutMs                ' front-written (start() before launch): S-8 command timeout, ms; CMD_TIMEOUT_OFF when off
     LONG    lastDriveMs                 ' front-written: getms() when the last drive command was applied, or the timeout set
     LONG    bCmdWatched                 ' front-written: T/F where T means a drive is being watched by the timeout (PL-143: every drive)
@@ -7796,12 +7823,16 @@ drvMotor                                                ' global (task 3535): en
                 call    #passEnd                        ' PL-138: a release asked for leaves here, and never returns; else
                                                         '  R18.4 D-1: the duty this pass's field speed needs (LUT-resident)
                 ' PL-55: duty ceiling -- during a ramp-down, duty scales with the field's speed (duty0 * |drv_incr|
-                '  / incr0) so drive voltage falls with back-EMF; lifted whenever the rotor trails by LAG_SOFT
+                '  / incr0) so drive voltage falls with back-EMF; lifted whenever the rotor trails by SERVO_SETPOINT.
+                '  PL-180 S-1 (DRIVER_REV 48): it lifted at LAG_SOFT, D-2's threshold, so a slow-down that needed
+                '  motoring held the duty down until the boost started from it: the 80 -> 20 step's current kick
+                '  (HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.10.5). The ceiling binds only while the rotor is at or ahead of
+                '  the servo's own point, the overrun PL-55 exists for (I-10)
                 mov     duty_cap_, duty_max_
                 cmp     drv_state_, #DCS_SPIN_DN     wz  ' Q: ramping down?
     if_nz       cmp     drv_state_, #DCS_SLOW_TO_CHG wz
     if_nz       jmp     #.capDone                       ' NO: no ceiling beyond duty_max_
-                cmps    lag_s, #LAG_SOFT             wc  ' Q: rotor trailing by LAG_SOFT or more? (NC)
+                cmps    lag_s, #SERVO_SETPOINT       wc  ' Q: rotor trailing by SERVO_SETPOINT or more? (NC)
     if_nc       jmp     #.capDone                       ' YES: the motor needs the torque, no ceiling
                 tjz     incr0, #.capDone                ' Q: no recorded start speed? (never divide by 0) TJZ writes no
                                                         '  flag (p2kbPasm2Tjz); Z is dead from here to .ctlMotor's CMP WZ (WP3)
@@ -8102,6 +8133,7 @@ drvMotor                                                ' global (task 3535): en
                 mov     accel_now_, #0                  '  e-stop kept drv_incr, and a restart at the same speed declared
                 mov     fwdrev, #0                      '  AT_SPEED against a stopped wheel and faulted. PL-160: and no acceleration
                 mov     fault_stop, #0                  ' R19.3: an e-stop or a fault reset also ends a re-synced fault's stop
+                mov     lim_arm, #0                     ' PL-179 C4: and disarms the limit hold
     _ret_       mov     angle_, #0                      ' .rampUp's drv_incr == 0 path re-seeds the angle from the halls
 
 .checkstopfloatoff                                      ' now at rest: the bridge takes the user's stop mode
@@ -8349,6 +8381,10 @@ lim_seen        res 1       ' PL-167 D-3: duty_capped_ + foldback_cnt_ (mod 2^32
                             '  SPIN_UP nor AT_SPEED (gettgtincr). Never read before it is written, so not zeroed at
                             '  start: its one reader, holdGate, runs only after gettgtincr in the same pass, and the
                             '  first pass's state is DCS_STOPPED (the start sequence's), which gettgtincr re-takes
+lim_arm         res 1       ' PL-179 C4: non-zero while the limit hold stays armed (holdGate): from a set-back until the
+                            '  rotor ticks forward past lim_pos, or a state other than SPIN_UP / AT_SPEED. Zeroed at
+                            '  driver start, by .clearRun and by driveFromRest, so no drive starts armed
+lim_pos         res 1       ' PL-179 C4: pos_ at the set-back that armed it
 duty_cap_       res 1       ' PL-55: duty ceiling, duty_max_ except while ramping down
 duty0           res 1       ' PL-55: duty_ where the current ramp-down started
 incr0           res 1       ' PL-55: |drv_incr| where the current ramp-down started
@@ -8464,7 +8500,8 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
 '                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
 
 ' $1f8 for reg cogs
-    fit     496  ' 443 USED, 53 FREE, 2026-10-02 at DRIVER_REV 47 (PL-167: D-2's CALL to servoBoost in .servoTrim and
+    fit     496  ' 446 USED, 50 FREE, 2026-10-02 at DRIVER_REV 48 (PL-179 C4: the registers lim_arm and lim_pos and
+                 ' .clearRun's disarm; 443 at DRIVER_REV 47, PL-167: D-2's CALL to servoBoost in .servoTrim and
                  ' D-3's register lim_seen; holdGate's CALL took the place of .justIncr's CMPS; 441 at DRIVER_REV 45,
                  ' memory reduction WP5: planFp's BMASK and planCorner's trims, C5; 449 at DRIVER_REV 44, WP4, the hall
                  ' table as nibbles carrying the integrity events; 469 at
@@ -8472,11 +8509,12 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
                  ' longs back in cog RAM; 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) --
                  ' read from the compiler, never hand-counted (a hand count here once ran ~80 short): `pnut-ts -l
                  ' isp_bldc_motor.spin2`, PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1BA, the last
-                 ' register, so USED is $1BB). LUT code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but
+                 ' register, so USED is $1BB; $1BD at DRIVER_REV 48, USED $1BE). LUT code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but
                  ' instruction operands reach only cog RAM, so REGISTERS are what this budget is for; code can live in the
                  ' LUT images below (task 3535), read the same way (2026-10-02): the start image, lutCodeStart $200 to
-                 ' lutCodeEnd $290, 144 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3E6, 486
-                 ' of 512 longs (26 free at DRIVER_REV 47; 457 at DRIVER_REV 45, before PL-167's 7-long servoBoost (D-2),
+                 ' lutCodeEnd $291, 145 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3F3, 499
+                 ' of 512 longs (13 free at DRIVER_REV 48, after PL-179 C4's holdGate arming and driveFromRest's disarm;
+                 ' 486 and 144 at DRIVER_REV 47; 457 at DRIVER_REV 45, before PL-167's 7-long servoBoost (D-2),
                  ' 16-long holdGate (D-5) and the six longs of D-3's lim_seen snapshots in gettgtincr and passEnd; 476
                  ' until WP5 merged planStage and trimmed run and planSat). Until DRIVER_REV 41
                  ' the LUT held 507 resident longs, with the planner's 126-long overlay over the start sequence.
@@ -8650,6 +8688,7 @@ lutCodeStart
                 mov     hall_missed_, #0                ' integrity counts restart with every driver start
                 mov     hall_illegal_, #0
                 mov     lag_held_, #0                   ' R18.1: the health counters restart with them
+                mov     lim_arm, #0                     ' PL-179 C4: no driver starts with its limit hold armed
                 mov     duty_capped_, #0
                 mov     fault_resyncs_, #0              ' R19.3: and the re-sync count, with no stop pending,
                 mov     foldback_cnt_, #0               ' R20.1: and the fold-back count,
@@ -8739,7 +8778,7 @@ driveinit                                               ' init drive pwm
 
 lutCodeEnd                                              ' the LUT START IMAGE ends here (task 3535; DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the start image is 144 of 512 longs, read from the compiler 2026-09-27 at DRIVER_REV 45 and 2026-10-02 at DRIVER_REV 47 (LUTCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the start image is 145 of 512 longs, read from the compiler 2026-10-02 at DRIVER_REV 48 (PL-179 C4's start disarm; 144 at DRIVER_REV 45-47) (LUTCODEEND's VALUE)
 
 ' =========================================================================
 '  THE LUT RUN IMAGE (DRIVER_REV 42, memory reduction WP2, C2): every routine that runs only once the drive loop has
@@ -8827,13 +8866,30 @@ holdGate                                                ' C-5 and PL-167 D-5 (HO
                                                         '  the rotor stays in its sector. (I-7) the set-back moves the field,
                                                         '  never the direction err_ is read in: prior_angle moves with angle_,
                                                         '  so .ctlMotor's CMPM sees no move and fwdrev keeps its side.
+                                                        '  (I-9, PL-179 C4) from a wheel's first set-back until its rotor
+                                                        '  ticks forward, the limit hold stays ARMED and acts on every running
+                                                        '  pass, limiter or not: the field stays at most LAG_LIM ahead, so it
+                                                        '  never walks back between the fold-back's single frames into the
+                                                        '  82..88 window where one tick against it faults (4.10.4). An armed
+                                                        '  pass with no limiter keeps Z, so D-3 still gives way only at one.
                                                         '  On every other pass C is the LAG_HOLD compare's, as before PL-167
                 mov     tmpX, duty_capped_              ' D-3's fact: a limiter acted since the previous pass -- the duty
                 add     tmpX, foldback_cnt_             '  ceiling's count plus the fold-back's, both unbounded and summed mod
                 cmp     tmpX, lim_seen              wz  '  2^32, against lim_seen (gettgtincr, passEnd). Z: no limiter acted
-    if_nz       cmp     drv_state_, #DCS_SPIN_DN    wc  ' C: SPIN_UP or AT_SPEED (2, 3 < DCS_SPIN_DN 4; .justIncr's states
-    if_nz_and_c jmp     #.limHold                       '  are jerkStep's, SPIN_UP .. SLOW_TO_CHG). JMP writes no flag
-    _ret_       cmps    lag_s, #LAG_HOLD            wc  ' today's gate: C = lag_s < LAG_HOLD, the field advances
+                cmp     drv_state_, #DCS_SPIN_DN    wc  ' C: SPIN_UP or AT_SPEED (2, 3 < DCS_SPIN_DN 4; .justIncr's states
+                                                        '  are jerkStep's, SPIN_UP .. SLOW_TO_CHG). CMP WC writes C only: Z kept
+    if_nc       mov     lim_arm, #0                     ' C4: any other state disarms the hold,
+    if_nc       jmp     #.today                         '  and takes today's gate. JMP writes no flag
+                tjz     lim_arm, #.noArm                ' C4: armed? has the rotor ticked forward past its armed sector?
+                mov     tmpX, pos_                      '  TJZ, MOV, SUB and NEG write no flag here
+                sub     tmpX, lim_pos
+                testb   drv_incr, #31               wc  '  ticks forward, in the field's direction (TESTB writes C only)
+    if_c        neg     tmpX
+                cmps    tmpX, #1                    wc  '  NC: one tick or more forward: the load gave way (CMPS WC: C only)
+    if_nc       mov     lim_arm, #0                     '  so disarm
+.noArm  if_z    tjz     lim_arm, #.today                ' no limiter this pass and not armed: today's gate
+                jmp     #.limHold                       ' a limiter acted, or the hold is armed: the limit hold
+.today  _ret_   cmps    lag_s, #LAG_HOLD            wc  ' today's gate: C = lag_s < LAG_HOLD, the field advances
 .limHold        cmps    lag_s, #LAG_LIM             wc  ' the limit hold: C = lag_s < LAG_LIM, the field advances
     if_c        ret                                     ' RET without WC/WZ keeps C and Z (p2kbPasm2Ret)
                 mov     tmpX, lag_s                     ' held: the set-back, (lag_s - LAG_LIM) << 24 in angle_ units,
@@ -8847,6 +8903,8 @@ holdGate                                                ' C-5 and PL-167 D-5 (HO
                 sub     prior_angle, tmpX               ' I-7: CMPM's C is the sign of angle_ - prior_angle (p2kbPasm2Cmpm);
                                                         '  a bare set-back would flip fwdrev for a forward drive, and the
                                                         '  error would be read against the other offset while held
+                mov     lim_pos, pos_                   ' PL-179 C4: arm the hold at this sector (MOV writes no flag here)
+                mov     lim_arm, #1
     _ret_       modc    _clr                        wc  ' C = 0: held. lag_held_ and holdDecay follow at .justIncr
 
 servoBoost                                              ' PL-167 D-2 (HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.2): called by .servoTrim each
@@ -9044,6 +9102,7 @@ restBridge                                              ' R19.1: once per drive 
     _ret_       mov     bridge, #BR_SHORT               ' the front cog handed the hold off (slip or time limit): phases shorted
 
 driveFromRest                                           ' R19.1: about to drive from rest, or to hold again after a hand-off
+                mov     lim_arm, #0                     ' PL-179 C4: a drive from rest starts with the limit hold disarmed
                 cmp     bridge, #BR_DRIVE           wz  ' Q: already driven? (SM_BRAKE held at rest keeps its field)
     if_z        ret
                 mov     duty_, duty_min_                ' coasting or shorted: reset duty, which reduces jerk if not fully aligned,
@@ -9455,7 +9514,7 @@ rampOut
 
 runCodeEnd                                              ' the LUT RUN IMAGE ends here (DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the run image is 486 of 512 longs, 26 free, read from the compiler 2026-10-02 at DRIVER_REV 47, PL-167 D-2, D-3, D-5 (RUNCODEEND's VALUE; 457 at DRIVER_REV 45)
+                fit     $400  ' LUT RAM boundary; the run image is 499 of 512 longs, 13 free, read from the compiler 2026-10-02 at DRIVER_REV 48, PL-179 C4 (RUNCODEEND's VALUE; 486 at DRIVER_REV 47, PL-167 D-2, D-3, D-5; 457 at DRIVER_REV 45)
 
 CON { license }
 {{

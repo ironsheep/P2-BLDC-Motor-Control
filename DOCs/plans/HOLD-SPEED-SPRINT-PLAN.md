@@ -163,7 +163,9 @@ limit" and `EV_PATH_LIMIT` "both wheels slowed together because one is at its li
 **Why.** The §9 visit found that a blocked platform no longer stops itself (PL-179), and two lag faults and a slow-down
 kick that DRIVER_REV 46 did not show (PL-180) (`DOCs/analyses/bench/2026-10-02/VISIT-6.1.0-EVALUATION.md` §3.2, §4a).
 **Deliverable:** the desk root cause of each, in the model, then the blocked count's fix (and the faults' fix if they
-share a cause); a new driver function goes to Stephen with its benefit before it is built (P5). **Verify:** the model
+share a cause); a new driver function goes to Stephen with its benefit before it is built (P5). **Ruled and built
+(2026-10-02):** design §4.10; STEPHEN *"yes, a"*: F-a (sticky blocked count), C4 (the limit hold armed until a forward
+tick), S-1 (the PL-55 ceiling lifts at `SERVO_SETPOINT`), DRIVER_REV 48. **Verify:** the model
 reproduces the COAST non-latch before and latches in 988-1,168 ms after; the next visit's `floor-obstacle` load is its
 certification, with this visit's COAST trial as its negative.
 
@@ -172,9 +174,10 @@ certification, with this visit's COAST trial as its negative.
 **Why.** In the FlySky drive, a full left or right turn stops one wheel and drives the other; the stopped wheel rolled
 backward up to 225-250 tps, so the platform spun about its centre (Stephen saw it; the telemetry confirms it). **Cause
 (found 2026-10-02):** the inner wheel gets plain power 0, stops, and coasts by the FlySky program's stop selection
-(`holdAtStop(false)`); the platform's yaw drives the free wheel back. No hold was engaged. **Deliverable:** Stephen's
-choice of what a pivot's inner wheel does (hold selected in the demo, or a pivot-only hold in the drive), brought with
-its benefit and cost (P5), then built.
+(`holdAtStop(false)`); the platform's yaw drives the free wheel back. No hold was engaged. **Ruled (STEPHEN 2026-10-02,
+*"yes your recommendation"*):** the FlySky demos select hold at rest, the user docs say a pivot needs hold, and the RC
+harness judges the wheel at rest in every pivot (RC-PIVOT). A pivot-only hold in the drive is the fallback if the
+second visit shows hold does not stop the spin.
 **Verify:** the next visit's FlySky drive and a harness pivot leg that judges the stopped wheel's travel in the log.
 
 ---

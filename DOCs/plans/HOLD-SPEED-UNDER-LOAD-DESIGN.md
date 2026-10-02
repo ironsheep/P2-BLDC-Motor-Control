@@ -816,6 +816,450 @@ Three differences from the sketch above, each a correction found in the build:
 Costs from the listing: cog 443 used / 53 free; LUT run image 486 / 26 free; +20 clocks per trim frame (D-2), +28 per
 pass unlimited, +48 on a set-back pass; worst window 2,221 clocks, 61.1 % of the 160 MHz frame (budget 75 %).
 
+### 4.10 — after the 6.1.0 visit: the blocked count, the transient faults («#3662», PL-179, PL-180)
+
+**Status: DESIGN, phase 1 of 2 (cause and shape). No driver code is changed by this section.** It answers the 6.1.0
+visit's F-1, F-2 and F-3 (`DOCs/analyses/bench/2026-10-02/VISIT-6.1.0-EVALUATION.md` §3.2, §3.4, §2.2, §4a, §8) and the
+PL-181 watch question (§4.10.10). One part is a new driver behaviour (C4, §4.10.6), so it goes to Stephen with its
+benefit before anything is built (P5).
+
+Command shorthand for this section (`S=DOCs/plans/servo-model`, every run `python3 $S/spin2_model.py <mode> ...`):
+- `CAL` = `pasm=1 v_dt=0.18 i_noise=3`, the model corrected to the PASM and calibrated to the stall (§4.10.2);
+- `R46` = no drive flags (DRIVER_REV 46's drive); `R47` = `acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1` (as built);
+- `FIX` = `R47 cap_lift=48 d5_sticky=1 blk_fix=1` (the recommended set: S-1, C4, F-a).
+
+#### 4.10.1 Summary for Stephen
+
+- **F-1, the blocked stop that did not latch. Cause: SETTLED.** At the 2 A test limit the current fold-back does not
+  act on every pass. It acts in single frames, about 100-180 times a second on the bench (every 15-27 ms in the
+  model). The blocked count's limiter half restarts on every 1 ms pass without one, so it never reaches 1,000 in a
+  row. The driver's own counter shows it: in the ~9.5 s stall LEFT folded on 1,677 frames and RIGHT on 914
+  (`EV_FOLDBACK` release values, `debug_261002-103634.log` seq 22-23). At most 18 % and 10 % of the front passes could
+  have counted. §4.9.5's model latched because it folded on every frame
+  (its fold read the true phase current, and that was over 2 A even at `duty_min`). The driver's fold reads the DC link
+  against a threshold floored at duty 2,454 (§4.10.2).
+- **F-2a, the lag fault at obstacle contact. Cause: consistent with, modelled.** Between two folds the field is not
+  limited, so it walks back up from 64 towards `LAG_HOLD`. That walk crosses |err| 82..88, where one hall tick against
+  the field reads 125 or more: the fault lattice of §4.9.4, which D-5 meant the field to avoid. The bench's COAST stand
+  read RIGHT `o_e` −81 to −87 and LEFT `e` 82-84. In the model, a rocking obstacle gives **7 lag faults in 16 contacts
+  under DRIVER_REV 47, against 1 under DRIVER_REV 46**.
+- **F-2b, the FlySky reversal fault. Cause: NOT established. The model does not reproduce it.**
+  - D-5 plays no part: a slow-down is SPIN_DN or SLOW_TO_CHG, where the limit hold does not act, and the model's
+    numbers are identical with it on and off.
+  - The evaluation's hypothesis that D-2 and D-5 act against each other in a reversal is refuted.
+  - The modelled exposure is lower in REV 47 than in REV 46.
+  - The fault's last step is the same lattice (r_err 77 then 125, with `r_pos` 146 → 145).
+  - No driver change is designed for it. The next drive's hard reversal is its reading.
+- **F-3, the slow-down current kick. Cause: consistent with, modelled.** On a slow-down the PL-55 ceiling holds the
+  duty under what the wheel needs, so the lag climbs to `LAG_SOFT`. There the ceiling lifts and D-2's boost starts at
+  the same moment, from a clamped duty. D-2 alone takes the modelled 80 → 20 kick from +52 to +99 mV. D-5 changes no
+  digit.
+- **The fix: three separable parts.**
+  - **F-a, front cog (Spin2).** The blocked count's limiter half becomes *sticky*: once a limiter has acted with no
+    hall tick since, every pass counts until the next tick. One limiter action is enough, whatever the pattern.
+  - **C4, driver (PASM, a new behaviour).** Once the limit hold has set the field back, it stays the hold until the
+    rotor ticks forward. The field then never walks back into the fault window while the wheel is at its limit.
+  - **S-1, driver (one immediate).** The PL-55 ceiling lifts at `SERVO_SETPOINT` (48) instead of `LAG_SOFT` (80).
+- **Benefit (MODELLED, CAL; details in §4.10.8).**
+  - Blocked on a solid object: a protective stop 1,000-1,050 ms after the last tick on 15 of 16 contacts, where
+    DRIVER_REV 47 never stops.
+  - Rocking obstacle: lag faults 7 → 0 of 16, and 15 of 16 latched.
+  - The 80 → 20 kick: +115 / +105 → +52 / +52 mV.
+  - Every §5 row: identical, or better by 0.1 point.
+- **Cost (ESTIMATE): no ABI change.** F-a: +1 Spin2-only VAR long per motor. C4: about +12 LUT longs (26 → ~14 free),
+  +3 cog longs (53 → 50) and +8-16 clocks per drive pass. S-1: nothing.
+- **RULED (STEPHEN 2026-10-02, *"yes, a"*): build all three** (F-a, C4, S-1).
+- **Recommendation: all three.**
+  - F-a is the ⛔ fix.
+  - C4 is needed with it. F-a alone still faults on 4 of 16 rocking contacts before its latch, and C4 alone never latches.
+  - S-1 costs nothing and clears F-3.
+
+#### 4.10.2 The model, corrected to the PASM
+
+Every correction below is off by default (`pasm=0`), so every earlier command reproduces its numbers. The arbiter's
+must-not-change input, `block acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1`, printed the same 15 lines before
+the edit and after it. `legs` and `release acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1` were also diffed against a
+copy of the original file, with no difference.
+
+| `pasm=1` | The PASM (authority) | What the model did |
+|---|---|---|
+| (a) **the fold-back**: a frame folds when the whole-mV net DC-link reading is above `(max(duty, duty_floor) × k) >> 16`. k = 3 × amps × 150 mV/A × 65,536 / (16 × 6,136) = 600 at 2 A, and the floor is 2,454 (m = 0.1) | `:8000-8033`, `currentLimitK()` `:6304-6321`, `setFoldLimit()` `:6323-6344` | folded on `hypot(id, iq) > i_limit`. Its stalled wheel drew 2.66 A at `duty_min`, so it folded on every frame. That is the `limited 53,886-56,311` of the must-not-change run |
+| (b) **the PL-55 ceiling**: in SPIN_DN / SLOW_TO_CHG, `duty_cap = duty0 × |drv_incr| / incr0` unless the pass's `lag_s` ≥ `LAG_SOFT`. `duty0` and `incr0` are taken on the pass the state first turns down | `:7798-7817`, `:8985-8991` | no ceiling (§4.9.10 "not checked") |
+| (c) `lim_seen` re-taken when the previous pass's state was neither SPIN_UP nor AT_SPEED | `gettgtincr` `:8763-8766` | no re-take (the build's mutant m1) |
+| (d) the blocked count's limiter half only in SPIN_UP / AT_SPEED | `bFrontProtect()` `:2907` | also in SPIN_DN |
+| (e) the set-back signed by `err_` | `holdGate` `:8842` | signed by `drv_incr` |
+| (f) `fwdrev` follows the field's last move | `.ctlMotor` `:7967-7968` | fixed per run. The model's two directions' e90 are mirror fits, so at a flip its reading moves 128 − 2·e90 ≈ 12 counts where the driver's moves 2L (29 at L = 20.5°). **A model limit**, met only when a reversal crosses zero |
+
+Also under `pasm=1`: a wheel at rest is modelled as a coasting, unfaultable bridge (`:7983`). And the 82..88 window
+is counted in the driver's integer reading. `SAR 24` floors, so on the negative side a real lag of 81.4 already reads
+−82 and faults on a tick. **§4.9.4's 82.3-88.3 band is the positive side only; in integer readings it is |err| 82..88
+on both sides** (DERIVED; the model's fault context below shows −82 → −125).
+
+**Two physical parameters, FITTED.**
+- **`v_dt` = 0.18 V.** This is the bridge's dead-time voltage, opposing the phase current; ke is refitted with it, so
+  the 20×10⁶ ladder point keeps 170 per 10⁶.
+  - It is fitted to one bench reading: the 2 A stall's duty of 2,054-2,378 (COAST trace `d`, `k` 700-2,975). The
+    model gives 1,939-2,166 (`block ob_n=16 ob_k=50000 R47 CAL diag=1`).
+  - A reading it was not fitted to agrees. The wheels-up ladder needs 475 duty counts above proportional (80×10⁶
+    12,453, 20×10⁶ 3,469; `debug_261002-100025.log` seq 16_712, 16_717), which is 0.18 V at 18.5 V.
+- **`i_noise` = 3 mV.** The DC-link reading's jitter, matching the stand's raw `i` of 22-29.
+
+**The calibration against the COAST trial.**
+
+| COAST trial, 2 A | MEASURED | MODELLED, CAL (`block ob_n=16 ob_k=50000 [R46/R47] CAL diag=1`) |
+|---|---|---|
+| DRIVER_REV 46: the stop | stand 1,183 / 1,092 ms (2026-09-30 seq 362) | 15 of 16 latched, stand 1,000-1,051 ms (the model runs ~100 ms short, as in §7 Q1) |
+| DRIVER_REV 47: the stop | none in 9.2 s (seq 327) | **0 of 16 latched**, 15 rocked unlatched for 7.8 s, 1 lag fault at contact |
+| REV 47: |err| over the stand | LEFT 64-84; RIGHT up to 87 | 64..83 (one contact 22..108) |
+| REV 47: duty over the stand | 2,054-2,378 (LEFT) | 1,939-2,166 |
+| REV 47: fold frames per second | 176 LEFT, 96 RIGHT | 61-77 |
+
+The model folds less often than the bench, so it under-states how often the limiter half could count: the bench's 18 %
+is the stronger evidence.
+
+#### 4.10.3 F-1: why the blocked count never reached 1,000
+
+**The mechanism (MODELLED, CAL; `diag` lines of `block ob_n=16 ob_k=50000 R47 CAL diag=1`):**
+1. On a limited pass D-5 sets the field back to 64, and the trim, at |err| − 48 = 16, lifts the duty by about 1/65,536 of
+   itself per frame.
+2. A fold takes 1/64 of the duty. The trim needs ~1,000 frames (23 ms) to win it back, so the next fold waits.
+3. Between folds no limiter acts, so the hold is `LAG_HOLD` and the field advances again. `jerkStep`'s lag gate is open
+   below `LAG_SOFT`, so the generator even re-accelerates it. The lag climbs from 64 to 80-84, where D-2's boost lifts
+   the duty to the next fold.
+4. Result per stand: **a limiter on 6.1-7.2 % of the front passes, never on more than 2 in a row, with gaps of 16-27
+   passes**, and |err| ≥ `LAG_SOFT` on 1-7 % of passes. The count's longest run was 108 passes in all 16 contacts.
+
+**The separating reading (SETTLED).** §4.9.5's premise ("a limiter acts there on every pass") predicts a fold-back
+count rising at least once per front pass: ~9,500 over the 9.5 s stall. The driver's counter rose 1,677 (LEFT) and
+914 (RIGHT) in total. In the model, the same flags with only the fold's criterion switched (`pasm=0` → `pasm=1`, no
+`v_dt`) take the stall from 53,886-56,311 limited frames in ~1.2 s (all 6 contacts latched) to 1,382-2,123 in 7.8 s
+(none of 3 latched; a limiter on 6.0 % of passes, longest run 1). With CAL it is ~560 in 7.8 s.
+
+**Why the |err| half does not cover the gaps.** The lag reaches 80 only at the top of each walk: its stand range is
+64..83 in the model and 64-84 on the bench. It cannot count a pass at 64-79.
+
+#### 4.10.4 F-2: the two lag faults
+
+**(a) At obstacle contact (BRAKE trial, RIGHT): the field walks through the window between folds. Consistent with,
+MODELLED.**
+- **The bench.**
+  - In the COAST stand the RIGHT reading sat at −81..−87 several times: `o_e` −87 (`k` 675), −83 (750), −81 (1,525).
+    LEFT read 82-84 (`k` 1,450, 1,575, 1,600, 1,800). That is inside the band where a tick against the field faults.
+  - The COAST rotor did not rock. In the BRAKE trial it did: RIGHT `o_e` −71 at `k` 705, re-synced by `k` 721, and
+    faulted at −125 (`k` 775).
+- **The model, one rocking contact** (`block ob_n=1 ob_x=0.152521 ob_k=1000 R47 CAL diag=1`, its printed fault
+  context).
+  - RIGHT, in SPIN_UP: its 120th set-back takes the reading to −64, and with no limiter after it the reading walks
+    −64 → −82 over 16 ms at duty ~1,950-2,010.
+  - The spring pushes the rotor one sector back: −125. Lag fault.
+- **The model, the grid** (16 contacts each; latched / rocked unlatched / lag fault):
+
+| Obstacle | R46 | R47 | R47 + F-a | R47 + C4 | R47 + F-a + C4 (= FIX less S-1) | FIX |
+|---|---|---|---|---|---|---|
+| Solid, 50,000 N/m | 15 / 0 / 1 | 0 / 15 / 1 | 15 / 0 / 1 | 0 / 15 / 1 | 15 / 0 / 1 | 15 / 0 / 1 |
+| Rocking, 1,000 N/m | 11 / 4 / 1 | **0 / 9 / 7** | 10 / 2 / 4 | 0 / 14 / 2 | **15 / 1 / 0** | **15 / 1 / 0** |
+| Rocking, 3,000 N/m | 10 / 5 / 1 | 0 / 13 / 3 | 13 / 1 / 2 | — | 15 / 1 / 0 | 15 / 1 / 0 |
+| Rocking 1,000: time |err| read 82..88, all contacts; ticks against the field taken from it (a fault, or a miss by under a count at the reading's floor) | 4,312 ms; 1 | 1,187 ms; 11 | 644 ms; 8 | 22 ms; 2 | 1 ms; 0 | 1 ms; 0 |
+
+- **DRIVER_REV 46 spends more time in the window but takes fewer ticks from it.** Its field parks at 100, outside the
+  window, and crosses the window only while walking up after a *forward* tick. D-5's field drifts up while the spring
+  is pressing the rotor *back*. The ticks that fault are the backward ones. This explanation is consistent with the
+  numbers, not proven by them.
+- **The one solid-object fault** is the same in every column, R46 included. It is the contact transit §4.9.4 already
+  carries: AT_SPEED, the field walks 62 → 84 before any limiter acts, then one rebound tick takes it to 126 (the
+  `FIX diag=1` fault context). Nothing here changes it.
+
+**(b) The FlySky reversal (RIGHT, 31,942 / 32,134 ms): NOT reproduced; cause not established.**
+- **What the bench shows** (`debug_261002-104014.log` RC-TEL, field order in its `RC-FIELDS` line).
+  - From 31,550 ms RIGHT is in SLOW_TO_CHG (`r_dcs` 5), then SPIN_DN (4).
+  - Its rotor runs at about half its field's speed: `r_tps` 50 against ~103 tps of field.
+  - `r_err` sits at 90-101 for ~300 ms, at duty up to 10,623 and up to 4.07 A.
+  - After the re-sync (`r_err` 13) the field walks up again: 59, 93, 62, 77, then **125 at 32,150 ms, with `r_pos`
+    146 → 145, a tick against the field**. A fault from 77 needs the reading to have reached 82..88 first (DERIVED;
+    that sample is not in the 40 ms record).
+- **What the model shows** (`reversal [R46 / ... / FIX] CAL`): 15 slow-downs or reversals from −175 tps per run (the
+  logged stick sequence, a full reversal, a stop), at the knobs' rates (accel 1,000-2,900, decel 1,000-2,600). No run
+  takes a tick against the field, so none faults. The exposure:
+
+| Drive (`reversal <flags> CAL`) | lag faults | |err| in 82..88, all 15, both wheels | held passes | lag_pk | Iph peak |
+|---|---|---|---|---|---|
+| R46 | 0 / 15 | 3,541 ms | 1,307 | 103 | 21.6 A |
+| D-1 alone (`acc_shift=16`) | 0 / 15 | 1,102 ms | 142 | 102 | 16.3 A |
+| D-1 + D-2 | 0 / 15 | 887 ms | 30 | 100 | 23.0 A |
+| R47 | 0 / 15 | 897 ms | 36 | 101 | 28.7 A |
+| R47 without D-2 (`dB=0`) | 0 / 15 | 1,090 ms | 316 | 102 | 18.5 A |
+| R47 without D-5 (`d5=0`) | 0 / 15 | 897 ms (identical to R47) | 36 | 101 | 28.7 A |
+| R47 + S-1, and FIX | 0 / 15 | 626 ms | 37 | 101 | 28.7 A |
+
+- **D-5 changes no digit**, as it cannot: the limit hold acts only in SPIN_UP / AT_SPEED (`holdGate` `:8834`), and a
+  slow-down is SPIN_DN / SLOW_TO_CHG. So "D-2 and D-5 act against each other on a reversal" (evaluation §4a) is
+  refuted.
+- **The modelled exposure falls from DRIVER_REV 46 to 47**, so the model gives no reason to attribute the fault to
+  D-1..D-5.
+- **The model does not make the bench's excursion.** For the logged sequence, R47's RIGHT peaks at lag 96 and 0.47 A
+  of DC link; the bench sat at 100 with up to 4.07 A. The bench platform slowed far faster than the model's straight
+  drive. That load is outside the model: candidates are a caster swivelling at the direction change, or yaw. Its
+  measurement is the next visit's hard reversal (evaluation §5 item 4).
+- C4 does not apply here (SPIN_DN). S-1 lowers the window time by 30 %.
+
+#### 4.10.5 F-3: the slow-down kick
+
+**Readings** (`stepdn <flags> CAL`, wheels up). Columns: 80 → 20×10⁶ lag_pk, held passes, ceiling frames, boost
+frames; that step's DC-link peak over the destination's steady, L / R; the same for 40 → 20.
+
+| Drive | 80 → 20: lag / held / cap / boost | 80 → 20 kick | 40 → 20 kick |
+|---|---|---|---|
+| MEASURED, DRIVER_REV 47 (dual-a seq 16_718-16_719, 17_291) | 101 / 26 / 367 / — | +79 / +89 mV | +25 mV, cap 139 |
+| MEASURED, 2026-09-22 ladder (driver 4) | 84-92 / — / — / — | 0-19 mV | — |
+| R46 | 100-101 / 22, 16 / 2,978 / 0 | +50 / +50 mV | +42 / +35 |
+| D-1 alone | 101 / 36, 29 / 935 / 0 | +52 / +52 | +21 / +22 |
+| D-1 + D-2 | 101 / 13, 10 / 952 / 3,477 | **+99 / +94** | +52 / +44 |
+| R47 | 101 / 13, 10 / 952 / 3,518 | **+115 / +105** | +52 / +44 |
+| R47 without D-2 | 101 / 42, 34 / 935 / 0 | +52 / +52 | +22 / +23 |
+| R47 without D-5 | identical to R47 | +115 / +105 | +52 / +44 |
+| R47, boost only in SPIN_UP / AT_SPEED (`boost_run=1`, run without `i_noise`, which acts only on a fold) | 101 / 21, 19 / 935 / 734 | +140 / +134 | +63 / +53 |
+| **R47 + S-1** (`cap_lift=48`) | 95 / 0 / 66 / 2,150 | **+52 / +52** | +30 / +27 |
+| R47, no ceiling at all (`cap_lift=-200`) | 75 / 0 / 0 / 0 | +52 / +52 | +11 / +10 |
+
+The up-step (20 → 80) reads +5 mV in every row (bench +3).
+
+- **The cause (consistent with, MODELLED).**
+  1. The ceiling's line, `duty0 × v / v0`, has no room for the part of the duty that does not scale with speed: the
+     dead-time voltage and friction, 475 counts on this ladder.
+  2. So on the way down it clamps the duty under the need (952 frames), and the rotor falls behind until the lag
+     reaches `LAG_SOFT`.
+  3. At that pass the ceiling lifts and D-2's boost starts, on a duty the clamp has held low and with the lag already
+     at 80-101. The boost drives the current up: the kick.
+- **The separating readings.**
+  - Switching D-2 alone moves the kick 52 ↔ 99-115 mV.
+  - Switching D-5 moves nothing.
+  - Lifting the ceiling at 48, or removing it, returns the kick to D-1's level whether D-2 is on or not.
+  - On the bench, only the steps that cap (`tr_cap` 367 and 139) kick; the up-steps neither cap nor kick.
+- **Where the model stands against the bench.** Its absolute kick runs 30-50 mV high: R46 gives +50 against the old
+  ladder's 0-19, and R47 +105-115 against 79-89. The increment D-2 adds (+47-63 mV) matches the bench's (+60-89).
+- **PL-55's own case**, a stop from 147×10⁶ (`stepdn`'s last row), phase-current peak: R46 2.33-2.34 A, R47 2.32-2.36,
+  S-1 2.34-2.38, no ceiling 2.50-2.56. The model never draws PL-55's >10 A (that was the pre-R18.4 servo), so it cannot
+  price the ceiling's protection. It can only show that S-1 keeps the ceiling in force where it binds today.
+
+#### 4.10.6 The fix
+
+**F-a · the blocked count counts from the first limiter action after the last tick (front cog, `bFrontProtect()`).**
+- **Mechanism.**
+  - A per-motor flag, `bLimSinceTick`, is set on a front pass with no hall tick on which a limiter acted:
+    `duty_capped + foldback_frames` changed, in SPIN_UP / AT_SPEED.
+  - It is cleared by a hall tick, a zero command, or a state other than SPIN_UP / AT_SPEED.
+  - The count's limiter half reads the flag instead of this pass's change. The `|err| ≥ LAG_SOFT` half is unchanged
+    (a SPIN_DN stall at `LAG_HOLD`).
+- **Invariant (I-8), by construction.**
+  - A commanded wheel in SPIN_UP / AT_SPEED that a limiter has acted on since its last hall tick is counted on every
+    front pass until it ticks.
+  - So it latches exactly `BLOCKED_PASSES` passes after the first such limiter action, **for any pattern of the
+    limiter's later actions, including none**. The stand (last tick to latch) is therefore at least 1,000 ms, and at
+    most 1,000 ms plus the time to the first limiter action.
+- **What it cannot latch falsely (DERIVED).** A count needs 1,000 ms with no tick. A wheel that is free to turn ticks
+  once its field has moved one sector further than the rotor. Only two kinds of field move less than a sector per
+  second (`|drv_incr|` < 42.67 × 2³² / 256 / 1,913 ≈ 374,000 per pass, 0.23 % of full power):
+  - one D-3 has decayed at a limiter, which is a wheel at its limit that does not move: blocked by definition;
+  - one the steering object has scaled to `DRV_INCR_FLOOR`, which needs a short partner. Such a partner carries the
+    flag only if a limiter acted on it too, since its own last tick.
+- **Sketch** (the build counts and checks it; local `bRun` added):
+
+```
+    nowPos := pos
+    nowLimSum := duty_capped + foldback_frames
+    bRun := (drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED)
+    if (nowPos <> blockedPos) or ((targetIncre & !SYNC_BIT) == 0) or (bRun == FALSE)
+        bLimSinceTick := FALSE                          ' a tick, no drive, or not running: clear (I-8)
+    elseif nowLimSum <> blockedLimiterSum
+        bLimSinceTick := TRUE                           ' a limiter acted with no tick since: every pass counts until one
+    if ((targetIncre & !SYNC_BIT) <> 0) and ((abs(err) >= LAG_SOFT) or bLimSinceTick) and (nowPos == blockedPos) and ((drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED) or (drv_state == DCS_SPIN_DN))
+        blockedPasses++
+```
+
+- **Where it lands.**
+  - `bLimSinceTick` is one Spin2-only VAR long beside `blockedLimiterSum` (`:7471`), after every PASM-addressed run:
+    **no ABI change**.
+  - It is cleared with `blockedPasses` at `:2928`, `:2935` and `:4525-4527`.
+  - The `''` doc at `:2870-2872` and the comment at `:2899-2904` change.
+- **The harness's mirror** (`src/test_bench_dual.spin2`, read-only here; phase 2 changes it with the driver, or
+  BLKSTOP's count bounds fail a correct latch):
+  - a VAR `blkLimTick[INST_MOTORS]` beside `blkLimPrev` (`:17013`), cleared at `:20954-20956` and `:21039-21046`;
+  - in `blockWatch()`, the tick branch (`:21061-21065`) clears it;
+  - `bLimited` (`:21059`) sets it while running, and a state other than SPIN_UP / AT_SPEED clears it;
+  - the count test (`:21066`) reads `bLimited or blkLimTick[slotIdx]`;
+  - the texts naming the rule: `:736`, `:21004-21014`, `:16282-16286`, `:16318-16323`.
+  - `BLK_COUNT_LO_MS` / `BLK_COUNT_HI_MS` stand: the count still lands `BLOCKED_PASSES` after its own start.
+- **Cost:** +1 VAR long per motor. On each 1 ms front pass, one comparison chain and one assignment more (ESTIMATE;
+  the build reads the front loop's late-pass count).
+
+**C4 · the limit hold stays armed until the rotor ticks forward (driver, `holdGate`). A new driver behaviour (P5).**
+- **Mechanism.**
+  - On the pass the limit hold sets the field back, `holdGate` arms: `lim_pos := pos_`.
+  - While armed, every running pass takes the limit hold: the field advances only below `LAG_LIM`, and is set back to
+    it when past, limiter or not.
+  - It disarms when the rotor has ticked forward past `lim_pos` in the field's direction, or the state leaves
+    SPIN_UP / AT_SPEED.
+  - D-3's decay still needs a limiter on the pass: Z is unchanged, so an armed pass without one does not give way.
+- **Invariant (I-9).** From a wheel's first set-back until it ticks forward, its field stays at most `LAG_LIM` ahead of
+  the rotor's sector. A parked field read k ticks back reads 64 + 42.7k (wrapped), never 82..88, so **no tick against
+  the field can fault while the wheel is at its limit**. This is I-5 kept between folds, which D-5 assumed and the
+  intermittent fold broke. It does not cover the contact transit before the first set-back (§4.10.4 (a)).
+- **Sketch** (replaces `holdGate`'s head, `:8831-8836`; the set-back `:8837-8850` is unchanged except the two arming
+  lines; flags as the as-built comments read them: CMP, CMPS and TESTB with WC write C only, NEG and TJZ write no flag
+  — `p2kbPasm2Cmps`, `p2kbPasm2Neg`, `p2kbPasm2Tjz`):
+
+```
+holdGate        mov     tmpX, duty_capped_
+                add     tmpX, foldback_cnt_
+                cmp     tmpX, lim_seen              wz  ' Z: no limiter acted since the previous pass. Z survives to RET
+                cmp     drv_state_, #DCS_SPIN_DN    wc  ' C: SPIN_UP or AT_SPEED
+    if_nc       mov     lim_arm, #0                     ' PL-179 C4: any other state disarms
+    if_nc       jmp     #.today
+                tjz     lim_arm, #.noArm                ' armed: has the rotor ticked forward past the armed sector?
+                mov     tmpX, pos_
+                sub     tmpX, lim_pos
+                testb   drv_incr, #31               wc
+    if_c        neg     tmpX                            '  ticks forward, in the field's direction
+                cmps    tmpX, #1                    wc  ' NC: one or more forward
+    if_nc       mov     lim_arm, #0                     '  the load gave way: disarm
+.noArm  if_z    tjz     lim_arm, #.today                ' no limiter now and not armed: today's LAG_HOLD gate
+.limHold        cmps    lag_s, #LAG_LIM             wc  ' (unchanged from here: the set-back)
+    if_c        ret
+                ...                                     ' :8839-8849 as built
+                mov     lim_pos, pos_                   ' C4: armed at this sector
+                mov     lim_arm, #1
+    _ret_       modc    _clr                        wc
+.today  _ret_   cmps    lag_s, #LAG_HOLD            wc
+```
+
+- `driveFromRest` (LUT, `:9046`) and `.clearRun` (cog, `:8100`, the e-stop and fault-reset path) also zero `lim_arm`,
+  so no drive starts armed. Any pass outside SPIN_UP / AT_SPEED disarms as well.
+- **Cost (ESTIMATE).**
+  - LUT: +12 longs (`holdGate` 16 → 27, `driveFromRest` +1), so the run image goes 486 → ~498 of 512.
+  - Cog: +2 registers (`lim_pos`, `lim_arm`) and +1 instruction in `.clearRun`, 53 → 50 free.
+  - Time: +8 clocks per unarmed running pass and +16 per armed one (2 per ALU instruction; TJZ 2, or 4 taken). That
+    is under 1 % of the 2,727-clock window; the build reads `tools/pasm_equiv`'s budget.
+- **ABI:** none.
+- **Why §4.9.6 rejected C4, and why that no longer holds.** It was rejected as "a register and a hall compare more, no
+  modelled gain". That model folded on every frame, so its field never had a gap to walk through. Under the driver's
+  own fold the gain is 7 → 0 rocking faults (with F-a), or 7 → 2 alone.
+
+**S-1 · the PL-55 ceiling lifts once the rotor trails its running point (driver, one immediate).**
+- **Mechanism.** At `:7804` `cmps lag_s, #LAG_SOFT wc` becomes `cmps lag_s, #SERVO_SETPOINT wc`.
+- **Invariant (I-10).** The ramp-down ceiling binds only while the rotor is at or ahead of the servo's own point
+  (lag_s < 48). That is the case PL-55 exists for: a rotor overrunning a slowing field. A slow-down whose load needs
+  more motoring than steady running gets the trim at once. The lag no longer has to reach `LAG_SOFT`, D-2's threshold,
+  to lift the ceiling, so the boost no longer starts on a clamped duty.
+- **Cost:** none (an immediate). ABI: none.
+
+#### 4.10.7 Candidates considered
+
+| Candidate | Modelled (CAL) | Verdict |
+|---|---|---|
+| **F-b:** the count's limiter half alive while a limiter acted in the last 50 front passes (`blk_fix=2 blk_win=50`) | solid 15 / 0 / 1; rocking 1,000: 10 / 2 / 4; rocking 3,000: 13 / 1 / 2. The same as F-a | Viable, not recommended. It is correct only while the limiter's gap stays under the window. The model's gaps are 16-28 passes, the bench's are unmeasured, and the DC-link noise makes them unbounded in principle. F-a needs no bound |
+| Count the held passes (`lag_held`) | — | Rejected, DERIVED. Without C4 a hold happens only on a limited pass, so it has the same gaps. With C4 a lead write that lowers `err_` under 64 still opens gaps (§4.9.5) |
+| A lower `LAG_LIM` or `BLOCKED_PASSES` | — | Not licensed (evaluation §4a) |
+| F-a alone, no C4 | rocking 1,000: 10 / 2 / 4 | Latches, but 4 of 16 contacts fault first |
+| C4 alone, no F-a | solid 0 / 15 / 1; rocking 0 / 14 / 2 | Never latches: F-1 stands |
+| S-2: D-2's boost only in SPIN_UP / AT_SPEED | 80 → 20 kick +140 / +134 mV | Rejected: worse. The boost then fires on the arrival pass, with the lag still high |
+| Remove the PL-55 ceiling | 80 → 20 +52 mV; 40 → 20 +11 mV (S-1: +30); stop from 147×10⁶ 2.50-2.56 A against 2.32-2.38 | Not recommended. A little better on the small step, but the ceiling's own failure (>10 A stops) is outside the model, so removing it cannot be priced |
+
+#### 4.10.8 The measure of benefit (for Stephen; P5)
+
+MODELLED unless marked: the two-wheel model at its central parameters under CAL. Each cell is from the commands in
+§4.10.12. The model's absolute currents run high (§5), so currents are compared within a row.
+
+| What a user sees | DRIVER_REV 46 | DRIVER_REV 47 (as built) | **REV 47 + F-a + C4 + S-1** | Standing |
+|---|---|---|---|---|
+| Wheel against a wall at 2 A, COAST: does the platform stop itself? | yes: bench 1,092-1,183 ms after the last tick; model 1,000-1,051 ms | **no**: bench ran 9.2 s to the harness's timeout; model 0 of 16 | **yes**: 15 of 16, 1,000-1,050 ms after the last tick, 1,009-1,169 ms after contact | MEASURED (46, 47); MODELLED (fix) |
+| The same against a yielding object (1,000 N/m): stopped / pushed on / lag fault, of 16 | 11 / 4 / 1 | **0 / 9 / 7** | **15 / 1 / 0**, 1,080-1,738 ms after contact | MODELLED |
+| The same (3,000 N/m) | 10 / 5 / 1 | 0 / 13 / 3 | 15 / 1 / 0 | MODELLED |
+| A lag fault at the moment of contact (solid object) | 1 of 16 | 1 of 16 | 1 of 16 (the contact transit: unchanged) | MODELLED; bench BRAKE: 0 (46) and 1 (47) of 1 |
+| Wheels up, a sharp slow-down (80 → 20×10⁶): current kick over steady | +50 mV (model); 0-19 mV (bench, driver 4) | +115 / +105 mV (model); **79 / 89 mV (bench)** | **+52 / +52 mV** (≈ 0.35 A of DC link) | MODELLED; MEASURED where marked |
+| Wheels up, 40 → 20×10⁶ kick | +42 / +35 mV | +52 / +44 mV (bench 25) | +30 / +27 mV | MODELLED |
+| A stop from 89 % power: phase-current peak | 2.33-2.34 A | 2.32-2.36 A | 2.34-2.38 A (+1 %) | MODELLED; PL-55's >10 A case not reproducible: UNKNOWN |
+| FlySky slow-downs and reversals: lag faults per 15 | 0 | 0 (bench: 1 in the drive) | 0 | MODELLED; the bench fault is not reproduced: **UNKNOWN** whether any variant changes it |
+| The same: time the lag reads in the fault window (both wheels, 15 transients) | 3,541 ms | 897 ms | 626 ms | MODELLED |
+| Spin legs (all nine): speed, err_pk, swing | — | 99.6-100.5 %, 68-76, 39-295 | **identical, digit for digit** | MODELLED (`design R47 CAL` against `design FIX CAL`) |
+| One-sided load at power 13: 1 / 2 / 4 / 8 N·m, LEFT | — | 99.1 / 99.2 / 99.3 / 99.8 % | 99.1 / 99.2 / **99.4** / 99.8 % | MODELLED (`step`) |
+| 4 N·m on 1.0-2.0 s, then released: speed after, L / R | — | 99.9 / 100.0 % | 99.9 / 100.0 % (identical but the set-back count) | MODELLED (`release`) |
+| Ramps at 200 / 1,000 / 3,000 mm/s²: arrival against prediction | — | 1,800 / 1,800, 560 / 559, 322 / 321 ms | identical | MODELLED (`ramp`) |
+| Wheels up, unloaded: duty, current | — | 10 / 20 / 37×10⁶: 0.04 / 0.07 / 0.13 A | identical | MODELLED (`wheelsup`) |
+
+**No row gets worse.** The 4 N·m step is 0.1 point better. Every other §5 row under CAL is identical.
+
+#### 4.10.9 Certification: each cell can fail
+
+| Cell | Criterion | Its negative (this visit fails it) |
+|---|---|---|
+| **BLKSTOP / BLKLIMIT** (floor-obstacle, COAST and BRAKE trials) | latched; stand in BLK_STAND_LO (988) and up; the mirrored count (F-a's rule) 988-1,012 ms | COAST: `stop_by,TIMEOUT` after 9.2 s (`BM-BLOCK` seq 327) |
+| **BLKWIN** (new; I-9) | after a stalled wheel's first limiter action, and while it has no hall tick, no `BM-TS` sample reads |e| or |o_e| in 82..88 | COAST trace: `o_e` −87 (`k` 675), −83 (750); `e` 82-84 (`k` 1,450-1,800) |
+| **BLKFLT** (new) | the BRAKE trial latches with no `EV_FAULT` and no `RESYNC` | BRAKE: `EV_FAULT` RIGHT (seq 338), `RESYNC` (seq 336) |
+| **TRKICK-A** (dual-a, as defined) | every transition's `tr_i_over` ≤ 50 mV | 79 / 89 mV on the four 80 → 20 steps (seq 16_718, 16_909, 17_100, 17_291) |
+| **SPINRATE / RAMPARR** (floor-auto) | as defined; the regression guard for C4 and S-1, which touch the drive path | — (they passed on DRIVER_REV 47; a drop is the regression) |
+
+The FlySky reversal has no cell: its cause is not established. The next drive's hard reversal, with the moment of any
+fault asked for (evaluation §5 item 4), is a reading, not a certification.
+
+#### 4.10.10 PL-181: does D-2 firing in calm running matter?
+
+**It costs no speed. It does cost swing and current where the peaks cross 80 (MODELLED).**
+- **Central parameters** (`design R47 CAL` against `design acc_shift=16 dC=1 d5=1 CAL`): err_pk 68-76, so the boost
+  barely enters running.
+  - Speed is identical (99.6-100.5 %).
+  - The schedule legs are identical except MED −, where swing goes 136 → 221.
+  - The legacy legs carry more swing (MED − 45 → 295) and current (0.60 → 0.76, model units).
+- **The adverse corner** (`e90_L18=53 Tnoise=0.4 Iz=0.42`, the same pair): the slow legs' peaks reach the bench's
+  79-90 (80-91 here).
+  - With D-2 on, speed stays 98.7-100.8 % (off: 98.6-100 %), and the slow legs' err_pk sits a few counts lower
+    (80-87 against 85-91).
+  - The duty swing rises on the medium and brisk legs: schedule MED − 507 → 1,400 (2.8×), legacy MED − 110 → 883
+    (8×), fixed BRISK − 195 → 402. The mean current rises with it (schedule MED − 0.16 → 0.27, legacy MED −
+    0.52 → 0.84, model units).
+  - The bench's schedule swings (95-539) lie inside the model's range with the boost on (74-1,400). The model does not
+    say which leg of the bench it would match.
+- **So:**
+  - SPINHUNT's `err_pk` ≤ 76 fails on a boost that is harmless to speed.
+  - The cost the floor would feel is a little current and duty ripple on medium spins, not lost speed.
+  - Nothing in this section changes it. S-1 and C4 leave calm running identical.
+
+#### 4.10.11 Not checked, and the model's limits
+
+- **The rocking that faults.** The model makes it only from the spring obstacle. It makes none in a straight drive's
+  slow-down, which is why F-2b is not reproduced.
+- **The fold rate.** The model folds at 61-77 per second against the bench's 96-176. `i_noise` is uniform and
+  per-frame; the board's noise spectrum is not modelled.
+- **`v_dt`** is FITTED to the stall duty and checked against the ladder's offset only. It is applied only under CAL;
+  the §5 numbers above it are without it.
+- **The direction flip (f)** reads 12 counts where the driver reads 29 (§4.10.2). The only runs that flip are the full
+  reversals, and their window time is a lower bound.
+- **Not modelled:** the default 27 A limit on an obstacle; Rev A (5 mV/A); non-uniform hall sectors; a lead write
+  moving `err_`.
+- **The PASM sketches** are not assembled: the costs are ESTIMATE. The Spin2 sketch's front-pass time is not measured.
+- The harness mirror's new rule is specified (§4.10.6), not written.
+
+#### 4.10.12 Reproduce
+
+```
+S=DOCs/plans/servo-model; R47="acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1"; CAL="pasm=1 v_dt=0.18 i_noise=3"
+python3 $S/spin2_model.py block acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1         # must-not-change: as before
+python3 $S/spin2_model.py block ob_n=3 ob_k=50000 $R47 pasm=1 diag=1                          # F-1: fold criterion alone (v_dt 0)
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000 $CAL diag=1                               # R46 calibration
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000 $R47 $CAL diag=1                          # F-1 reproduced
+python3 $S/spin2_model.py block ob_n=1 ob_x=0.152521 ob_k=1000 $R47 $CAL diag=1              # F-2a fault context
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 $R47 $CAL diag=1                           # and ob_k=3000; and with no flags (R46)
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 $R47 $CAL blk_fix=1 diag=1                 # F-a
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 $R47 $CAL blk_fix=2 blk_win=50             # F-b
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 $R47 $CAL d5_sticky=1 diag=1               # C4 alone
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 $R47 $CAL cap_lift=48 d5_sticky=1 blk_fix=1 diag=1   # FIX; ob_k=50000, 3000
+python3 $S/spin2_model.py stepdn $R47 $CAL                                                   # F-3; drop dB=1 / d5=1; acc_shift=16 alone; no flags
+python3 $S/spin2_model.py stepdn $R47 $CAL cap_lift=48                                       # S-1; cap_lift=-200 (no ceiling)
+python3 $S/spin2_model.py stepdn acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 pasm=1 v_dt=0.18 boost_run=1   # S-2
+python3 $S/spin2_model.py reversal $R47 $CAL                                                 # F-2b; and each variant of the table
+python3 $S/spin2_model.py step|release|ramp|wheelsup|design $R47 $CAL                        # 4.10.8, against + cap_lift=48 d5_sticky=1 blk_fix=1
+python3 $S/spin2_model.py design acc_shift=16 dC=1 d5=1 $CAL                                 # PL-181 (D-2 off); + e90_L18=53 Tnoise=0.4 Iz=0.42
+```
+
 ---
 
 ## 5. The measure of benefit (for Stephen's decision; P5)
