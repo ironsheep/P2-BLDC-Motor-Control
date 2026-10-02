@@ -1402,6 +1402,10 @@ observation, makes it actionable. Owner: each visit's log analysis (now «#3634�
 
 ### PL-132 -- the blocked-wheel protective stop shorts the phases even when the user chose coast
 
+> **6.1.0 status (2026-10-02):** the no-latch bound that gave up early is replaced by one timed from the driver's own
+> count (735bc9d), and with DRIVER_REV 47's D-5 a wheel stopped at its limit is counted, so the COAST trial is expected to
+> latch and BLKCOAST to measure at the 6.1.0 visit.
+>
 > **6.0 status (2026-10-01):** AWAITS CERT — the short control PASSed on both visits (BLKSHORT 14 / 15 / 13 mV); the COAST
 > cell is NOMEAS twice: a lag fault pre-empted the latch (first visit), then the harness's no-latch bound gave up about
 > 240 ms before the driver would have latched against a rocking obstacle (the rerun). Rerun once PL-168 corrects the bound.
@@ -1604,6 +1608,9 @@ measured speed right now"*); `getPower()` reports what was commanded.
 
 ### PL-160 -- a user cannot shape the ramp for their robot: deceleration is fixed, settings are lost on start(), and every ramp starts and ends with a torque step
 
+> **6.1.0 status (2026-10-02):** the quarter-speed start under load gets two-turn spins (735bc9d), so SPINSTRT /
+> SPINPEAK have a long enough leg at the 6.1.0 visit.
+>
 > **6.0 status (2026-09-30):** RELEASE — wheels-up half certified 2026-09-28; the feel under load ✅ CERTIFIED by
 > Stephen's first FlySky drive (*"very responsive... no clicking, no unusual motor movement or sounds. Its ramps are
 > pretty good."*), which the telemetry agrees with; the second drive (2026-09-30 rerun) confirmed both knobs' rates reach
@@ -1736,7 +1743,11 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 ### PL-167 -- under a heavy load the shipped commutation timing gives up speed with torque to spare
 
-> **Status (2026-10-01, R21):** a **v6.0.0 Known Issue**; the fix is **6.1.0** work. Stephen: *"ok yes, A lets get
+> **Status (2026-10-02): BUILT, DRIVER_REV 47** (9ede499): D-1..D-3 plus PL-167 D-5, as Stephen ruled 2026-10-02 (*"ok
+> let's go with A"*). Certified only by the 6.1.0 visit (dual-a SRVHUNT / SRVKEEP; the floor cells SPINRATE, SPINHOLD,
+> LIMGIVE, RAMPARR, BLKLIMIT, BLKSTOP). Until then it is a desk result (model and pasm_equiv), and the Known Issue stands.
+>
+> **Earlier status (2026-10-01, R21):** a **v6.0.0 Known Issue**; the fix is **6.1.0** work. Stephen: *"ok yes, A lets get
 > 6.0.0 to release first then we'll follow with this new effort"*. The CHANGELOG, the manual's §6.5 / §9, the REWORK page,
 > and every "holds the fastest speed it can sustain" claim in the user docs now state what v6.0.0 does.
 >
@@ -1769,7 +1780,11 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 ### PL-168 -- floor-test premises the runs proved wrong
 
-> **Status (2026-10-01):** 6.1.0 work (R21); no test harness ships in a release archive set. To be corrected before any rerun (Stephen: *"if we deem a test needing to be run again and it's
+> **Status (2026-10-02): CORRECTED in the tree** (735bc9d, `test_bench_dual` SRC_REV 74-76): the blocked stop timed from
+> the driver's own count, per-trial obstacle RESULTs, two-turn quarter spins, honest labels, no tether text. The 6.1.0
+> visit's floor-auto and floor-obstacle runs are the first on the corrected premises.
+>
+> **Earlier status (2026-10-01):** 6.1.0 work (R21); no test harness ships in a release archive set. To be corrected before any rerun (Stephen: *"if we deem a test needing to be run again and it's
 > build on wrong premise we should correct that before running again, right?"*).
 
 From `FLOOR-RERUN-EVALUATION.md` §4, §2.1, §7:
