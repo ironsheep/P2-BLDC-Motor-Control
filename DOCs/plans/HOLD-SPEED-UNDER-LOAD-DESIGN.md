@@ -4,6 +4,9 @@
 first with PL-167 as a Known Issue).
 **Phase 2, desk steps (2026-10-01):** the H-a refit (§3.6) and D-4's condition (§7 Q1) are recorded. H-a did not
 reproduce the slow/medium depth and revealed no second mechanism; D-4's condition failed, so `LAG_HOLD` stays 100.
+**D-5 RULED (STEPHEN 2026-10-02, "ok let's go with A"):** build D-1..D-3 **plus D-5** (§4.9): the limit hold at 64
+with its one-pass set-back, and the blocked count on limiter activity. The build is «#3655»; the coast trial's
+expectation becomes "latches" («#3656» item 1).
 **Driver:** `src/isp_bldc_motor.spin2` at DRIVER_REV 46 (`:6796`; PASM image unchanged since 45, `:7011-7020`).
 **Evidence:** `DOCs/analyses/bench/2026-09-30/floor2/` (`debug_260930-181811.log` floor-auto, `…-182135.log`
 obstacle, `…-182653.log` FlySky) and `FLOOR-RERUN-EVALUATION.md` §2.1, §2.3, §5.
@@ -555,7 +558,7 @@ public "torque-limited" signal (Q4) would be an API addition mirrored in `isp_st
 
 ### 4.9 D-5 — where the held field sits while a limiter has the duty («#3645», PL-167, PL-105)
 
-**Status: DESIGN, for Stephen's ruling (P5). No driver code.** Plan §1.1. Not to be confused with *R18.4 D-5*, the
+**Status: DESIGN, RULED IN (STEPHEN 2026-10-02: "ok let's go with A" -- D-1..D-3 + D-5). Built by «#3655».** Plan §1.1. Not to be confused with *R18.4 D-5*, the
 source's label for `holdDecay` (`:7738`, `:8716`); the build should name this one "PL-167 D-5".
 
 #### 4.9.1 What it answers
