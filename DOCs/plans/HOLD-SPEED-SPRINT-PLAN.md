@@ -174,7 +174,10 @@ mechanism's test to print its verdict in the log.
   (Visit 8, `VISIT-8-EVALUATION.md` §3.2).
 - **A-5 on the ladder:** rungs 3-8 duty and net current within ±5 % of the DRIVER_REV 46 reference, the reference values
   stated at their constant with the log they came from. *Negative:* a placement change (the legacy pair, `dual-a-legacy`)
-  moves current 15-26×.
+  moves current 15-26×. **As built («#3654», 2026-10-02): rungs 7-8 only.** The only DRIVER_REV 46 ladder windows on disk
+  are the KICK part's at 120 / 140×10⁶ (`bench/2026-09-27/rc/debug_260927-141620.log`); no part-A ladder ran on
+  DRIVER_REV 46, and the newest (2026-09-22) is DRIVER_REV 4, a pre-6.0 driver. Cell `R22-DUAL-SRVKEEP-A`; A-3 is
+  `R22-DUAL-SRVHUNT-A`.
 - A-1 and A-2 stay as the floor's SPINSTRT / SPINPEAK (§3) and the START trace.
 - **LIMGIVE (I-2) is judged on the floor only (§3).** Wheels up, the only way to make the field give way is a capped
   over-command (`dual-limits`), and there a limiter has the duty on today's image too, so the cell would pass on the
