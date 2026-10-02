@@ -167,6 +167,16 @@ share a cause); a new driver function goes to Stephen with its benefit before it
 reproduces the COAST non-latch before and latches in 988-1,168 ms after; the next visit's `floor-obstacle` load is its
 certification, with this visit's COAST trial as its negative.
 
+### 1.6 The stopped wheel in a pivot turn (added 2026-10-02, PL-186)
+
+**Why.** In the FlySky drive, a full left or right turn stops one wheel and drives the other; the stopped wheel rolled
+backward up to 225-250 tps, so the platform spun about its centre (Stephen saw it; the telemetry confirms it). One side
+had no hold at all; the other reported HS_HOLDING at almost no current while rolling. **Deliverable:** the cause, read
+from the hold path in `isp_bldc_motor.spin2` / `isp_steering_2wheel.spin2` and from the 2026-09-30 drives (does 6.0.0 do
+the same?), then the fix: the stopped wheel holds in a pivot, and a hold the load moves reports HS_SLIPPED. A change in
+what a stopped wheel does is a driver function: it goes to Stephen with its benefit before it is built (P5).
+**Verify:** the next visit's FlySky drive and a harness pivot leg that judges the stopped wheel's travel in the log.
+
 ---
 
 ## 2. Wheels-up verdicts for the fix (harness for this plan's runs)
@@ -238,6 +248,16 @@ criteria by arithmetic, fail SPINRATE / SPINHOLD / LIMGIVE / RAMPARR and read SP
 under `-D BENCH_CFG`; the DEBUG footprint stays under its cap; one gate with the §1-§2 batch.
 
 ---
+
+### 3.1 The premises the 2026-10-02 visit disproved (added 2026-10-02)
+
+Corrected before the second visit (the standing rule: a test on a wrong premise is corrected before it runs again):
+- **PL-182** LIMGIVE's sampler scores a hold during spin-up as giving way: judge limb (a) only at speed, or log the state.
+- **PL-183** SPINPEAK's 1.80 is a wheels-up number: derive the floor's from the platform's spin-up current.
+- **PL-185** a hand cannot slow the platform at 4 A: a limit a hand can reach, or a known drag.
+- **The blocked-stop mirror** (`blockWatch()`) follows §1.5's fix in the same change.
+- **No act the log can carry is asked of Stephen** (doctrine overlay P1, 2026-10-02): no swB flips; the FlySky drive
+  asks only for the drive itself, both knobs swept to their stops, and the turns he wants to make.
 
 ## 4. A record label can never misdescribe itself silently (PL-96, PL-97)
 
@@ -368,11 +388,24 @@ finding. A finding that needs a fix and a run is the only way a second visit is 
 
 ---
 
-## 10. The release — not in this plan
+### 9.1 The second visit (added 2026-10-02)
 
-**Revised 2026-10-01 (see the revision history):** the release happens after this plan, following a DocoEng motor
-qualification (Stephen's words in §0). This plan therefore carries no `VERSION` bump, no CHANGELOG entry and no tag;
-the release task was superseded. What this plan leaves for the release, recorded so nothing is lost:
+**Earned by:** §1.5, §1.6 and §3.1 landed and gated. **Carries:** `floor-obstacle` (both trials: BLKSTOP, BLKLIMIT,
+BLKCOAST, BLKSHORT, PROTCLR; its negative is the first visit's COAST trial); `floor-auto` (the regression guard:
+SPINRATE, RAMPARR, and a traced slow leg for PL-182); `dual-a` if the driver's transient path changed (TRKICK-A against
+79 / 89 mV); a pivot leg and the FlySky drive for PL-186 and PL-169's knob ends; the grab only if PL-185's premise is
+fixed. **Evaluation** as §9.
+
+## 10. The release — back in this plan (2026-10-02)
+
+**Revised 2026-10-02:** Stephen, after the 6.1.0 visit's evaluation: *"Let's get everything fixed and continue to release
+the 6.5-inch driver changes so we can move on to Doco motor work after this is all corrected and resolved."* So the
+release closes this plan once §1.5, §1.6, §3.1 and the second visit (§9.1) are done and certified, and the DocoEng
+qualification follows it as its own plan. This supersedes the 2026-10-01 ordering below. The ship call itself stays his
+(P5): the release task prepares everything and stops at his word.
+
+*Earlier (2026-10-01):* the release was to happen after this plan, following a DocoEng motor qualification. What this
+plan leaves for the release, recorded so nothing is lost:
 - **Known Issues evidence.** The evaluation (§9) brings Stephen, for each v6.0.0 Known Issue this sprint touches (the
   "spins in place ... 43 % slow" line, "speed changes arrive late", "less torque in reserve near top speed"), what a user
   would now experience, with the D-5 outcome of §1.1. What ships as a Known Issue stays his (P5), decided when the release
@@ -527,3 +560,6 @@ the exclusive-resource roster. **Two-phase:** «#3645» (the design returns, the
   is a FIX, with PL-180 (lag faults on hard transients, a slow-down kick) root-caused with it in «#3662»; the docs task
   «#3660» now waits on it; §1.5 added. Cause **3** (a premise unmeasured): design 4.9.5 assumed a limiter acts on every
   pass of a blocked wheel.
+- **2026-10-02** — Stephen: fix everything found, then release the 6.5-inch changes, and DocoEng follows (§10). §1.6
+  (PL-186, the pivot turn), §3.1 (the disproved premises) and §9.1 (the second visit) added; the release task returns.
+  Cause **1** (an owner ruling not applied): the plan held the 2026-10-01 ordering until this ruling replaced it.
