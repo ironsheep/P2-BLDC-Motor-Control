@@ -59,8 +59,10 @@ The fronts (overlay P12) advance together. The driver front is unblocked from th
 5. §9 the visit: pack, run sheet, `BENCH: READY`; then the evaluation.
 6. The documentation (Blast Radius), against the certified behaviour.
 
-**Bench visits remaining in this plan: one** (§9), unless its evaluation finds a defect whose fix needs a run. The
-release follows a later plan (§10).
+**Bench visits remaining in this plan: one more** (revised 2026-10-02). The §9 visit ran on 2026-10-02; its evaluation
+(`DOCs/analyses/bench/2026-10-02/VISIT-6.1.0-EVALUATION.md`) certified the held speed and found the blocked-wheel stop no
+longer latching under D-5 (PL-179). Its fix needs a run: task «#3662», then a visit whose `floor-obstacle` load
+certifies it. The release follows a later plan (§10).
 
 ### 0.3 Established decisions for dispatch — regenerated
 
@@ -155,6 +157,15 @@ a Known Issue line is Stephen's ruling at release (P5), from §9's evidence.
 After D-3 every give-way coincides with a limiter count, so `EV_FOLDBACK` (and the duty ceiling) means "a wheel at its
 limit" and `EV_PATH_LIMIT` "both wheels slowed together because one is at its limit". `DRIVE-OBJECTS.md` (the events and
 `getEvent()` rows) and `DRIVER-THEORY-OF-OPERATIONS.md` §7 say so; §10 lists them.
+
+### 1.5 The blocked stop under D-5, and the transient faults (added 2026-10-02, «#3662»)
+
+**Why.** The §9 visit found that a blocked platform no longer stops itself (PL-179), and two lag faults and a slow-down
+kick that DRIVER_REV 46 did not show (PL-180) (`DOCs/analyses/bench/2026-10-02/VISIT-6.1.0-EVALUATION.md` §3.2, §4a).
+**Deliverable:** the desk root cause of each, in the model, then the blocked count's fix (and the faults' fix if they
+share a cause); a new driver function goes to Stephen with its benefit before it is built (P5). **Verify:** the model
+reproduces the COAST non-latch before and latches in 988-1,168 ms after; the next visit's `floor-obstacle` load is its
+certification, with this visit's COAST trial as its negative.
 
 ---
 
@@ -512,3 +523,7 @@ the exclusive-resource roster. **Two-phase:** «#3645» (the design returns, the
 - **2026-10-01** — the release moved out of this plan: §0 (done means), §0.2, §10 rewritten; «#3661» superseded; the docs
   task stays. Cause **1** (an owner ruling not asked for): when the release follows was Stephen's to say, and the plan
   assumed it.
+- **2026-10-02** — the §9 visit's evaluation added one visit (§0.2): PL-179 (the blocked stop does not latch under D-5)
+  is a FIX, with PL-180 (lag faults on hard transients, a slow-down kick) root-caused with it in «#3662»; the docs task
+  «#3660» now waits on it; §1.5 added. Cause **3** (a premise unmeasured): design 4.9.5 assumed a limiter acts on every
+  pass of a blocked wheel.

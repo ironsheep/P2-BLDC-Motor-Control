@@ -32,18 +32,21 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-167 | Under a heavy load the drive gives up speed with torque to spare (the headline; a v6.0.0 Known Issue) | The design (`plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md`) built, then certified by the floor spins |
-| PL-168 | Floor-test premises the runs proved wrong | Corrected in `test_bench_dual` before any rerun |
-| PL-132 | The blocked-wheel stop shorted the phases under coast (fixed DRIVER_REV 20) | Its COAST cell, rerun once PL-168 corrects the no-latch bound |
-| PL-160 | The quarter-speed start under load is unmeasured (all else certified) | Two-turn quarter spins (PL-168) |
+| PL-167 | Under a heavy load the drive gives up speed with torque to spare (the headline; a v6.0.0 Known Issue) | Speed held: CERTIFIED 2026-10-02. Shippable once PL-179 is fixed and certified |
+| PL-179 | ⛔ Under D-5 a blocked platform does not stop itself (found 2026-10-02) | «#3662»: desk root cause, the fix, its visit |
+| PL-180 | Lag faults on hard transients and a slow-down kick, new at DRIVER_REV 47 (found 2026-10-02) | «#3662», root cause first, with PL-179 |
+| PL-168 | Floor-test premises the runs proved wrong | Four of five CERTIFIED 2026-10-02; the coast bound waits for PL-179's visit |
+| PL-182, PL-183, PL-185 | Three more wrong premises the 2026-10-02 visit found (LIMGIVE in spin-up, SPINPEAK's limit, the grab) | Re-premised before each runs again |
+| PL-132 | The blocked-wheel stop shorted the phases under coast (fixed DRIVER_REV 20) | Its COAST cell, on PL-179's visit |
+| PL-160 | The quarter-speed start under load | CERTIFIED 2026-10-02 (SPINSTRT, drop 0) |
 | PL-67 | Two motor pin groups that overlap are not refused | DONE 2026-10-01: refused at compile time, proved by `tools/build-check.sh` step 3a |
 
 **In 6.1.0 — harness work for the tests this plan runs**
 
 | Entry | What it is | What closes it |
 | --- | --- | --- |
-| PL-96 + PL-97 | A record label can print `?` or adjacent memory with no signal (four instances, the latest at `test_bench_dual` SRC_REV 70) | BUILT 2026-10-01 (SRC_REV 71); the 6.1.0 visit's cell PASS and `dual-tokneg` FAIL certify it |
-| PL-68 | No bench log names the commit it was built from | BUILT 2026-10-02; the 6.1.0 visit's banners certify it |
+| PL-96 + PL-97 | A record label can print `?` or adjacent memory with no signal (four instances, the latest at `test_bench_dual` SRC_REV 70) | ✅ CERTIFIED 2026-10-02 (`dual-tokneg` FAIL, TOKTAB PASS elsewhere) |
+| PL-68 | No bench log names the commit it was built from | ✅ CERTIFIED 2026-10-02 (every banner `0ba9b96`) |
 
 **In 6.1.0 — simple fixes**
 
@@ -53,7 +56,10 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 | PL-172 | The style gate's `--self-test` fails: check T128 has no fixture | DONE 2026-10-01 |
 | PL-23 | Booleans print as numbers in two places still: `test_bench_spin` and `testGetResults()`'s fault flag | FIXED IN THE TREE 2026-10-01; the next `t0` log shows it |
 | PL-37 | Five panel bitmaps and their generator outlived the panel | DONE 2026-10-01 |
-| PL-169 | The FlySky demos re-send the acceleration setting on knob noise | FIXED IN THE TREE 2026-10-01; the `floor-rc` drive certifies it |
+| PL-169 | The FlySky demos re-send the acceleration setting on knob noise | Deadband CERTIFIED 2026-10-02; the ends wait for a drive that turns both knobs to their stops |
+
+**In 6.1.0 — watches from the 2026-10-02 visit:** PL-181 (the boost fires in calm running under load; SPINERR's band),
+PL-184 (the schedule's current at the quarter by direction; information, not this fix).
 
 **Fixed in the tree; waits for its binary's next run** (no planned run loads these binaries, so nothing is owed)
 
@@ -684,7 +690,8 @@ next attended log's `BM-PLAN`.
 
 ### PL-68 -- no bench log names the commit it was built from, so a visit ran on an older commit unnoticed
 
-> **Status (2026-10-02): BUILT** («#3652», c60c0df and its follow-up); the 6.1.0 visit's logs certify it. Every harness
+> **Status (2026-10-02): ✅ CERTIFIED by the 6.1.0 visit:** all seven logs print `commit,0ba9b96` (`BM-COMMIT` in the
+> six dual logs, `RC-BANNER` in `floor-rc`), the pack's commit. **Earlier: BUILT** («#3652», c60c0df and its follow-up). Every harness
 > banner prints the commit (`test_bench_dual`: a `BM-COMMIT` record after `BM-BANNER`); `src/isp_bench_commit.spin2`
 > reads `NOT_A_PACK` in the tree and is rewritten only in the pack's archive copy. MEASURED: a pack from c60c0df holds
 > `c60c0df` in `dual-a.bin` and `t0.bin` and no `NOT_A_PACK`; a source-tree build holds `NOT_A_PACK`; `git status` is
@@ -816,7 +823,8 @@ a review before its first run, not a slot before a bench session.
 
 ### PL-96 -- an over-length record token prints as `?` with no signal, so a label can be lost silently
 
-> **Status (2026-10-01): BUILT, certified by the 6.1.0 visit** («#3651», `test_bench_dual` SRC_REV 71). Every count is
+> **Status (2026-10-02): ✅ CERTIFIED by the 6.1.0 visit:** `dual-tokneg` FAILs on its planted token (`BM-TOKCHK
+> ...first_bad,tokScope,...,ok,FALSE`) and every other dual log PASSes R21-DUAL-TOKTAB (45-70 tables). **Earlier (2026-10-01): BUILT** («#3651», `test_bench_dual` SRC_REV 71). Every count is
 > derived from its enum; all 80 token tables end in a sentinel; `tokenTablesSelfTest()` walks every table the build
 > holds, plus the sign-off cell and criterion strings, and prints `BM-TOKCHK` and cell `R21-DUAL-TOKTAB` in every dual
 > build. Its negative is the one-off tier `dual-tokneg` (one table a token short, one token too long), which must print
@@ -1402,9 +1410,12 @@ observation, makes it actionable. Owner: each visit's log analysis (now «#3634�
 
 ### PL-132 -- the blocked-wheel protective stop shorts the phases even when the user chose coast
 
-> **6.1.0 status (2026-10-02):** the no-latch bound that gave up early is replaced by one timed from the driver's own
-> count (735bc9d), and with DRIVER_REV 47's D-5 a wheel stopped at its limit is counted, so the COAST trial is expected to
-> latch and BLKCOAST to measure at the 6.1.0 visit.
+> **6.1.0 status (2026-10-02, the visit): STILL UNMEASURED.** The COAST trial never latched under DRIVER_REV 47 (PL-179),
+> so BLKCOAST read NOMEAS; the BRAKE trial faulted at contact (PL-180), so BLKSHORT did too. The COAST half waits for
+> PL-179's fix and its visit.
+>
+> **Earlier 6.1.0 status (2026-10-02):** the no-latch bound replaced by one timed from the driver's own count (735bc9d);
+> D-5 was expected to make the COAST trial latch. It did not.
 >
 > **6.0 status (2026-10-01):** AWAITS CERT — the short control PASSed on both visits (BLKSHORT 14 / 15 / 13 mV); the COAST
 > cell is NOMEAS twice: a lag fault pre-empted the latch (first visit), then the harness's no-latch bound gave up about
@@ -1608,8 +1619,11 @@ measured speed right now"*); `getPower()` reports what was commanded.
 
 ### PL-160 -- a user cannot shape the ramp for their robot: deceleration is fixed, settings are lost on start(), and every ramp starts and ends with a torque step
 
-> **6.1.0 status (2026-10-02):** the quarter-speed start under load gets two-turn spins (735bc9d), so SPINSTRT /
-> SPINPEAK have a long enough leg at the 6.1.0 visit.
+> **6.1.0 status (2026-10-02, the visit): the quarter-speed start under load CERTIFIED.** SPINSTRT PASS on both wheels,
+> duty drop 0 at the arrival (`debug_261002-103332.log` `BM-SPINSTART` seq 420-421, 762-763), with no arrival spike in the
+> trace. SPINPEAK's FAIL is its wheels-up limit read against the platform's spin-up current, not the start (PL-183).
+>
+> **Earlier 6.1.0 status (2026-10-02):** two-turn spins (735bc9d) for SPINSTRT / SPINPEAK.
 >
 > **6.0 status (2026-09-30):** RELEASE — wheels-up half certified 2026-09-28; the feel under load ✅ CERTIFIED by
 > Stephen's first FlySky drive (*"very responsive... no clicking, no unusual motor movement or sounds. Its ramps are
@@ -1743,9 +1757,14 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 ### PL-167 -- under a heavy load the shipped commutation timing gives up speed with torque to spare
 
-> **Status (2026-10-02): BUILT, DRIVER_REV 47** (9ede499): D-1..D-3 plus PL-167 D-5, as Stephen ruled 2026-10-02 (*"ok
-> let's go with A"*). Certified only by the 6.1.0 visit (dual-a SRVHUNT / SRVKEEP; the floor cells SPINRATE, SPINHOLD,
-> LIMGIVE, RAMPARR, BLKLIMIT, BLKSTOP). Until then it is a desk result (model and pasm_equiv), and the Known Issue stands.
+> **Status (2026-10-02, the 6.1.0 visit): SPEED HELD, CERTIFIED; NOT SHIPPABLE until PL-179.** (`DOCs/analyses/bench/2026-10-02/VISIT-6.1.0-EVALUATION.md`.)
+> SPINRATE PASS (every leg 100-107 %, against 57-94 %), RAMPARR PASS (1,807 / 1,790 and 323 / 320 ms), no path limiting in
+> the FlySky drive, SPINCTL judged 4.64 / 4.74, wheels-up SRVHUNT / SRVKEEP PASS; a hand's load is held. But the blocked
+> stop no longer latches (PL-179), two lag faults and a slow-down kick are new (PL-180), and the boost fires in calm running
+> (PL-181). SPINHOLD / LIMGIVE's single LEFT holds are PL-182; BLKLIMIT / BLKSTOP NOMEAS.
+>
+> **Earlier status (2026-10-02): BUILT, DRIVER_REV 47** (9ede499): D-1..D-3 plus PL-167 D-5, as Stephen ruled 2026-10-02 (*"ok
+> let's go with A"*).
 >
 > **Earlier status (2026-10-01, R21):** a **v6.0.0 Known Issue**; the fix is **6.1.0** work. Stephen: *"ok yes, A lets get
 > 6.0.0 to release first then we'll follow with this new effort"*. The CHANGELOG, the manual's §6.5 / §9, the REWORK page,
@@ -1780,9 +1799,12 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 ### PL-168 -- floor-test premises the runs proved wrong
 
-> **Status (2026-10-02): CORRECTED in the tree** (735bc9d, `test_bench_dual` SRC_REV 74-76): the blocked stop timed from
-> the driver's own count, per-trial obstacle RESULTs, two-turn quarter spins, honest labels, no tether text. The 6.1.0
-> visit's floor-auto and floor-obstacle runs are the first on the corrected premises.
+> **Status (2026-10-02, the 6.1.0 visit): four of five premises CERTIFIED; the coast bound UNEXERCISED.** Two-turn quarter
+> spins measured SPINSTRT / SPINPEAK / SPINLEAD for the first time; SPINCTL was judged at equal speed; the obstacle trials
+> printed their own RESULTs; the labels read true. The coast no-latch bound never ran (the trial timed out, PL-179). Three
+> new wrong premises are PL-182 (LIMGIVE), PL-183 (SPINPEAK), PL-185 (the grab).
+>
+> **Earlier status (2026-10-02): CORRECTED in the tree** (735bc9d, `test_bench_dual` SRC_REV 74-76).
 >
 > **Earlier status (2026-10-01):** 6.1.0 work (R21); no test harness ships in a release archive set. To be corrected before any rerun (Stephen: *"if we deem a test needing to be run again and it's
 > build on wrong premise we should correct that before running again, right?"*).
@@ -1800,8 +1822,12 @@ From `FLOOR-RERUN-EVALUATION.md` §4, §2.1, §7:
 
 ### PL-169 -- the FlySky demos re-send the acceleration setting on knob noise
 
-> **Status (2026-10-01): FIXED IN THE TREE** («#3649»); certified by the 6.1.0 visit's FlySky drive (tier `floor-rc`):
-> no repeated rate lines on a still knob. Both demos send a knob's rate only when it moves more than
+> **Status (2026-10-02, the 6.1.0 visit): the deadband CERTIFIED; the ends NOT SHOWN.** 47 rate updates in the FlySky
+> drive (`debug_261002-104014.log`), each more than 10 mm/s² from the one before, and none while a knob stood still. The
+> knobs were not turned to both stops (VRA 499-1,735, VRB 270-1,514 raw; rates 662-2,867 and 1,048-2,626), so "both ends
+> reached" waits for the next FlySky drive.
+>
+> **Earlier status (2026-10-01): FIXED IN THE TREE** («#3649»). Both demos send a knob's rate only when it moves more than
 > `RC_RATE_DEADBAND_MM_S2` (10) from the rate last sent, or reaches an end of its range (`bRateMoved()`). DERIVED (desk
 > simulation of the demos' integer `map()` over the default 240..1807 calibration): a ±2-count still knob moves the rate
 > at most 8 (VRA) / 6 (VRB) mm/s², so it sends nothing; one-count sweeps reach 200 / 3,000 and 1,000 / 3,000.
@@ -1914,6 +1940,92 @@ overflow with a saturating oracle (258 of 258 over 200 seeds). Until the baselin
 compared against an image that differs by the fix. **Fix:** once the fix is committed and certified, the default
 baseline becomes that commit (a new ref, named in `tools/pasm_equiv/README.md`), so later changes are compared against
 the driver that ships.
+
+### PL-179 -- under D-5 a blocked platform does not stop itself: the protective stop never latched
+
+> **Status (2026-10-02): ⛔ FIX, 6.1.0** («#3662»); found by the 6.1.0 visit (`DOCs/analyses/bench/2026-10-02/VISIT-6.1.0-EVALUATION.md`
+> §3.2, F-1). A regression in a safety function, so 6.1.0 does not ship without it.
+
+**MEASURED 2026-10-02** (`debug_261002-103634.log`, DRIVER_REV 47, 2 A obstacle limit): in the COAST obstacle trial both
+wheels stood still against the object for about 9.2 s (trace `k` 675-2,975, `pos` frozen, state SPIN_UP), the lag at 64-77
+on both, until the harness's own timeout stopped them (`BM-BLOCK` seq 327, `stop_by,TIMEOUT`). Four `EV_FOLDBACK` at contact,
+none after. On DRIVER_REV 46 the same trial stood 1,183 / 1,092 ms (`2026-09-30/floor2/debug_260930-182135.log` seq 362).
+- **The rule:** `bFrontProtect()` (`isp_bldc_motor.spin2:2896-2902`) counts a pass with no tick when `|err|` ≥ `LAG_SOFT`
+  (80) or a limiter count advanced (SPIN_UP / AT_SPEED), and latches at 1,000 in a row. D-5 sets the field back to
+  `LAG_LIM` (64) on a limiter pass, so `|err|` never reached 80; the limiter half never ran 1,000 in a row.
+- **Not established:** the per-pass limiter counts (not recorded). *Consistent with* a limiter acting on many passes but
+  not every one, against design 4.9.5's premise that one acts on every pass. The model (`block`, 2 A, D-5) separates it.
+- **Not to do:** lower `LAG_LIM` or `BLOCKED_PASSES` to make it latch; the stop's timing is a safety bound.
+
+### PL-180 -- lag faults on hard transients, and a slow-down current kick, new at DRIVER_REV 47
+
+> **Status (2026-10-02): ROOT CAUSE FIRST, 6.1.0** («#3662», with PL-179); found by the 6.1.0 visit (evaluation §3.2,
+> §3.4, §2.2; F-2, F-3).
+
+**MEASURED 2026-10-02:**
+- **The BRAKE obstacle trial faulted at contact:** RIGHT re-synced and faulted about 80 ms after the wheels stopped
+  (`debug_261002-103634.log` seq 336, 338; `o_e` −125). DRIVER_REV 46's trial latched with no fault.
+- **A FlySky hard reversal faulted:** from reverse at 175 tps to 98 forward and back to 0; RIGHT in SPIN_DN at `r_err`
+  100, duty 8,827, re-synced at 31,942 ms and faulted at 32,134 ms (`debug_261002-104014.log`). The two DRIVER_REV 46
+  drives had more reversals at speed (78 and 53 SLOW_TO_CHG samples at ≥ 150 tps, against 27) and no fault.
+- **Wheels up, the 80 → 20 ×10⁶ step-down now kicks:** TRKICK-A 79 / 89 mV against 50, `tr_err_pk` 101, `tr_cap` 367
+  (`debug_261002-100025.log` seq 16_718-17_291). The same step on the last ladder (2026-09-22, driver 4) read 0-19 mV and
+  `tr_err_pk` 84-92. No speed-up kicked.
+- **Not established:** a cause, or whether they share one. D-2 acts on the lag in `drv_incr`'s direction and D-5 on
+  `err_`'s sign; a slow-down or reversal is where they could disagree. That is a hypothesis for the model.
+
+### PL-181 -- under the platform's load the lag peaks reach LAG_SOFT in calm running (design risk R2)
+
+> **Status (2026-10-02): WATCH, 6.1.0** (evaluation §3.1, F-4 and F-8). No speed is lost; the bound or D-2 is not touched
+> until the model says whether the boost firing in running matters.
+
+**MEASURED 2026-10-02** (`debug_261002-103332.log` `BM-SPINW` seq 30-58): on the slow and medium schedule legs `err_pk`
+read 79-90 on 7 of 8 wheel-legs (SPINHUNT FAIL LEFT 4 / RIGHT 3 of 4, bound 76); the duty swing fell to 95-539 from
+DRIVER_REV 46's 900-1,650. The model predicted `err_pk` 67-76 (design §5; R2 named A-3's 76 as the guard). SPINERR's
+means read 43-46 at slow against the wheels-up 47-49 band, as on 2026-09-30 (unchanged by the fix). **Settles it:** the
+model's slow / medium legs at the floor's inertia, with and without D-2.
+
+### PL-182 -- LIMGIVE's sampler scores a hold during the spin-up as the field giving way
+
+> **Status (2026-10-02): OPEN, harness, 6.1.0** (evaluation §3.1, F-5). Re-premise before LIMGIVE runs again.
+
+**MEASURED 2026-10-02:** SPINHOLD LEFT FAIL (1 leg) and LIMGIVE FAIL (2 of 31,278 samples) are one held pass each, on
+LEFT, in slow spin leg 2 and slow ramp leg 1 (`BM-LIMW` seq 43, 1_126); neither leg lost speed (`fol_pct` 107; arrival
+1,807 / 1,790 ms). `limSample()` (`test_bench_dual.spin2:18120`) calls a held sample a give-way when the field speed is
+under 98 % of the **target**, which in SPIN_UP it always is; `holdDecay` lowers the field only when a limiter acted (D-3,
+`isp_bldc_motor.spin2:7786-7790`). **Fix:** judge limb (a) only in AT_SPEED, or record the state at each give-way; and the
+next visit traces one slow leg so a breakaway hold is told from a hold at speed.
+
+### PL-183 -- SPINPEAK's 1.80 limit is a wheels-up number; the floor reads the platform's spin-up current
+
+> **Status (2026-10-02): OPEN, harness, 6.1.0** (evaluation §3.1, F-6). Re-premise before SPINPEAK runs again.
+
+**MEASURED 2026-10-02**, the first measurement (two-turn legs): 3.74 / 4.06 (leg 7) and 3.39 / 3.25 (leg 8) against
+1.80 (`BM-SPINSTART` seq 420-421, 762-763). The trace (tid 7) shows a plateau of about 180 ms while SPIN_UP pushes the
+platform (LEFT 59-68 at `k` 272-325), falling to 26 by the arrival at `k` 420 with no spike, so the shape is acceleration,
+not a kick. SPINSTRT, which judges the arrival, PASSes. The 1.80 came from Visit 8 wheels up, about a fifth of the
+inertia. **Fix:** derive the floor limit from the spin-up's own current (the jerk-limited ramp's acceleration on the
+platform's yaw inertia), or judge the arrival's excess over the plateau instead.
+
+### PL-184 -- at the quarter, the lead schedule draws more current than the fixed pair turning one way
+
+> **Status (2026-10-02): OPEN, information, not this fix** (evaluation §3.1, F-7). The timing (PL-105's area), which
+> D-1..D-5 do not touch.
+
+**MEASURED 2026-10-02**, the first measurement of SPINLEAD: 1.17 / 1.30 against 1.05. Clockwise (leg 7 against 9) the
+schedule draws less than the fixed pair (`amps` 990 against 1,043, 779 against 856); counter-clockwise (leg 8 against
+10) more (1,259 against 878, 1,824 against 1,137). One pass each way, no repeat. **Settles it:** a repeat of the quarter
+pairs, both directions, before any claim about the schedule's saving at the quarter on the floor.
+
+### PL-185 -- a hand cannot slow the platform at the grab's 4 A limit, so the grab cells measure nothing
+
+> **Status (2026-10-02): OPEN, harness, 6.1.0** (evaluation §3.3, F-9); dropped from the next sheet until re-premised.
+
+**MEASURED 2026-10-02**, two runs (`debug_261002-103814.log`, `-103915.log`): `RESULT: GRAB -- too light`, `l_pct` 99 /
+`r_pct` 101 and 99 / 98. While held, LEFT's duty rose from about 2,000 to 3,300-4,700 and its sense current from 7-12 to
+41-85, and the speed held; the fold-back engaged briefly (`EV_FOLDBACK` 53, 44; 25). That is the fix doing its job, and
+design R8 predicted it. **Fix:** a limit a hand can reach (well under 4 A), or a known drag in place of the hand, so
+LDPATH / LDHUNT / LDHOLD see path limiting.
 
 ---
 
