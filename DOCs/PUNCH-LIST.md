@@ -2060,6 +2060,36 @@ behaviour is the user's selection", needing a driver change); each with its cost
 10 % ceiling and 2-tick slip). *Corrected 2026-10-02:* the first entry read the right wheel's fault flag as its hold
 status ("HOLDING while rolling"); no hold was ever engaged.
 
+### PL-187 -- above about 175 ×10⁶ the wheel runs rough: gravelly, vibrating, never settling
+
+> **Status (2026-10-02): OPEN, 6.1.0, evidence only** (Stephen's report of the first visit's `dual-limits`; found in its
+> log). Mechanism not established: this tier traces none of its top-speed rungs.
+
+**Stephen, 2026-10-02:** *"at the highest speeds, the motor sounds gravelly. It's having a hard time spinning, and it's
+making terrible noises and a huge amount of vibration. That would suggest that we're out of sync with our positioning at
+the high speeds."* **MEASURED** (`DOCs/analyses/bench/2026-10-02/debug_261002-101625.log`, DRIVER_REV 47, wheels up,
+pack about 20.5 V):
+- **Clean through 175 ×10⁶ on all four wheel/direction pairs:** rate on the speed law (e.g. `rate_x10` −4,685 against
+  −4,676), lag at the servo's point (`err` −48, `err_pk` 71-73), no missed, illegal or skipped hall reads, PWM room 36
+  counts (`BM-RUNG2` / `BM-RUNG3` / `BM-CLIP` seq 141-145).
+- **At 185 ×10⁶, on all four:** the rung never settles in 4 s (`STEADY_TIMEOUT`); the PWM sits at its rails
+  (`lvl_min` 3, `lvl_max` 2,995 of 3,068, room 3, over about 3,017 samples); and the hall reader skips sectors (`hw_skip`
+  3 / 4 / 6 / 2, rids 14, 35, 56, 77), none of which happens below.
+- **The over-command (245 ×10⁶ at 1 A):** the field falls to 13 % of the command and the wheel follows 5 % of it
+  (`BM-FOLLOW kind,OVER` seq 159, 268, 377, 486).
+- **No lag fault and no re-sync anywhere in the segment** (`BM-SEG LIMTOP ... faults,0`), so the field never got 125
+  counts from the rotor: whatever the noise is, it is not a pole slip the fault test sees.
+
+**Rival explanations, none separated by this log:** (a) the drive runs out of voltage: at the rails the sine is clipped
+and the current, and with it the torque, ripples; (b) the lag rises past the torque peak once the duty can rise no
+further (held at `LAG_HOLD`, 140° electrical, PL-105's case), so the wheel labours; (c) commutation timing (the lead)
+goes wrong at that speed. The hall skips fit (a) or (b) as vibration and (c) as mis-timing. **What would separate
+them:** a trace of the 185 rung and of the over-command (`err`, duty, current per 2 ms sample), and a desk read of what
+the drive does once the duty is at its ceiling. **Why it matters to a user:** full power is 165 ×10⁶, which ran clean
+here at 92 % duty on a 20.5 V pack; on a pack at the nominal 18.5 V the same speed needs about 102 % of that duty
+(DERIVED: 25,460 × 20.5 / 18.5 ≈ 28,200 against the 27,648 ceiling), so a user at full power on a lower pack may reach
+this region. Evidence for the "less torque in reserve near top speed" Known Issue (P5).
+
 ### PL-185 -- a hand cannot slow the platform at the grab's 4 A limit, so the grab cells measure nothing
 
 > **Status (2026-10-02): CORRECTED, `test_bench_dual` SRC_REV 78** («#3664»): `LOAD_LIMIT_A` 4 → 2 A (derived: 2 A drove
