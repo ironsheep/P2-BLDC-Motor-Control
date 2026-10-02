@@ -785,6 +785,20 @@ if [ -n "$MEASURE_ONLY" ]; then
     fi
     DEBUG_BYTES=$(( $(wc -c < "$MEASURE_DEBUG" | tr -d ' ') - PLAIN_BYTES ))
 else
+    # PL-68: a source-tree build prints NOT_A_PACK in its banner, so the log names its commit here: HEAD, and
+    #  whether src/ and tools/ match it (with changes, the binary is NOT that commit)
+    if run git -C "$SRC_DIR/.." rev-parse --short HEAD; then
+        echo "+ git -C $SRC_DIR/.. status --porcelain -- src tools"
+        TREE_CHANGES=$(git -C "$SRC_DIR/.." status --porcelain -- src tools)
+        if [ -z "$TREE_CHANGES" ]; then
+            echo "bench-run.sh: src/ and tools/ match that commit -- this binary is that commit"
+        else
+            printf '%s\n' "$TREE_CHANGES"
+            echo "bench-run.sh: src/ or tools/ has CHANGES -- this binary is NOT that commit"
+        fi
+    else
+        echo "bench-run.sh: not a git checkout -- the commit is unknown"
+    fi
     # the bench: the one compile, -d (every tier's debug kernel and records) and -l (the listing kept beside it)
     run "$PNUT" -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
     STATUS=$?

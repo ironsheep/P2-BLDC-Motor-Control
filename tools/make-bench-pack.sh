@@ -20,7 +20,7 @@
 #
 #   bench-<commit>/
 #     bench-run.sh     the runner itself; run from here it compiles nothing and runs <tier>.bin
-#     BENCH-PACKAGE    the commit, when it was built, and each binary's SHA-256
+#     BENCH-PACKAGE    the commit, when it was built, and each binary's SHA-256 (every banner also prints the commit)
 #     README.txt       per test: its binary, what to type, and the exact pnut-term-ts line that runs
 #     <tier>.bin
 #     *.bmp            every file a binary loads at run time (a panel's LAYER bitmaps), read from the binary itself
@@ -53,6 +53,14 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/tree" "$WORK/$NAME"
 echo "+ git archive $REF | tar -x -C $WORK/tree"
 git archive "$REF" | tar -x -C "$WORK/tree"
+
+# ---- the commit goes into every binary's banner ---------------------------------------------------------------
+# src/isp_bench_commit.spin2 is tracked reading NOT_A_PACK and is never edited in the tree; only the archive COPY
+# here is rewritten, so every harness banner in this pack prints the commit it was built from (PL-68).
+COMMIT_OBJ="$WORK/tree/src/isp_bench_commit.spin2"
+run sed -i -e 's/^\(    COMMIT_PACKED = \)FALSE/\1TRUE/' -e "s/\"NOT_A_PACK\"/\"$COMMIT\"/" "$COMMIT_OBJ"
+grep -q "^    COMMIT_PACKED = TRUE" "$COMMIT_OBJ" && grep -q "\"$COMMIT\"" "$COMMIT_OBJ" \
+    || { echo "ERROR: could not write commit $COMMIT into $COMMIT_OBJ -- no pack built" >&2; exit 1; }
 
 for tier in "${TIERS[@]}"; do
     echo
