@@ -73,10 +73,15 @@ def stage_from_dir(srcdir, dest):
 
 
 def compile_driver(path, pnut):
-    r = subprocess.run([pnut, '-l', path], capture_output=True, text=True)
+    # The user config refuses a build that selects no configuration (2026-09-28), so the driver is compiled under the
+    # two-wheel one, as tools/build-check.sh compiles each library object. A tree from before the selection ignores the
+    # symbol, so one command builds both the baseline and the candidate.
+    cmd = [pnut, '-l', '-D', 'CFG_DUAL_MOTOR', path]
+    print('+ ' + ' '.join(cmd))
+    r = subprocess.run(cmd, capture_output=True, text=True)
     base = os.path.splitext(path)[0]
     if r.returncode != 0 or not os.path.isfile(base + '.lst') or not os.path.isfile(base + '.bin'):
-        raise BuildError('pnut-ts -l %s failed:\n%s\n%s' % (path, r.stdout, r.stderr))
+        raise BuildError('%s failed:\n%s\n%s' % (' '.join(cmd), r.stdout, r.stderr))
     return base + '.lst', base + '.bin'
 
 

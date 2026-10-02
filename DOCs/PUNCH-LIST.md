@@ -1885,6 +1885,21 @@ works on where the held field sits at the limit; if it lands, it changes this en
 The gate itself (`tools/check_style.sh` without `--self-test`) is unaffected. **Fix:** a `T128.spin2` fixture on which
 T128 fires, and only T128.
 
+### PL-178 -- `tools/pasm_equiv` compares against a baseline from before the hold-speed fix
+
+> **Status (2026-10-02):** OPEN, tooling; found by «#3655» phase 1. Its other half is fixed: `compile_driver()` built the
+> driver with no `-D`, which the user config has refused since 2026-09-28, so the tool could not build the tree at all; it
+> now passes `-D CFG_DUAL_MOTOR` and echoes the command (MEASURED: `tools/pasm_equiv/run.sh` builds baseline and
+> candidate).
+
+**MEASURED 2026-10-02:** the tool's default baseline is the ref `mem-reduce-start`. With the hold-speed fix's boost
+(D-2) in the tree it reports NOT EQUIVALENT (60 equal, 48 diverged), as it must: the boost changes behaviour by design.
+«#3655» proved the rest of the image unchanged with a null-operand copy (108 of 108 equal) and the boost's add free of
+overflow with a saturating oracle (258 of 258 over 200 seeds). Until the baseline moves, every later PASM change is
+compared against an image that differs by the fix. **Fix:** once the fix is committed and certified, the default
+baseline becomes that commit (a new ref, named in `tools/pasm_equiv/README.md`), so later changes are compared against
+the driver that ships.
+
 ---
 
 ## Removed from this list

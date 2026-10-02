@@ -798,6 +798,24 @@ Runs print `set-backs [L, R]` when there are any.
 - Rev A's coarser fold-back (R7).
 - Where above 8 N·m the field now gives way.
 
+#### 4.9.11 As built (DRIVER_REV 47, «#3655», 2026-10-02)
+
+Three differences from the sketch above, each a correction found in the build:
+- **The set-back is signed by `err_`, not by `drv_incr`.** A limited pass whose `jerkStep` takes the speed through
+  zero changes `drv_incr`'s sign on that pass; the sketch's sign then moved the field 21 counts away from the rotor
+  (pasm_equiv mutant m3, scenario `d5_reversal_crossing`). `lag_s` ≥ 64 is formed with `err_`'s sign, so that is the
+  sign of the lag being taken back.
+- **`lim_seen` is re-taken at any pass whose state was not SPIN_UP or AT_SPEED**, at the top of `gettgtincr`. Invariant:
+  at `holdGate` the change in `duty_capped_ + foldback_cnt_` counts only frames run in SPIN_UP or AT_SPEED. Without it
+  the PL-55 ceiling's clamps during a slow-down read as "a limiter acted" on the next speed-up's first pass, and D-3
+  decayed the field once (mutant m1, scenario `d3_spin_dn_then_up`).
+- **D-5b's limiter half counts only in SPIN_UP or AT_SPEED**, the states the limit hold acts in. In SPIN_DN the field
+  is still held at `LAG_HOLD`, so `|err|` counts a stall there, and a ceiling clamping a slow-down is not a blocked
+  wheel. The harness's mirror (`test_bench_dual` `blockWatch()`) follows the same rule.
+
+Costs from the listing: cog 443 used / 53 free; LUT run image 486 / 26 free; +20 clocks per trim frame (D-2), +28 per
+pass unlimited, +48 on a set-back pass; worst window 2,221 clocks, 61.1 % of the 160 MHz frame (budget 75 %).
+
 ---
 
 ## 5. The measure of benefit (for Stephen's decision; P5)

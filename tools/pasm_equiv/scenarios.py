@@ -531,4 +531,87 @@ def named_scenarios(con):
     s.mid(1_000, 2, 'cmd', 0, 0)
     out.append(s)
 
+    # PL-167 D-1 / D-2 (HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.2, 4.4): the trim at SERVO_ACC_SHIFT 16 with servoBoost's
+    #  fast slope past LAG_SOFT, at the duty ceiling. Each writes SERVO_SHIFT 16 itself, so it runs at D-1's shift
+    #  whatever the baseline's CON says, at 300 MHz, the clock with the largest duty_max_ (30_720), so
+    #  (duty_max_ - duty_ff) << 16 is nearest 2^31. load 0 and SENSE_ZERO 20 keep the fold-back out (the reading
+    #  stays at its rest offset, under the threshold), so the duty reaches duty_max_ and the clamp holds it there.
+    def boost_setup(s):
+        s.add(1, 'param', 'SERVO_SHIFT', 16)
+        s.add(1, 'param', 'SENSE_ZERO', 20)
+        s.add(1, 'load', 0)
+        _set_ramps(s, 1, 2_091, 1_000_000, 2_091, 1_000_000)
+
+    s = mk('boost_stall_cap_300', 14_000, clk_hz=300_000_000)  # a slow field stalled: duty_ff near 0, err_ held
+    boost_setup(s)                                         #  at LAG_HOLD, the boost every frame, duty_ at the cap
+    s.add(20, 'cmd', 2_000_000, 0)
+    s.add(250, 'lagnow', 75)
+    s.add(300, 'rotor', 'stall')
+    s.add(13_000, 'rotor', 'follow')
+    s.add(13_200, 'cmd', 0, 0)
+    out.append(s)
+
+    s = mk('boost_band_top_300', 12_000, clk_hz=300_000_000)   # the band's top: err_ up to ~124 (the largest add
+    boost_setup(s)                                         #  short of the fault test), the field then held there
+    s.add(20, 'cmd', 30_000_000, 0)
+    s.add(400, 'lagnow', 82)
+    s.add(11_000, 'lagnow', 20)
+    s.add(11_200, 'cmd', 0, 0)
+    out.append(s)
+
+    s = mk('boost_reversal', 6_000, clk_hz=270_000_000)    # a reversal through zero with the boost active: lag_s
+    boost_setup(s)                                         #  takes drv_incr's sign each frame, as the pass's does
+    s.add(20, 'cmd', 10_000_000, 0)
+    s.add(300, 'lag', 70)
+    s.add(2_000, 'cmd', -10_000_000, 0)
+    s.add(4_500, 'lag', 20)
+    s.add(5_000, 'cmd', 0, 0)
+    out.append(s)
+
+    # PL-167 D-3 / D-5 (HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.2, 4.9): holdGate, holdDecay's limiter gate and the lim_seen
+    #  snapshots. boost_setup keeps the fold-back out, so in the first and third the duty ceiling's count is the only
+    #  limiter count that can move; the second and fourth add the fold-back with 'over' stretches.
+    s = mk('d3_capped_only_160', 12_000, clk_hz=160_000_000)  # a stall at speed: the field held at LAG_HOLD with no
+    boost_setup(s)                                           #  limiter (a pause, drv_incr kept) while D-2 lifts the
+    s.add(20, 'cmd', 20_000_000, 0)                          #  duty; then duty_capped_ alone advances: held at LAG_LIM,
+    s.add(4_900, 'lagnow', 30)                               #  set back, and decayed; then released and ramped back
+    s.add(5_000, 'rotor', 'stall')
+    s.add(9_500, 'rotor', 'follow')
+    s.add(11_600, 'cmd', 0, 0)
+    out.append(s)
+
+    s = mk('d5_setback_fold', 14_000)                   # a limited pass with the lag past LAG_LIM: the set-back, with
+    s.add(1, 'param', 'SERVO_SHIFT', 16)                #  prior_angle moved too, so fwdrev keeps its side (I-7);
+    _set_ramps(s, 1, 2_091, 1_000_000, 2_091, 1_000_000)  #  forward, then reverse, each at speed against a stalled
+    for sign, f0 in ((1, 0), (-1, 7_000)):              #  rotor with fold-back stretches as the lag climbs past 64
+        s.add(f0 + 20, 'cmd', sign * 10_000_000, 0)
+        s.add(f0 + 3_400, 'lagnow', 55)
+        s.add(f0 + 3_500, 'rotor', 'stall')
+        for f in range(f0 + 3_600, f0 + 6_000, 70):
+            s.add(f, 'over', 25, 2.0)
+        s.add(f0 + 6_100, 'rotor', 'follow')
+        s.add(f0 + 6_200, 'cmd', 0, 0)
+    out.append(s)
+
+    s = mk('d3_spin_dn_then_up', 9_000)                 # the PL-55 ceiling clamping in SPIN_DN, then SPIN_UP: those
+    boost_setup(s)                                      #  clamps were counted in duty_capped_ by frames not run in
+    s.add(20, 'cmd', 3_000_000, 0)                      #  SPIN_UP / AT_SPEED, so gettgtincr re-takes lim_seen and the
+    s.add(200, 'lagnow', 40)                            #  first SPIN_UP pass is no limited pass (the lag spans 40 ..
+    for i, f in enumerate(range(1_600, 8_400, 230)):    #  83, so that pass's lag_s is past LAG_LIM on many of them)
+        s.add(f, 'cmd', 1_000_000 if i % 2 == 0 else 3_000_000, 0)
+    s.add(8_600, 'cmd', 0, 0)
+    out.append(s)
+
+    s = mk('d5_reversal_crossing', 4_000, clk_hz=270_000_000)  # a reversal through zero in ONE pass, a limiter acting
+    boost_setup(s)                                         #  and the lag past LAG_LIM and LAG_SOFT (D-2 active): the
+    s.add(20, 'cmd', 1_000, 0)                             #  pass formed lag_s with drv_incr +1_000, its jerkStep left
+    s.add(300, 'lagnow', 80)                               #  -1_091, and the set-back must follow err_'s sign. The
+    s.add(400, 'rotor', 'stall')                           #  fold-back stretch and the reversed command land in the same
+    s.add(1_200, 'over', 40, 2.5)                          #  inter-pass interval, so no limited pass sets the field
+    s.add(1_200, 'cmd', -10_000_000, 0)                    #  back before the crossing pass does
+    s.add(2_400, 'rotor', 'follow')
+    s.add(2_500, 'lag', 20)
+    s.add(3_600, 'cmd', 0, 0)
+    out.append(s)
+
     return out
