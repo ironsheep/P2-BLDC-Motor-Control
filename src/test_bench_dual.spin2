@@ -703,6 +703,11 @@
 ''               01 Oct 2026 -- SRC_REV=72, FMT 47: PL-68. New record BM-COMMIT right after BM-BANNER: src_rev and the commit
 ''               this binary was built from (the short SHA in a bench pack, NOT_A_PACK from the source tree;
 ''               isp_bench_commit.spin2). Its own record because BM-BANNER and BM-BUILD have no room under 280 bytes.
+''               02 Oct 2026 -- SRC_REV=73, FMT 48: task 3654 (HOLD-SPEED plan sec 2). Part A's ladder prints the servo fix's
+''               two wheels-up cells, judged from each rung's steady BM-RUNG2 window by ladderServo(): R22-DUAL-SRVHUNT-A
+''               (A-3: at rungs 1-2 a duty swing <= 400 and err_pk <= 76) and R22-DUAL-SRVKEEP-A (A-5: at rungs 7-8 duty
+''               and net current within +/-5 % of the DRIVER_REV 46 reference in srvKeepRef). Each is per wheel, ANDed over
+''               every judged window, NOMEAS unless both directions were judged. No record changes shape.
 ''
 '' =================================================================================================
 
@@ -820,8 +825,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 72                               ' hand-bumped whenever this file changes
-    FMT_VERSION = 47                                    ' BM- record-format version
+    SRC_REV     = 73                               ' hand-bumped whenever this file changes
+    FMT_VERSION = 48                                    ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -2493,6 +2498,27 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
     RATELAW_PCT_HI    = 103
     RATELAW_QUANT_TICKS = 1                                 ' the band grows by this many ticks of the rung's own count
 
+    ' SRVHUNT (A-3; HOLD-SPEED plan sec 2, design sec 6): at ladder rungs 1-2 (10 and 20 x10^6) every steady window's duty
+    '  swing (duty_pk - duty) is at most SRVHUNT_SWING_MAX and its |err| peak at most SRVHUNT_ERRPK_MAX, each wheel in both
+    '  directions. Unfixed value: today's servo gain read err_pk 76-86 at these rungs (VISIT-8-EVALUATION.md sec 3.2,
+    '  MEASURED); the model predicts 67-76 and a swing of 148-154 under the fix (design R2, R6). Rival explanation for a
+    '  PASS: a calm rung that never hunted, which a window of ~500 samples at each of four rung-directions makes unlikely.
+    SRVHUNT_RUNG_LO   = 1
+    SRVHUNT_RUNG_HI   = 2
+    SRVHUNT_SWING_MAX = 400
+    SRVHUNT_ERRPK_MAX = 76
+    ' SRVKEEP (A-5): at ladder rungs 7-8 (120 and 140 x10^6) the steady duty and net current are each within
+    '  +/-SRVKEEP_PCT of the DRIVER_REV 46 reference (srvKeepRef, below): the unloaded behaviour of v6.0.0 kept. Rungs 7-8
+    '  only, because they are the only rungs with a DRIVER_REV 46 window on disk: 2026-09-27/rc/debug_260927-141620.log,
+    '  part KICK, which steps through this same rung loop and BM-RUNG2 window (drv_rev 46 at its line 22). The newest part-A
+    '  ladder (2026-09-22/debug_260922-161317.log) is DRIVER_REV 4, a driver before v6.0.0's rework, so rungs 3-6 have no
+    '  reference this cell could hold the fix to. Negative: a commutation placement change moves current 15-26x
+    '  (dual-a-legacy, VISIT-7B-EVALUATION.md). Rival explanation for a FAIL: a warm motor's current, a few percent.
+    SRVKEEP_RUNG_LO   = 7
+    SRVKEEP_RUNG_HI   = 8
+    SRVKEEP_PCT       = 5
+    SIGN_MASK_BOTH    = %11                                 ' srvHuntSigns / srvKeepSigns: bit 0 reverse, bit 1 forward
+
     ' STOPCUR (PL-82): the stop's peak sense_i is judged against a FIXED bound, never against the hold it
     '  was drawing moments earlier. The hold reference drifts about 25 % as a motor warms through a 2 min
     '  run and RESETS when the other motor starts (MEASURED, Visit 4 FAULTB: hold_mV_x10 9_302 -> 6_995 on
@@ -2894,6 +2920,14 @@ ladderIncre     LONG    5_000_000, 10_000_000, 20_000_000, 40_000_000, 60_000_00
 '                    small 9<->8 (7x10^6, the smallest command change there is at the top), large 9<->6
 '             The two moves that only reposition the wheel (0->2 entering low, 5->9 entering the
 '             ceiling cell) are measured like any other rung; they are transitions too.
+' SRVKEEP's DRIVER_REV 46 reference (SRC_REV 73, task 3654): BM-RUNG2 steady duty and inet_x10 at rungs 7 and 8, per
+' wheel and direction, from DOCs/analyses/bench/2026-09-27/rc/debug_260927-141620.log (drv_rev 46, line 22). A value
+' measured twice is the mean of the two, both lines cited. Order: LEFT reverse, LEFT forward, RIGHT reverse, RIGHT
+' forward; each row rung 7 duty, rung 7 inet_x10, rung 8 duty, rung 8 inet_x10.
+srvKeepRef      LONG    18_486, 285, 21_534, 354                ' LEFT  -120: :87          -140: :93, :129
+                LONG    18_495, 298, 21_540, 360                ' LEFT  +120: :138         +140: :144, :180
+                LONG    18_629, 333, 21_687, 404                ' RIGHT -120: :189         -140: :195, :231
+                LONG    18_665, 342, 21_742, 420                ' RIGHT +120: :240         +140: :246, :282
 ladderAllIdx    LONG    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11            ' CLIMB, LADDER_CLIMB_STEPS
                 LONG    10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0                ' DESCEND, LADDER_DESCEND_STEPS
                 LONG    2, 3, 2, 5, 2, 5, 6, 5, 8, 5, 9, 8, 9, 6, 9     ' DELTA, LADDER_DELTA_STEPS
@@ -3520,6 +3554,11 @@ sSfCellTrKickT  BYTE    "R21-DUAL-TRKICK-T", 0
 ' SRC_REV 71 (task 3651): the record labels' own self-check, declared and judged by EVERY build (PART_NONE's included)
 sSfCellTokTab   BYTE    "R21-DUAL-TOKTAB", 0
 sSfCritTokTab   BYTE    "TABLES_CLEAN", 0
+' SRC_REV 73 (task 3654, HOLD-SPEED plan sec 2): the servo fix's wheels-up cells, part A (Visit 8's A-3 and A-5)
+sSfCellSrvHunt  BYTE    "R22-DUAL-SRVHUNT-A", 0
+sSfCritSrvHunt  BYTE    "SWING400_ERRPK76", 0
+sSfCellSrvKeep  BYTE    "R22-DUAL-SRVKEEP-A", 0
+sSfCritSrvKeep  BYTE    "DUTY_INET_5PCT_R46", 0
 sSfCritPkCal    BYTE    "CAL_POINT_MV", 0
 sSfCritPkSecond BYTE    "SECOND_POINT_MV", 0
 sSfCritPkAbsent BYTE    "UNPLUG_NOT_ABSENT", 0
@@ -3973,6 +4012,12 @@ VAR { sign-off accumulators (design sec 5.2) -- cog 0 only; index = motor slot }
     '  how a criterion this rig cannot provoke stays visible instead of passing by silence.
     LONG    bSfNoFoldRan[INST_MOTORS]                       ' NOFOLD: no derate at any of the ladder's base rungs
     LONG    bSfNoFoldOk[INST_MOTORS]
+    ' SRC_REV 73 (task 3654): SRVHUNT (A-3) and SRVKEEP (A-5). Each judges a wheel in BOTH directions, so a direction
+    '  that never gave a valid window leaves the cell NOMEAS: the signs judged are a mask, SIGN_MASK_BOTH when both were
+    LONG    srvHuntSigns[INST_MOTORS]
+    LONG    bSfSrvHuntOk[INST_MOTORS]
+    LONG    srvKeepSigns[INST_MOTORS]
+    LONG    bSfSrvKeepOk[INST_MOTORS]
     LONG    bSfRateLawRan[INST_MOTORS]                      ' RATELAW (PL-79): the same rungs' rate against the law
     LONG    bSfRateLawOk[INST_MOTORS]
     LONG    bSfStopCurRan[INST_MOTORS]                      ' STOPCUR: a FAULTB trial that reached AT_SPEED
@@ -4249,6 +4294,10 @@ PRI initRunState() | slotIdx
         instLagN[slotIdx] := 0
         bSfNoFoldRan[slotIdx] := FALSE
         bSfNoFoldOk[slotIdx] := TRUE                        ' ANDed over the base rungs
+        srvHuntSigns[slotIdx] := 0
+        bSfSrvHuntOk[slotIdx] := TRUE                       ' ANDed over every judged window
+        srvKeepSigns[slotIdx] := 0
+        bSfSrvKeepOk[slotIdx] := TRUE
         bSfRateLawRan[slotIdx] := FALSE
         bSfRateLawOk[slotIdx] := TRUE                       ' ANDed over the base rungs with a valid window
         bSfStopCurRan[slotIdx] := FALSE
@@ -6108,6 +6157,7 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
             safeEvent := rungMeasure(side, motorIncre, LADDER_STEADY_MS, LADDER_SETTLE_MS, WINDOW_MS, TRUE, 1)
             rungEmitAll(seg, rid, rungIdx, side, motorIncre)
             ladderNoFold(side, rungIdx, motorIncre)
+            ladderServo(side, rungIdx, motorIncre)          ' SRC_REV 73: SRVHUNT (A-3) and SRVKEEP (A-5)
 #ifdef DBP_KICK
             kickStats(side - SIDE_LEFT)                     ' SRC_REV 54: the frozen ring, before a recovery can re-arm it (I10)
             emitKickTr(rid, side, motorIncre)
@@ -6164,6 +6214,37 @@ PRI ladderNoFold(side, rungIdx, motorIncre) | slotIdx, predX10, ratioPct, bandPc
             bandPct := rateBandPct(rsTicks)
             bSfRateLawRan[slotIdx] := TRUE
             bSfRateLawOk[slotIdx] := bSfRateLawOk[slotIdx] and (ratioPct >= (RATELAW_PCT_LO - bandPct)) and (ratioPct <= (RATELAW_PCT_HI + bandPct))
+
+PRI ladderServo(side, rungIdx, motorIncre) | slotIdx, signIdx, pRef, refDuty, refInet, inet
+' SRVHUNT (A-3) and SRVKEEP (A-5), the servo fix's wheels-up cells (SRC_REV 73, task 3654), read from the rung's own steady
+' window after rungMeasure(), as ladderNoFold() is. Only a valid window counts, and SRVKEEP also needs this lifetime's zero
+' (inet is net of it); a judged window sets its direction's bit, so a cell missing a direction reports NOMEAS. Every
+' visit of a rung is judged: the climb, the descent and the delta walk all reach rungs 1, 2, 7 and 8.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param rungIdx - index into ladderIncre
+' @param motorIncre - the rung's signed increment
+'
+' @local slotIdx - motor slot
+' @local signIdx - 0 reverse, 1 forward
+' @local pRef - this wheel and direction's row of srvKeepRef
+' @local refDuty - the DRIVER_REV 46 steady duty at this rung
+' @local refInet - the DRIVER_REV 46 inet_x10 at this rung
+' @local inet - this window's net current, x10
+
+    if bRgWindowValid
+        slotIdx := side - SIDE_LEFT
+        signIdx := (motorIncre < 0) ? 0 : 1
+        if (rungIdx >= SRVHUNT_RUNG_LO) and (rungIdx <= SRVHUNT_RUNG_HI)
+            srvHuntSigns[slotIdx] |= DECOD signIdx
+            bSfSrvHuntOk[slotIdx] := bSfSrvHuntOk[slotIdx] and ((rsDutyPk - rsDutyMean) <= SRVHUNT_SWING_MAX) and (rsErrPk <= SRVHUNT_ERRPK_MAX)
+        elseif (rungIdx >= SRVKEEP_RUNG_LO) and (rungIdx <= SRVKEEP_RUNG_HI) and bLifeZeroValid[slotIdx]
+            pRef := @srvKeepRef[((slotIdx * 2) + signIdx) * 4 + ((rungIdx - SRVKEEP_RUNG_LO) * 2)]
+            refDuty := LONG[pRef][0]
+            refInet := LONG[pRef][1]
+            inet := rsIMeanX10 - lifeZeroX10[slotIdx]
+            srvKeepSigns[slotIdx] |= DECOD signIdx
+            bSfSrvKeepOk[slotIdx] := bSfSrvKeepOk[slotIdx] and ((abs(rsDutyMean - refDuty) * 100) <= (SRVKEEP_PCT * refDuty)) and ((abs(inet - refInet) * 100) <= (SRVKEEP_PCT * refInet))
 
 #endif
 
@@ -28068,6 +28149,8 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellLagA)
                 emitSignoffDecl(@sSfCellNoFold)
                 emitSignoffDecl(@sSfCellRateLaw)
+                emitSignoffDecl(@sSfCellSrvHunt)
+                emitSignoffDecl(@sSfCellSrvKeep)
                 emitSignoffDecl(@sSfCellIdleMvA)
                 emitSignoffDecl(@sSfCellTrKickA)
 #elseifdef DBP_CLOCK
@@ -28356,6 +28439,9 @@ PRI emitSignoffs() | slotIdx, side
                     emitSignoff(@sSfCellInteg, side, @sSfCritInteg, sfStarts[slotIdx] > 0, sfIntegSum[slotIdx], INTEG_SUM_LO, INTEG_SUM_HI, sfStarts[slotIdx] + sfIntegN[slotIdx], @sSfUnitsCount)
                     emitSignoffBool(@sSfCellNoFold, side, @sSfCritNoFold, bSfNoFoldRan[slotIdx], bSfNoFoldOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitSignoffBool(@sSfCellRateLaw, side, @sSfCritRateLaw, bSfRateLawRan[slotIdx], bSfRateLawOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    ' SRC_REV 73 (task 3654): A-3 and A-5; NOMEAS unless both directions gave a judged window
+                    emitSignoffBool(@sSfCellSrvHunt, side, @sSfCritSrvHunt, srvHuntSigns[slotIdx] == SIGN_MASK_BOTH, bSfSrvHuntOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitSignoffBool(@sSfCellSrvKeep, side, @sSfCritSrvKeep, srvKeepSigns[slotIdx] == SIGN_MASK_BOTH, bSfSrvKeepOk[slotIdx], SIGNOFF_ONE_INSTANCE)
                     emitIdleMoveCell(@sSfCellIdleMvA, slotIdx)
                     ' task 3573: NOMEAS when no start from rest gave a control, or no running-speed change was judged
                     emitSignoff(@sSfCellTrKickA, side, @sSfCritTrKick, sfTrN[slotIdx] > 0, sfTrKickPk[slotIdx], TRKICK_LO, TRKICK_HI, sfTrN[slotIdx], @sSfUnitsMv)
