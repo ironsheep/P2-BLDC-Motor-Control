@@ -170,11 +170,11 @@ certification, with this visit's COAST trial as its negative.
 ### 1.6 The stopped wheel in a pivot turn (added 2026-10-02, PL-186)
 
 **Why.** In the FlySky drive, a full left or right turn stops one wheel and drives the other; the stopped wheel rolled
-backward up to 225-250 tps, so the platform spun about its centre (Stephen saw it; the telemetry confirms it). One side
-had no hold at all; the other reported HS_HOLDING at almost no current while rolling. **Deliverable:** the cause, read
-from the hold path in `isp_bldc_motor.spin2` / `isp_steering_2wheel.spin2` and from the 2026-09-30 drives (does 6.0.0 do
-the same?), then the fix: the stopped wheel holds in a pivot, and a hold the load moves reports HS_SLIPPED. A change in
-what a stopped wheel does is a driver function: it goes to Stephen with its benefit before it is built (P5).
+backward up to 225-250 tps, so the platform spun about its centre (Stephen saw it; the telemetry confirms it). **Cause
+(found 2026-10-02):** the inner wheel gets plain power 0, stops, and coasts by the FlySky program's stop selection
+(`holdAtStop(false)`); the platform's yaw drives the free wheel back. No hold was engaged. **Deliverable:** Stephen's
+choice of what a pivot's inner wheel does (hold selected in the demo, or a pivot-only hold in the drive), brought with
+its benefit and cost (P5), then built.
 **Verify:** the next visit's FlySky drive and a harness pivot leg that judges the stopped wheel's travel in the log.
 
 ---
