@@ -59,7 +59,8 @@ the wheels-up checks of the PL-167 fix and the floor run that certifies it, on `
 | PL-169 | The FlySky demos re-send the acceleration setting on knob noise | Deadband CERTIFIED 2026-10-02; the ends wait for a drive that turns both knobs to their stops |
 
 **In 6.1.0 — watches from the 2026-10-02 visit:** PL-181 (the boost fires in calm running under load; SPINERR's band),
-PL-184 (the schedule's current at the quarter by direction; information, not this fix).
+PL-184 (the schedule's current at the quarter by direction; information, not this fix), PL-186 (in a pivot turn the
+stopped wheel rolls back unheld; desk first).
 
 **Fixed in the tree; waits for its binary's next run** (no planned run loads these binaries, so nothing is owed)
 
@@ -2016,6 +2017,19 @@ platform's yaw inertia), or judge the arrival's excess over the plateau instead.
 schedule draws less than the fixed pair (`amps` 990 against 1,043, 779 against 856); counter-clockwise (leg 8 against
 10) more (1,259 against 878, 1,824 against 1,137). One pass each way, no repeat. **Settles it:** a repeat of the quarter
 pairs, both directions, before any claim about the schedule's saving at the quarter on the floor.
+
+### PL-186 -- in a pivot turn the stopped wheel is not held, so the platform spins about its centre
+
+> **Status (2026-10-02): OPEN, 6.1.0, desk first** (evaluation §3.4, F-14). Seen by Stephen and confirmed in the telemetry.
+
+**Stephen, 2026-10-02:** in a full left or right turn, *"it would run really well for a little bit, and then ... the
+robot would start spinning around its physical center instead of around the stock wheel."* **MEASURED**
+(`debug_261002-104014.log`): right turn, 118.6-119.2 s, RIGHT at power 0 reads `r_hs` HS_HOLDING at 3-23 mA while it rolls
+backward 25 → 225 tps; left turn, 144.1-145.5 s, LEFT at power 0 is STOPPED with no hold (`l_hs` HS_OFF) and rolls up to
+250 tps, while the driven wheel runs at 400-450 tps and 2-5.5 A. The stopped wheel moved in 125 of 547 pivot samples.
+**Two questions for the desk:** why one side has no hold and the other's hold gives no torque, and why a hold that the
+load moves at 225 tps still reads HS_HOLDING (the API says HS_SLIPPED). D-1..D-5 do not touch the hold; whether 6.0.0
+does the same is read from the 2026-09-30 drives first.
 
 ### PL-185 -- a hand cannot slow the platform at the grab's 4 A limit, so the grab cells measure nothing
 
