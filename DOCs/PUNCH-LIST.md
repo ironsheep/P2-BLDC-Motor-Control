@@ -68,7 +68,10 @@ characterisation plan takes up the scan.
   PL-174 (vibration study), PL-175 (N-motor shape), PL-176 (motor-adoption
   tool), PL-177 (back-EMF delta release).
 
-**Ships as a Known Issue:** PL-118 (phase-short braking is not current-limited; ruling 1 A).
+**Ships as a Known Issue:** PL-118 (phase-short braking is not current-limited; ruling 1 A); PL-193 (the pack voltage
+is not used by the drive), PL-194 (regenerative current is not shown), PL-195 (the hold's defaults sized unloaded),
+PL-196 (`calibrate()` does nothing) — the v6.1.0 entry's other Known Issues are PL-164 (clock), the DocoEng group and
+the serial group below.
 
 **Watch** — each run carries what would make it actionable, at no extra load: PL-43 and PL-126 (silent stops, one
 instance each since the supply repair), PL-120 (the right board's high side; no refusal in the 69 Rev B program loads
@@ -1512,6 +1515,42 @@ time (LEFT 31 %, RIGHT 70 %, `path_min` 733); the path limiter engaged once insi
 own negative, is an engage-release cycle every 720-790 ms. **Fix:** count the transitions after the window's first engage.
 **Watch:** SPINSTOP failed once (`debug_261002-181611.log`, medium leg 3 RIGHT stopped at 216 against 212, one tick past its
 tolerance), new on DRIVER_REV 49, once in 20 stops.
+
+### PL-193 -- the drive does not use the pack sensor's voltage: watts and the speed table assume DRIVE_VOLTAGE
+
+> **Status (2026-10-03): OPEN, a v6.1.0 Known Issue** (CHANGELOG v6.1.0). Filed at the 6.1.0 build wrap-up: the Known
+> Issue had no entry behind it.
+
+`getPackVoltage()` reads the optional sensor (`VOLTAGE-SENSOR.md`), but `getCurrent()`'s watts and the speed table use
+the configured `user.DRIVE_VOLTAGE`. A pack below its nominal voltage reaches the duty ceiling at a lower speed than the
+table predicts (PL-187's arithmetic: full power needs about 102 % duty at 18.5 V). **To close:** decide with Stephen whether the
+drive reads the sensor when one is fitted, and where (watts only, or the speed table too).
+
+### PL-194 -- `getCurrent()` does not show regenerative current
+
+> **Status (2026-10-03): OPEN, a v6.1.0 Known Issue; a board limit.** Filed at the 6.1.0 build wrap-up.
+
+The current a moving wheel returns to the supply when it is slowed or pushed is neither measured nor limited
+(`DRIVER_BOARDS.md:93`); why the sense path cannot see it is not established here. Kin to PL-118 (the shunt does not carry a phase
+short's current). **To close:** either a documented hardware limit Stephen rules permanent (and this entry is removed by
+decision), or an estimate from the pack sensor's rise during braking, if a fitted sensor can see it.
+
+### PL-195 -- `setHoldLimits()`'s defaults were sized with the wheels unloaded
+
+> **Status (2026-10-03): OPEN, a v6.1.0 Known Issue.** Filed at the 6.1.0 build wrap-up. The defaults were made public
+> and documented as sized unloaded in 6.0.0 (Bench Readiness plan, Stephen *"yes A"*).
+
+The hold's ceiling, rise and limit times were set on lifted wheels. A platform at rest on a slope or pushed by hand loads
+the hold the way a lifted wheel does not. **To close:** measure the hold on the floor (a held stop pushed by hand, the
+platform on a slope) and either confirm the defaults or retune them with Stephen's ruling.
+
+### PL-196 -- `calibrate()` is public and does nothing
+
+> **Status (2026-10-03): OPEN, a v6.1.0 Known Issue.** Filed at the 6.1.0 build wrap-up. Since 6.0.0 it returns
+> `ERR_NOT_IMPLEMENTED` and its doc says so (`src/isp_bldc_motor.spin2:601`; API-14 in the 2026-09-27 archive).
+
+The method is kept so existing programs compile. **To close:** Stephen decides whether it gains a body (the offset sweep
+generalised, PL-176, is the natural one) or is retired in a major release.
 
 ---
 
