@@ -115,9 +115,10 @@ brought to Stephen. P14 joins the list: no new timing, rate or budget may be fix
   the host serial's bit period is an integer (`isp_serial_singleton.spin2:116,128`; the SBUS receiver already uses the
   smart pin's fractional bits, `jm_sbus_rx.spin2:113`); the Spin2 serial receive loop has 16 µs per character at 624 kbaud
   (`isp_queue_serial.spin2:605-608`), its cost per character unmeasured.
-- **Demos:** every demo and `isp_steering_serial.spin2:22` fix `_clkfreq = 270_000_000`; the HDMI demos `CLKSET` to the
+- **Demos:** every demo and `isp_steering_serial.spin2:22` fix `CLK_FREQ = 270_000_000` (with `_clkfreq = CLK_FREQ`
+  beside it); the HDMI demos `CLKSET` to the
   video mode's 270 MHz (`p2videodrv.spin2:325-331`), so they run at that clock only; **`demo_single_motor.spin2:185`'s
-  `waitms(20_000)` exceeds `waitms`'s 2^31-clock bound above ~107 MHz and returns at once (a defect today, at 270 MHz;
+  `waitms(END_HOLD_MS)` (`END_HOLD_MS = 20_000`, `:51`) exceeds `waitms`'s 2^31-clock bound above ~107 MHz and returns at once (a defect today, at 270 MHz;
   p2kb `p2kbSpin2Waitms`).**
 - **Silicon** (p2kb `p2kbArchClockSystem`): PLL output rated 3.33-320 MHz (180 typical), 350 overclock; a crystal-derived
   clock may miss `_clkfreq` by up to `_errfreq` (1 MHz default), so non-integer-MHz clocks occur.
@@ -250,7 +251,9 @@ edited constants exists before D1.
   the hold limits and the limit hold behave on the Doco.
 - **The offset lookup reads the voltage given to `start()`** (`:5116` reads `user.DRIVE_VOLTAGE`; the ceilings use the
   started voltage, `:4491`; `getDriveVoltage()` already reports the started one, `:1800`). The PL-14 class: every
-  remaining `user.DRIVE_VOLTAGE` read in the library is checked.
+  remaining `user.DRIVE_VOLTAGE` read in the library is checked — at generation the only code read in the motor and
+  steering objects is `:5116`; `isp_steering_serial.spin2:250` (`validVoltageForChoice(user.DRIVE_VOLTAGE)`) and
+  `test_bench_t0.spin2:1747` read it too and are judged in the same pass.
 - **Hall rate against the front pass:** the Doco's top hall rate (~1.3-1.5 k ticks/s, `MOTOR_CHOICE.md`) exceeds the
   1 kHz front pass, which the 6.5″ (≤ 572 ticks/s) never did. Every front-cog rule that compares positions or ticks per
   pass (`bFrontProtect()` `:2913-2916`, the speed window, the stop planner) is read for that case and tabulated.
@@ -260,8 +263,8 @@ edited constants exists before D1.
 
 ## 6. Doco tables and driver changes
 
-**Definite:** the Rev A Doco offsets per voltage (`offsetsForMotor()` `:5131`), the Rev A ceilings
-(`confgurePowerLimits()` `:5240`), the forward and reverse minimum increments (PL-71, `:5242-5243`), and a measured
+**Definite:** the Rev A Doco offsets per voltage (`offsetsForMotor()` `:5103`, its Rev A lookup `:5127-5134`), the Rev A
+ceilings (`confgurePowerLimits()` `:5206`, the Rev A lookups `:5240-5241`), the forward and reverse minimum increments (PL-71, `:5242-5243`), and a measured
 feedforward line for the Doco (today `ff_ceiling := abs(maxFwdIncreAtPwr)`, so no duty reserve at power 100,
 `:4498-4505`) — each from D1, with its provenance at the constant. The Rev B Doco columns are left as they are and
 labelled unverified at the constant.
@@ -339,7 +342,7 @@ Behaviours this plan changes, and every artifact that describes them:
 
 | Behaviour | Artifacts |
 |---|---|
-| The Doco's offsets, ceilings, minimums, feedforward; verified on Rev A | `MOTOR_CHOICE.md` Doco rows and their "not re-checked" lines (`:37`, `:77-81`, `:92`); `DOCOENG_MOTOR.md` (verified conditions); `ADDING_MOTOR.md` (`:16-26`, `:52-59`, `:231-234`, `:256-259` "symmetric about zero", `:294-295`, step 6's ceiling rule); `README.md:32`; the source comments at the tables (`isp_bldc_motor.spin2:5118-5126` stale notes) |
+| The Doco's offsets, ceilings, minimums, feedforward; verified on Rev A | `MOTOR_CHOICE.md` Doco rows and their "not re-checked" lines (`:77-81`, `:92`); `DOCOENG_MOTOR.md` (verified conditions); `ADDING_MOTOR.md` (`:16-26`, `:52-59`, `:231-234`, `:256-259` "symmetric about zero", `:294-295`, step 6's ceiling rule); `README.md:32`; the source comments at the tables (`isp_bldc_motor.spin2:5118-5126` stale notes) |
 | The motor-adoption tool | `ADDING_MOTOR.md` offset step; `TECHNIQUES.md` (characterising a motor); README document list if a page is added |
 | The encoder as the Doco's reference | `TECHNIQUES.md` (trusting a measurement); `.claude/skill-conventions.md` instruments |
 | Clock independence, the supported range, the start refusal | `ADDING_MOTOR.md:47` ("The P2 at 270 MHz"); `DRIVER-THEORY-OF-OPERATIONS.md:223`, `:455`, `:461` (dead gap truncation), the pass/frame description; `MOTOR-6.5IN-TECHNICAL-MANUAL.md:221` (duty floor/ceiling "at 270 MHz") and `:890`, with `DOCs/analyses/MOTOR-6.5IN-MANUAL-SOURCES.md`; `DEVELOP.md` (choosing a clock); `DRIVE-OBJECTS.md` (`start()`'s errors, the new error); every demo's clock line and header; `README.md` |
@@ -413,7 +416,44 @@ measured floor. Every other question is answered.
   DEBUG footprint; 0 warnings; exclusion: `hng034rm` (PL-1, cannot compile). No failure groups, so no fix-when decision.
   **A green gate is a compile result only**: behaviour is certified at the bench visits (§10).
 
+## 17. Section ↔ task table (plan-to-tasks, 2026-10-03)
+
+All tasks carry priority `high` and tag `v620`; `seq` is the order (plan-to-tasks overlay).
+
+| Plan § | Deliverable | Task | seq |
+| --- | --- | --- | --- |
+| §1 (1-2) | Drive pass K = 23, dead gap rounded up, duty floor, `DRIVE_PASS_US` computed; `pasm_equiv` clock arg | «#3670» | 1 |
+| §1 (3-4) | Front-cog counted times as time; `FOLD_MIN_MV` derived; board-detect paced | «#3671» | 2 |
+| §1 (5) | Host serial fractional bit period; receive-cost record | «#3672» | 3 |
+| §1 (7) | Demo waits sliced; clock-range lines | «#3673» | 4 |
+| §1 (8) | Harness judges frame and pass at any clock; runner clock names | «#3674» | 5 |
+| §2 | Doco bench configuration and voltage tiers | «#3675» | 6 |
+| §3 | Encoder reader and self-check | «#3676» | 7 |
+| §5 (offset) | Offset lookup reads the started voltage; PL-14 class sweep | «#3677» | 8 |
+| §5 (model) | Doco servo model, hall-rate table, built-in ramp analysis | «#3678» | 9 |
+| §4 | `test_bench_single` measurement harness (two-phase) | «#3679» | 10 |
+| §10 D1 | Visit D1 run sheet, pack, hand-back | «#3680» | 11 |
+| §9 (desk) | `serial_certify.py` reconciled with the current driver (D1 wait window) | «#3681» | 12 |
+| §10 D1 | D1 evaluation | «#3682» | 13 |
+| §1 (6) | Clock floor derived; `ERR_CLOCK_TOO_SLOW` ruled (P5), then built | «#3683» | 14 |
+| §6 | Doco tables and ruled driver changes | «#3684» | 15 |
+| §8 | Motor-adoption tool (PL-176) | «#3685» | 16 |
+| §7 | Doco qualification cells | «#3686» | 17 |
+| §10 D2 + 6.5″ | D2 and 6.5″ session run sheets, pack, hand-back | «#3687» | 18 |
+| §10 D2 + 6.5″, §9 | D2 and 6.5″ session evaluation; serial PLs closed | «#3688» | 19 |
+| §11 | User documentation | «#3689» | 20 |
+| §12 | v6.2.0 prepared for the tag | «#3690» | 21 |
+
+**Dispatch:** `arbiter-serial` (the project default; `EXCLUSIVE_RESOURCES` puts `src/isp_bldc_motor.spin2` and the user
+config under one writer). **Two-phase:** «#3679» (the harness's per-motor constants block is what «#3685»'s tool
+inherits). **Batches and gates:** «#3670»-«#3679» gate once before «#3680»; «#3681»-«#3686» gate once before «#3687».
+**Rework pass:** the clock work precedes every measurement (§0.2); the serial re-check follows the clock changes it
+must reflect and runs in the D1 wait; the refusal follows D1's front-cog cost; docs and release follow certification.
+
 ## Revision history
 
 - **2026-10-03** — written.
 - **2026-10-03** — started: §16 records the build number, tree audit, tracking readiness and entry baseline.
+- **2026-10-03** — tasked: §17. Anchors re-opened at generation; four corrected in place (`offsetsForMotor()` `:5103`,
+  `confgurePowerLimits()` `:5206`, the demos' `CLK_FREQ` / `END_HOLD_MS` wording, `MOTOR_CHOICE.md:37` dropped) and the
+  PL-14 sweep's three sites named in §5.
