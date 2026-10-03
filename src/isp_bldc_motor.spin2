@@ -4495,7 +4495,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 
     degrPerTic, hallTicsPerRotation := hallTicInfoForMotor()
 
-    fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE)
+    fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE, eMotorVoltage)
     writeOffsetsTenths(fwdDegrees * TENTHS_PER_DEGREE, revDegrees * TENTHS_PER_DEGREE)
     ' R18.4: the 6.5in pair is re-derived by the front cog from the measured lead table from its first slot on;
     '  a motor with no lead table keeps its fixed pair, and so does the legacy control build, whose whole
@@ -4625,10 +4625,10 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     circInMM_x10, _ := wheelGeometry()
 
     ' PL-14: honour the caller's eMotorVoltage parameter instead of silently re-reading the
-    ' compile-time user.DRIVE_VOLTAGE. Behaviour-neutral today (every shipped caller already
-    ' passes user.DRIVE_VOLTAGE here), but it makes the parameter -- and the caller's own
+    ' compile-time user.DRIVE_VOLTAGE. It makes the parameter -- and the caller's own
     ' validVoltageForChoice() check on it -- meaningful, and lets two motors run at different
-    ' voltages.
+    ' voltages. The Doco offsets follow it too (offsetsForMotor(), task 3677); no read of
+    ' user.DRIVE_VOLTAGE remains in this object.
     confgurePowerLimits(eMotorVoltage)
     ' R18.4 D-1: the feedforward's scale is the increment at which the motor's back-EMF would use the whole
     '  duty range. Task 3603 (PL-107): it is the MOTOR's back-EMF line, not the speed ceiling. Until now it
@@ -5274,10 +5274,14 @@ PRI applyFixedOffsets(fwdDegrees, revDegrees)
     waitms(LEAD_WRITE_SETTLE_MS)
     writeOffsetsTenths(normalisedDegrees(fwdDegrees) * TENTHS_PER_DEGREE, normalisedDegrees(revDegrees) * TENTHS_PER_DEGREE)
 
-PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr, index
+PRI offsetsForMotor(eMotorType, eMotorVoltage) : fwdDegrees, revDegrees | ofsDegr, index
 ' Return the forward and reverse commutation offsets for a motor type (and, for the Doco motor, the board revision and drive voltage).
 '
+' PL-14 class (task 3677): the Doco row is chosen by the voltage the motor was STARTED at, as the power limits are
+'  (confgurePowerLimits(eMotorVoltage)), never by the compile-time user.DRIVE_VOLTAGE, which a caller may override.
+'
 ' @param eMotorType - the motor ENUM (MOTR_*)
+' @param eMotorVoltage - the drive voltage ENUM (PWR_*) start() was given
 ' @returns fwdDegrees - commutation offset for negative increments, in degrees
 ' @returns revDegrees - commutation offset for positive increments, in degrees
 
@@ -5287,7 +5291,7 @@ PRI offsetsForMotor(eMotorType) : fwdDegrees, revDegrees | ofsDegr, index
 
     case eMotorType
       MOTR_DOCO_4KRPM:
-        index := lookdown(user.DRIVE_VOLTAGE: PWR_7p4V..PWR_24p0V)
+        index := lookdown(eMotorVoltage: PWR_7p4V..PWR_24p0V)
         ' 15 degrees per tic so +- 15 is our offset?
 {
             ' 7.4V:  51-54 best, 55 fault?! (Verif) 52 starts better!  B: 28, 33
@@ -7033,7 +7037,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 51      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 52      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7332,6 +7336,10 @@ CON { driver internal Constants }
                                             '     settle (WIND_SETTLE_MS, WIND_STILL_MS, WIND_SETTLE_MAX_MS, in 1 ms steps)
                                             '     and its pack reads (16 x 4 ms); the steering fault-clear test wait is a
                                             '     getms() bound (FAULT_CLEAR_TIMEOUT_MS). No PASM change; no ABI change
+                                            ' 52: task 3677, the Doco offsets are chosen by the voltage start() was given
+                                            '     (offsetsForMotor(type, eMotorVoltage)), as the power limits already were;
+                                            '     no read of user.DRIVE_VOLTAGE remains in this object (PL-14 class). The 6.5in
+                                            '     pair does not depend on voltage and is unchanged
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
