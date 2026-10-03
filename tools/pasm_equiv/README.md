@@ -13,7 +13,19 @@ tools/pasm_equiv/run.sh --scenario rand-1234     # replay one scenario (a diverg
 tools/pasm_equiv/run.sh --scenario named         # the edge suite only
 tools/pasm_equiv/run.sh --list                   # the named scenarios
 tools/pasm_equiv/run.sh --candidate-dir /path/to/other/src   # any source tree as the candidate
+tools/pasm_equiv/run.sh --baseline-ref HEAD --clock 270      # DRIVER_REV 50 against the last commit, every scenario at 270 MHz
+tools/pasm_equiv/run.sh --clock 199.5 --no-named --seeds 6   # a non-integer clock (MHz, fractional allowed)
 ```
+
+**`--clock MHZ`** (task 3670; the clock-sensitivity ruling, 2026-10-03) sets the clock for the run: every scenario's
+`clk_hz` becomes it, the frame budget's second column is set against that clock's frame (`init()`'s CLKFREQ /
+`PWM_RATE_IN_HZ` rounded to the nearest even clock count, 6,136 at 270 MHz) instead of the fixed 270 MHz one, and the
+header prints every `init()`-derived value at that clock, DRIVER_REV 49's formulas against DRIVER_REV 50's, each
+changed one marked `CHANGED` (`initmodel.derived_rev49()` / `derived()`; frame, ADC period, PWM frame, dead gap,
+`cfg_ctcks`, the pass's time in microseconds, the duty floor, `bias`, `duty_max`, `pwm_limit`). Without `--clock` the
+scenarios keep their own clocks and the table prints for 270 MHz. The 3,636-clock guard at 160 MHz does not move.
+The two images take part only at the new values: the PASM did not change at DRIVER_REV 50, so the run proves it
+equivalent there, and the table is the model's account of what `init()` now hands it.
 
 It needs `pnut-ts` on `PATH` (or `--pnut`), `git` for the baseline tag, and Python 3.8+. It builds into a new
 temp directory (or `--work DIR`), never into `src/`. **Exit status:** 0 equivalent and inside the frame budget;
@@ -92,8 +104,9 @@ input. It is closed-loop only through things the comparison itself checks:
   so a change can land mid-plan, between planner stages.
 - **Other stimulus.** ATN deliveries, and a front-cog reflex that clears the fault latch and writes the stop after a
   re-sync.
-- **CT1 schedule.** 22- and 23-frame passes, a coin-flip at clocks where `frame_cnt` divides `cfg_ctcks` (176 and
-  264 MHz), and adversarial 1- to 12-frame passes.
+- **CT1 schedule.** 23-frame passes (`cfg_ctcks` is 22.5 frames at DRIVER_REV 50, so at every clock the pass is 23;
+  until DRIVER_REV 49 it was 500 us, a 22- or 23-frame coin-flip where `frame_cnt` divided it, at 176 and 264 MHz),
+  and adversarial 1- to 12-frame passes.
 
 The 55 named scenarios are the plan's §4.2.4 edge suite (`--list`):
 

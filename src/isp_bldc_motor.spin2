@@ -272,7 +272,6 @@ DAT { misc time constants }
     ' time constants based on CPU freq
     ticks1ms    LONG    0
     ticks1us    LONG    0
-    ticks500us  long    0                       ' the drive-pass deadline; the pass itself runs every 23 ADC frames, ~1913 Hz (see drvMotor)
 
 PUB null()
 '' This is not a top-level object
@@ -2741,7 +2740,7 @@ PUB bFrontWaitExpired(nStartTicks) : bExpired
 '' @param nStartTicks - getct() when the wait began
 '' @returns bExpired - T/F where T means more than FRONT_SYNC_WAIT_PASSES drive passes have gone by since {nStartTicks}
 
-    bExpired := (getct() - nStartTicks) > FRONT_SYNC_WAIT_PASSES * DRIVE_PASS_US * (CLKFREQ / US_PER_SEC)
+    bExpired := (getct() - nStartTicks) > muldiv64(FRONT_SYNC_WAIT_PASSES * drivePassUs, CLKFREQ, US_PER_SEC)    ' clocks
 
 PUB frontDrive(power, bSync) : eStatus | limitPwr, correctedPower
 '' FRONT COG ONLY: write this motor's command for {power}, unless it is protectively or emergency-stopped; the owner sends any ATN
@@ -3326,11 +3325,11 @@ PUB frontStopMs() : nMs
 '' FRONT COG ONLY: return the milliseconds until the field is at rest if a stop is written now
 ''
 '' PL-161 (DRIVER_REV 39): the driver's own plan (drv_stop_passes, the largest of the takes above), at
-'' DRIVE_PASS_US each, rounded up. THE AGE: the plan counts passes from the published pass k's own time T_k, and the
+'' drivePassUs each, rounded up. THE AGE: the plan counts passes from the published pass k's own time T_k, and the
 '' status run is read at some t >= T_k (it is written only after the pass), so the field's rest, at most
 '' T_k + passes x 522.7 us, is at most t + that: counting from now can only over-state the stop (early), never
-'' under-state it. Pass k + 2 cannot read its command before T_k + 1_000 us (each pass waits its 500 us CT1
-'' deadline), and the plan is published at most ~232 us after T_k (ten PWM frames), so a stop written within ~268 us
+'' under-state it. Pass k + 2 cannot read its command before T_k + 1_000 us (each pass waits its CT1 deadline,
+'' 22.5 frames = 511 us, DRIVER_REV 50), and the plan is published at most ~232 us after T_k (ten PWM frames), so a stop written within ~268 us
 '' of the read is taken by pass k + 1 or k + 2, the two cases the plan covers. Both front cogs write a limit's stop
 '' before any other work on its path, a few method calls after the read.
 ''
@@ -4351,7 +4350,6 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 
     ticks1ms   := (CLKFREQ / 1_000)
     ticks1us   := (CLKFREQ / 1_000_000)
-    ticks500us := (ticks1ms * 500) / 1_000  ' phrased this way for better result
 
     pinbase := eMotorBasePin                            ' record base pin number (validated and claimed by setupForStart())
 
@@ -4402,7 +4400,10 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 '  responsiveness of motor to desire
 '  middle value is angular diff and motor postion relative to hall position
 '  deflection is direction and speed dependent
-    frame_cnt := (ticks1us * (1_000_000_000 / PWM_RATE_IN_HZ)) / 1_000
+    ' DRIVER_REV 50 (task 3670): the frame is CLKFREQ / PWM_RATE_IN_HZ rounded to the nearest EVEN clock count (a tie
+    '  rounds up), at any clock: the PWM's triangle runs 2 x (frame_cnt / 2) and the ADC counts frame_cnt, so an odd
+    '  frame made the two disagree by a clock a frame. (CLKFREQ + PWM_RATE) / (2 x PWM_RATE) is C / 2P rounded half up.
+    frame_cnt := ((CLKFREQ + PWM_RATE_IN_HZ) / (2 * PWM_RATE_IN_HZ)) * 2
     debug[user.DBGCH_LIFECYCLE](" - Calc FRAME: ", udec(frame_cnt))
 
     ' preload driver values before driver start
@@ -4419,12 +4420,16 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' eDetectedBoard's REV_A/REV_B values can't match a BRD_REV_A/BRD_REV_B comparison), so
     ' every board has always gotten the compliant 260 ns. Deleted, not repaired.
     gapInNs := 260
-    dead_gap    := (ticks1us * gapInNs) / 1_000 ' (was OFFSET) 260 of these made into "value nS"
+    ' DRIVER_REV 50 (task 3670): rounded UP, from the 64-bit product CLKFREQ x gapInNs (muldiv64), so it is never under
+    '  the 250 ns minimum at any clock (it was truncated: 70.2 -> 70 clocks at 270 MHz)
+    dead_gap    := mulDivUp(CLKFREQ, gapInNs, 1_000_000_000)        ' (was OFFSET) 260 of these made into "value nS"
     pwm_limit   := (frame_cnt / 2) - (dead_gap  / 2)    'PWM duty hard limit 1/2 freq of PWM
 
     ' .. and set up rest
     ' orig higher power code used this
-    duty_min    := 100 << 4 #> (dead_gap / 2) << 4
+    ' DRIVER_REV 50: the floor is a fixed fraction of the frame, DUTY_MIN_FRAME_NUM / DUTY_MIN_FRAME_DEN (100 / 6136, as it
+    '  was at 270 MHz), at every clock; the dead-gap term is the same floor start-up has always had and never binds
+    duty_min    := muldiv64(frame_cnt, DUTY_MIN_FRAME_NUM, DUTY_MIN_FRAME_DEN) << 4 #> (dead_gap / 2) << 4
                                                         '    duty_min    := dead_gap << 4 #> dead_gap << 4
                                                         ' Chip's new code adjusted this, why?
                                                         '    duty_min    := 200 << 4 #> dead_gap << 4
@@ -4447,7 +4452,13 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     '  duty_max: ff_ceiling scales by the two below, and the slope does not move with the ceiling.
     dutyAtFfLine := (pwm_limit << 4) / 2
     servo_shift := SERVO_ACC_SHIFT                      ' R18.4 D-2: the trim's gain (ff_ceiling follows the power limits, below)
-    cfg_ctcks   := ticks500us                           ' drive-pass deadline; the pass runs at the first control pass after it (PL-50, see drvMotor)
+    ' DRIVER_REV 50 (task 3670): the drive-pass deadline is DRIVE_PASS_FRAMES frames less half a frame (22.5 frames), so the
+    '  deadline lies half a frame after the 22nd frame's test and half a frame before the 23rd's: K = 23 frames a pass at
+    '  every clock, whatever the ADC wait's jitter or the hub phase (it was 500 us, which the 22nd test beat at clocks
+    '  other than 270 MHz: PL-50). The pass runs at the first control pass after it (see drvMotor)
+    cfg_ctcks   := DRIVE_PASS_FRAMES * frame_cnt - frame_cnt / 2
+    ' the pass's time, rounded up to the microsecond, from the same three
+    drivePassUs := mulDivUp(DRIVE_PASS_FRAMES * frame_cnt, US_PER_SEC, CLKFREQ)
     ' PL-155: floated for the rest zero and the start checks, WHATEVER holdAtStop() chose; the program's own stop mode
     '  is applied by applyStartSettings() once the checks pass (usrStopMode is kept, never reset here)
     bSettingsLive := FALSE
@@ -4757,11 +4768,26 @@ PRI msForPasses(nPasses) : nMs
 ' Return the milliseconds {nPasses} drive passes take, rounded up; 0 for none (frontStopMs()).
 '
 ' @param nPasses - drive passes, 0 to PLAN_PASSES_MAX
-' @returns nMs - their time, DRIVE_PASS_US each, plus 1 when there are any
+' @returns nMs - their time, drivePassUs (us) each, plus 1 when there are any
 
     nMs := 0
     if nPasses > 0
-        nMs := nPasses * DRIVE_PASS_US / 1_000 + 1
+        nMs := nPasses * drivePassUs / 1_000 + 1
+
+PRI mulDivUp(nMult1, nMult2, nDivisor) : nResult
+' Return {nMult1} x {nMult2} / {nDivisor} from the 64-bit product, rounded UP (DRIVER_REV 50: the clock derivations).
+'
+' @param nMult1 - first factor, unsigned
+' @param nMult2 - second factor, unsigned
+' @param nDivisor - divisor, unsigned, non-zero
+' @returns nResult - the quotient, plus 1 when the division leaves a remainder
+'
+' The remainder is under {nDivisor}, which is under 2^32, so the two wrapped 32-bit products differ exactly when the
+'  remainder is not 0.
+
+    nResult := muldiv64(nMult1, nMult2, nDivisor)
+    if nMult1 * nMult2 <> nResult * nDivisor
+        nResult++
 
 
 VAR { * user request values * }
@@ -5517,7 +5543,10 @@ CON ' -- TASK: the front cog --
     ' ...and a front cog serving two motors applies one a pass: the left on the odd phases with this bit clear (1, 5),
     '  the right on those with it set (3, 7), so each wheel's apply comes round every 4 passes (isp_steering_2wheel)
     RAMP_WHEEL_BIT         = 2
-    DRIVE_PASS_US          = 523       ' one PASM drive pass, 522.7 us rounded up (PL-50)
+    ' DRIVER_REV 50: the running driver's pass time is the VAR drivePassUs, derived at start from DRIVE_PASS_FRAMES, frame_cnt
+    '  and CLKFREQ. This constant is its nominal value in time units alone, DRIVE_PASS_FRAMES / PWM_RATE_IN_HZ rounded up
+    '  (522.7 -> 523 us), for a bench's compile-time sizing; no clock enters it, and no running code reads it
+    DRIVE_PASS_US          = (DRIVE_PASS_FRAMES * US_PER_SEC + PWM_RATE_IN_HZ - 1) / PWM_RATE_IN_HZ
     FRONT_SYNC_WAIT_PASSES = 4          ' bound on an in-flight request's wait for its driver (fault left, sync taken, e-stop
                                         '  left), in drive passes; polled once a front pass, never waited in one (PL-161)
     REQ_ACK_TIMEOUT_MS     = 20         ' bound on a posted request's answer; the front cog's worst case is 19 ms (the
@@ -6793,6 +6822,9 @@ CON { driver internal Constants }
     PWM_RATE_IN_HZ   = 44_000
     DRIVE_PASS_FRAMES   = 23        ' PL-50/C-1: one drive pass every 23 PWM (ADC) frames, about 1913 passes/s
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
+    ' DRIVER_REV 50: the duty floor's share of the frame, as a fraction: 100 counts of the 6_136-clock frame (270 MHz) = 1.63 %
+    DUTY_MIN_FRAME_NUM   = 100
+    DUTY_MIN_FRAME_DEN   = 6_136
 
     DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 24        ' drive_u .. drv_stop_fp (R20.1 added foldback_frames, PL-160 drv_accel_now, PL-161
@@ -6815,7 +6847,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 49      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 50      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7083,6 +7115,15 @@ CON { driver internal Constants }
                                             '     505 of 512; start image 145; read from the compiler. pasm_equiv
                                             '     against DRIVER_REV 48: every frame window in budget (the drive
                                             '     pass +34 clocks); only limiter scenarios diverge. No ABI change
+                                            ' 50: task 3670, the drive pass and the dead gap hold at any clock (DOCO-AND-CLOCK
+                                            '     plan 1, overlay P14). init() only: frame_cnt is CLKFREQ / PWM_RATE_IN_HZ rounded
+                                            '     to the nearest even clock count (the PWM and the ADC agree); cfg_ctcks is
+                                            '     DRIVE_PASS_FRAMES x frame_cnt - frame_cnt / 2, so a pass is 23 frames at every
+                                            '     clock; dead_gap is 260 ns rounded UP from a 64-bit product (70 -> 71 clocks at
+                                            '     270 MHz, never under 250 ns); duty_min is 100 / 6136 of the frame; the pass's time
+                                            '     is the VAR drivePassUs, derived at start. At 270 MHz only cfg_ctcks (135000 ->
+                                            '     138060), dead_gap (70 -> 71) and bias (1499 -> 1498) change. No PASM change;
+                                            '     no ABI change; cog 463 of 496, run image 505 and start image 145 of 512, unchanged
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7440,7 +7481,7 @@ VAR  {  Motor Parameters  }
     LONG    ff_ceiling      ' R18.4 D-1: the motor's back-EMF line (task 3603), NOT the speed ceiling; feedforward = |drv_incr| * duty_max / this
     LONG    dead_gap        ' delay between driving h/l side of driver (never drive both at once)
     LONG    accel_dn        ' PL-160: the slow-down acceleration limit, the most drv_incr changes per pass while |drv_incr| falls (was ramp_down)
-    LONG    cfg_ctcks      ' # clock ticks of the 500 uSec drive-pass deadline (the pass runs every 23 ADC frames, PL-50)
+    LONG    cfg_ctcks      ' # clock ticks of the drive-pass deadline, 22.5 frames: DRIVE_PASS_FRAMES x frame_cnt - frame_cnt / 2 (a pass every 23 ADC frames)
     LONG    stop_mode       ' control / user setting, enum: [SM_FLOAT, SM_BRAKE]
     LONG    e_stop          ' ES_* (PL-132): ES_OFF, or the kind of stop latched; any other value stops all motor function
     LONG    accel_up        ' PL-160: the speed-up acceleration limit, the most drv_incr changes per pass while |drv_incr| grows (was ramp_max)
@@ -7479,6 +7520,9 @@ VAR { R18.4 D-6: what the path limiter reads }
     LONG    userCmdGen           ' advanced by every command written, so an owner sees a new one arrive
     LONG    holdSlotsAgo         ' rpm-window slots since the lag limiter last held the field, saturating at SHORT_SLOTS
     LONG    lastLagHeldSeen      ' lag_held as the previous slot read it
+
+VAR { the drive pass's time, set by init() (DRIVER_REV 50) }
+    LONG    drivePassUs          ' us: DRIVE_PASS_FRAMES x frame_cnt clocks at CLKFREQ, rounded up (was the constant DRIVE_PASS_US = 523)
 
 CON { error record }
 
@@ -7723,9 +7767,9 @@ pl_Uh           jmp     #lutCodeStart                   ' enter LUT-resident sta
                                                         ' RAM calls them.
 
     ' =========================================================================
-    '  MOTOR DRIVE LOOP - one pass every 23 ADC frames: about 1913 passes/s (522.7 uSec) at 200, 270 or 300 MHz.
-    '       cfg_ctcks_ is a 500 uSec deadline, but CT1 is tested (jnct1) only at the end of each frame-aligned
-    '       .ctlMotor pass, and 22 truncated frames fall just short of it, so the pass runs on the 23rd (PL-50).
+    '  MOTOR DRIVE LOOP - one pass every 23 ADC frames: about 1913 passes/s (522.7 uSec) at every clock (DRIVER_REV 50).
+    '       cfg_ctcks_ is a 22.5-frame deadline (init()), and CT1 is tested (jnct1) only at the end of each frame-aligned
+    '       .ctlMotor pass: the 22nd test is half a frame short of it and the 23rd half a frame past, so the pass runs on the 23rd (PL-50).
     '       Every per-pass rate (drv_incr, the ramps) is therefore per 522.7 uSec, not per 500.
     '       time to adjust angle...
     ' -------------------------------------------------------------------------

@@ -59,7 +59,7 @@ class Scenario:
     def default_pass(self, i):
         con = self._con
         d = initmodel.derived(self.cfg, con)
-        cfgc, fr = d['ticks500us'], d['frame_cnt']
+        cfgc, fr = d['ctcks'], d['frame_cnt']          # DRIVER_REV 50: 22.5 frames, so never an exact multiple
         n = -(-cfgc // fr)
         if cfgc % fr == 0:
             return n + (random.Random(self.seed * 977 + i).random() < 0.5)

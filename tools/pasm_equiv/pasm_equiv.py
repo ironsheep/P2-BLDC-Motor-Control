@@ -103,6 +103,11 @@ def main(argv=None):
     ap.add_argument('--candidate-ref', default=None, help='take the candidate from this git ref instead')
     ap.add_argument('--work', default=None, help='scratch directory for the builds (default: a new temp dir)')
     ap.add_argument('--guard', type=float, default=0.25, help='frame-budget guard at 160 MHz (default 0.25)')
+    ap.add_argument('--clock', type=float, default=None, metavar='MHZ',
+                    help='the system clock, MHz (may be fractional, e.g. 270.25): every scenario runs at it, the '
+                         'frame budget is set against its frame (init()\'s even-rounded CLKFREQ / PWM_RATE), and the '
+                         'DRIVER_REV 49 -> 50 init() values at it are printed before / after (default: each '
+                         'scenario\'s own clock, the budget against 270 MHz)')
     ap.add_argument('--pnut', default=None, help='path to pnut-ts')
     ap.add_argument('--coverage', action='store_true',
                     help='report coverage of every code image of both builds, and fail (exit 3) if moved code '
@@ -110,6 +115,10 @@ def main(argv=None):
     ap.add_argument('--list', action='store_true', help='list the named scenarios and exit')
     args = ap.parse_args(argv)
 
+    if args.clock is not None:
+        if not 1.0 <= args.clock <= 1000.0:
+            ap.error('--clock %s MHz: expected 1 to 1000' % args.clock)
+        initmodel.CLOCK_OVERRIDE = int(round(args.clock * 1_000_000))   # inherited by the forked workers
     own = args.work is None
     work = args.work or tempfile.mkdtemp(prefix='pasm_equiv_')
     try:
@@ -130,6 +139,29 @@ def _print_images(img):
             how = ('SETQ2 at ' + ', '.join(im.loaders)) if im.loaders else 'no SETQ2 load found'
         print('            %-9s %-14s %3d/%d  %-17s loaded by %s' % (img.label if k == 0 else '', im.title, im.used,
                                                                     im.size, where, how))
+
+
+def _budget_clock():
+    """(clock Hz, its frame in clocks) the budget's second column is set against: --clock, else 270 MHz."""
+    hz = initmodel.CLOCK_OVERRIDE or 270_000_000
+    return hz, ((hz + 44_000) // 88_000) * 2          # init()'s frame at PWM_RATE_IN_HZ 44_000, nearest even
+
+
+def _mhz(hz):
+    return ('%.3f' % (hz / 1e6)).rstrip('0').rstrip('.')
+
+
+def _print_init_values(base, cand):
+    """The init()-derived values at the budget clock, DRIVER_REV 49's formulas against DRIVER_REV 50's (the model in
+    initmodel.py; the PASM images do not take part: the run compares them at the new values)."""
+    hz = _budget_clock()[0]
+    con = dict(base.con)
+    con.update(cand.con)
+    print('            init() values at %s MHz, DRIVER_REV 49 -> 50 (initmodel.py; both images run at the new values):'
+          % _mhz(hz))
+    for name, unit, before, after in initmodel.before_after(hz, con):
+        print('              %-14s %-28s %12d -> %-12d %s' % (name, unit, before, after,
+                                                              '' if before == after else 'CHANGED'))
 
 
 def _run(args, work, own):
@@ -179,6 +211,7 @@ def _run(args, work, own):
               % (unk_b, unk_c))
         print('            extend tools/pasm_equiv/initmodel.py for this work package')
         return 3
+    _print_init_values(base, cand)
     print('            %d scenarios (%d named, %d random), %d jobs' % (
         len(names), sum(1 for n in names if not n.startswith('rand-')), sum(1 for n in names if n.startswith('rand-')),
         args.jobs))
@@ -269,7 +302,9 @@ def report(args, results, wall, base, cand):
     lim160 = int(FRAME_160 * (1.0 - args.guard))
     print('')
     print('FRAME BUDGET (clocks from the ADC sample to the next wait; worst case hub/CORDIC waits):')
-    print('    %-12s %9s %9s   %-22s %-22s' % ('window', 'baseline', 'candidate', 'of 3636 @160 MHz', 'of 6136 @270 MHz'))
+    bclk, bframe = _budget_clock()
+    print('    %-12s %9s %9s   %-22s %-22s' % ('window', 'baseline', 'candidate', 'of 3636 @160 MHz',
+                                              'of %d @%s MHz' % (bframe, _mhz(bclk))))
     over = []
 
     def order(k):
@@ -277,8 +312,8 @@ def report(args, results, wall, base, cand):
     for cls in sorted(worst, key=order):
         bb, cb = worst[cls][0], worst[cls][1]
         print('    %-12s %9d %9d   %5.1f%% / %5.1f%%        %5.1f%% / %5.1f%%' % (
-            cls, bb, cb, 100.0 * bb / FRAME_160, 100.0 * cb / FRAME_160, 100.0 * bb / FRAME_270,
-            100.0 * cb / FRAME_270))
+            cls, bb, cb, 100.0 * bb / FRAME_160, 100.0 * cb / FRAME_160, 100.0 * bb / bframe,
+            100.0 * cb / bframe))
         if cb > lim160:
             over.append((cls, cb, worst[cls][3]))
         if cb - bb > 32:
@@ -355,10 +390,10 @@ def _print_start(results):
             continue
         (tot, to_pass, lc, ll), sc = best[side]
         print('        %-9s %5d clocks = %s to the drive pass entry (of which %d in a %d-long SETQ2 LUT load) + %s '
-              'first pass to the wait; %.1f%% of 3636 @160 MHz, %.1f%% of 6136 @270 MHz  [%s]' % (
+              'first pass to the wait; %.1f%% of 3636 @160 MHz, %.1f%% of %d @%s MHz  [%s]' % (
                   side, tot, '?' if to_pass is None else '%d' % to_pass, lc, ll,
                   '?' if to_pass is None else '%d' % (tot - to_pass), 100.0 * tot / FRAME_160,
-                  100.0 * tot / FRAME_270, sc))
+                  100.0 * tot / _budget_clock()[1], _budget_clock()[1], _mhz(_budget_clock()[0]), sc))
 
 
 # ---------------------------------------------------------------------------------------------- coverage

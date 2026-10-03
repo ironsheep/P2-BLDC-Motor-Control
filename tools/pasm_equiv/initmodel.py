@@ -105,7 +105,7 @@ class Config:
 
     def __init__(self, clk_hz=160_000_000, motor='6.5', board='B', voltage=6, base=16, sync=0, swap=0,
                  stop_mode='float'):
-        self.clk_hz = clk_hz
+        self.clk_hz = CLOCK_OVERRIDE or clk_hz
         self.motor = motor          # '6.5' or '4k'
         self.board = board          # 'A' or 'B'
         self.voltage = voltage      # PWR_* enum, 1..9
@@ -118,21 +118,66 @@ class Config:
         return dict(self.__dict__)
 
 
+CLOCK_OVERRIDE = None          # --clock: when set, every Config runs at this clock (Hz)
+GAP_NS = 260                   # init()'s gapInNs: both Parallax manuals' 250 ns minimum, plus margin
+
+
 def derived(cfg, con):
-    """init()'s clock-derived values."""
+    """init()'s clock-derived values at DRIVER_REV 50 (task 3670): the frame is CLKFREQ / PWM_RATE rounded to the
+    nearest even clock count, the pass deadline is K frames less half a frame, the dead gap is rounded UP from the
+    64-bit product, the duty floor is a fixed fraction of the frame, and the pass's time is K frames at CLKFREQ,
+    rounded up."""
+    clk, pwm = cfg.clk_hz, con['PWM_RATE_IN_HZ']
+    k = con.get('DRIVE_PASS_FRAMES', 23)
+    ticks1us = clk // 1_000_000
+    ticks1ms = clk // 1_000
+    frame_cnt = ((clk + pwm) // (2 * pwm)) * 2
+    dead_gap = -(-(clk * GAP_NS) // 1_000_000_000)
+    ctcks = k * frame_cnt - frame_cnt // 2
+    drive_pass_us = -(-(k * frame_cnt * 1_000_000) // clk)
+    pwm_limit = (frame_cnt // 2) - (dead_gap // 2)
+    duty_min = max((frame_cnt * con.get('DUTY_MIN_FRAME_NUM', 100)) // con.get('DUTY_MIN_FRAME_DEN', 6136) << 4,
+                   (dead_gap // 2) << 4)
+    bias = ((frame_cnt // 2) - dead_gap) // 2
+    duty_max = muldiv64((frame_cnt // 2) - dead_gap - con['SVM_GUARD_COUNTS'], con['SVM_INV_ROOT3_PPM'],
+                        con['PPM']) << 4
+    return dict(ticks1us=ticks1us, ticks1ms=ticks1ms, ctcks=ctcks, frame_cnt=frame_cnt, drive_pass_us=drive_pass_us,
+                dead_gap=dead_gap, pwm_limit=pwm_limit, duty_min=duty_min, bias=bias, duty_max=duty_max,
+                duty_at_ff=(pwm_limit << 4) // 2, adc_fram=frame_cnt, fram=((frame_cnt // 2) << 16) + 1)
+
+
+def derived_rev49(cfg, con):
+    """The same values as DRIVER_REV 49's init() made them (the formulas task 3670 replaced): the baseline for the
+    before / after table. ctcks is its ticks500us; drive_pass_us was the constant DRIVE_PASS_US (523)."""
     ticks1us = cfg.clk_hz // 1_000_000
     ticks1ms = cfg.clk_hz // 1_000
     ticks500us = (ticks1ms * 500) // 1000
     frame_cnt = (ticks1us * (1_000_000_000 // con['PWM_RATE_IN_HZ'])) // 1000
-    dead_gap = (ticks1us * 260) // 1000
+    dead_gap = (ticks1us * GAP_NS) // 1000
     pwm_limit = (frame_cnt // 2) - (dead_gap // 2)
     duty_min = max(100 << 4, (dead_gap // 2) << 4)
     bias = ((frame_cnt // 2) - dead_gap) // 2
     duty_max = muldiv64((frame_cnt // 2) - dead_gap - con['SVM_GUARD_COUNTS'], con['SVM_INV_ROOT3_PPM'],
                         con['PPM']) << 4
-    return dict(ticks1us=ticks1us, ticks1ms=ticks1ms, ticks500us=ticks500us, frame_cnt=frame_cnt,
+    return dict(ticks1us=ticks1us, ticks1ms=ticks1ms, ctcks=ticks500us, frame_cnt=frame_cnt, drive_pass_us=523,
                 dead_gap=dead_gap, pwm_limit=pwm_limit, duty_min=duty_min, bias=bias, duty_max=duty_max,
                 duty_at_ff=(pwm_limit << 4) // 2, adc_fram=frame_cnt, fram=((frame_cnt // 2) << 16) + 1)
+
+
+def before_after(clk_hz, con):
+    """[(name, before, after)] for every init-derived value that differs between DRIVER_REV 49 and 50 at clk_hz, in
+    the units named, plus ff_ceiling's scale (duty_max / duty_at_ff) that follows duty_max."""
+    cfg = Config(clk_hz=clk_hz)
+    cfg.clk_hz = clk_hz                 # not the --clock override: the caller names the clock
+    a, b = derived_rev49(cfg, con), derived(cfg, con)
+    units = {'frame_cnt': 'clocks', 'adc_fram': 'clocks', 'fram': 'PWM X: half frame << 16 + 1',
+             'dead_gap': 'clocks', 'ctcks': 'clocks (cfg_ctcks)', 'drive_pass_us': 'us', 'duty_min': '1/16 count',
+             'duty_max': '1/16 count', 'bias': 'counts', 'pwm_limit': 'counts', 'duty_at_ff': '1/16 count'}
+    rows = []
+    for k in ('frame_cnt', 'adc_fram', 'fram', 'dead_gap', 'ctcks', 'drive_pass_us', 'duty_min', 'duty_max', 'bias',
+              'pwm_limit', 'duty_at_ff'):
+        rows.append((k, units[k], a[k], b[k]))
+    return rows
 
 
 def jerk_for_accel(a, con):
@@ -172,7 +217,7 @@ def params(cfg, con):
     p = {
         'OFFSET_FWD': fwd, 'OFFSET_REV': rev, 'DUTY_MIN': d['duty_min'], 'DUTY_MAX': d['duty_max'],
         'SERVO_SHIFT': con['SERVO_ACC_SHIFT'], 'FF_CEILING': ff, 'DEAD_GAP': d['dead_gap'], 'ACCEL_DN': ad,
-        'CFG_CTCKS': d['ticks500us'], 'STOP_MODE': con['SM_BRAKE'] if cfg.stop_mode == 'brake' else con['SM_FLOAT'],
+        'CFG_CTCKS': d['ctcks'], 'STOP_MODE': con['SM_BRAKE'] if cfg.stop_mode == 'brake' else con['SM_FLOAT'],
         'E_STOP': 0, 'ACCEL_UP': au, 'JERK_UP': ju,
         'JERK_DN': jd, 'I_LIMIT_K': nk, 'DUTY_FLOOR': nfloor, 'HOLD_DUTY': d['duty_min'], 'HOLD_SHORT': 0,
         'FAULT_MODE': con['FR_GRADED'], 'BRAKE_ON': muldiv64(con['BRAKE_PERIOD_FRAMES'], con['BRAKE_PCT_DEFAULT'], 100),
