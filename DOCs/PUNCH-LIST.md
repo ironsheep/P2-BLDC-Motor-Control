@@ -1949,7 +1949,9 @@ the driver that ships.
 
 ### PL-179 -- under D-5 a blocked platform does not stop itself: the protective stop never latched
 
-> **Status (2026-10-03): the DRIVER fix CERTIFIED by the second visit** — both obstacle trials latched, stands 1,022 / 1,002
+> **Status (2026-10-03): ✅ CERTIFIED, cells included** (third visit: BLKSTOP / BLKLIMIT PASS, stands 1,017 / 1,028 ms).
+>
+> **Earlier status (2026-10-03): the DRIVER fix CERTIFIED by the second visit** — both obstacle trials latched, stands 1,022 / 1,002
 > ms (`debug_261002-143413.log` seq 383, 757). BLKSTOP / BLKLIMIT still FAIL on the harness mirror (PL-188), and C4's gaps
 > are PL-189.
 >
@@ -1975,7 +1977,11 @@ none after. On DRIVER_REV 46 the same trial stood 1,183 / 1,092 ms (`2026-09-30/
 
 ### PL-180 -- lag faults on hard transients, and a slow-down current kick, new at DRIVER_REV 47
 
-> **Status (2026-10-03, second visit):** the slow-down kick CERTIFIED gone (TRKICK-A 24 / 30 mV); no fault at obstacle
+> **Status (2026-10-03, third visit): CLOSED BY EVIDENCE.** The FlySky drive on DRIVER_REV 49 ran 123 reversal samples at ≥ 150
+> tps (more than the three earlier drives together) with no fault; no contact fault on either obstacle trial. The first
+> visit's reversal fault is not explained, only not recurring.
+>
+> **Earlier status (2026-10-03, second visit):** the slow-down kick CERTIFIED gone (TRKICK-A 24 / 30 mV); no fault at obstacle
 > contact (BLKFLT PASS); no reversal fault in the FlySky drive, on fewer reversals (9 samples at ≥ 150 tps against 27): not
 > settled. A hand-slowed wheel faulted under the grab (PL-189).
 >
@@ -2015,7 +2021,11 @@ model's slow / medium legs at the floor's inertia, with and without D-2.
 
 ### PL-182 -- LIMGIVE's sampler scores a hold during the spin-up as the field giving way
 
-> **Status (2026-10-02): CORRECTED, `test_bench_dual` SRC_REV 78** («#3664»): limb (a) counts a give-way only after the
+> **Status (2026-10-03): LIMGIVE CERTIFIED (PASS on two visits); the held passes still UNPLACED** — SRC_REV 80's full slow
+> trace emitted 391 of 1,712 samples on the third visit: `traceWalk()` caps its emission at `TRACE_EMIT_MAX` as well as the
+> fit (harness fix). The emitted samples peak at a lag of 82, never the 100 hold, and no leg gave way.
+>
+> **Earlier status (2026-10-02): CORRECTED, `test_bench_dual` SRC_REV 78** («#3664»): limb (a) counts a give-way only after the
 > wheel's driver has read AT_SPEED on the leg (`bLgArrived`; the held pass itself reads SPIN_UP, since `holdDecay` turns
 > AT_SPEED into SPIN_UP, so the arrival is latched rather than the sample's state tested). It still FAILs a decay at speed
 > with no limiter (D-3's limiter test removed, by reading). Spin leg 2 (slow) is now traced. **Earlier:** OPEN (F-5).
@@ -2076,7 +2086,9 @@ status ("HOLDING while rolling"); no hold was ever engaged.
 
 ### PL-187 -- above about 175 ×10⁶ the wheel runs rough: gravelly, vibrating, never settling
 
-> **Status (2026-10-03): T-1 BUILT, DRIVER_REV 49; awaits the third visit** (its `dual-limits` traces the edge rung; TOPSPD
+> **Status (2026-10-03): ✅ CERTIFIED by the third visit** (`DOCs/analyses/bench/2026-10-02c/VISIT-6.1.0C-EVALUATION.md` §2):
+> TOPSPD 245 ×10⁶ on all four wheel/directions, every rung above 175 reaching speed with no limit hold (`win_lag,0`).
+> **Earlier: T-1 BUILT, DRIVER_REV 49; awaited the third visit** (its `dual-limits` traces the edge rung; TOPSPD
 > should read above 175). **Earlier: cause established at the desk; T-1 RULED** (STEPHEN 2026-10-03 *"yes a"*; design §4.11, «#3668»):
 > at the duty ceiling the limit hold (D-5) and D-3 act on a duty-cap pass, yanking the field back every sector. T-1: only
 > the current fold-back triggers the limit hold. The second visit's `dual-limits` read 185 ×10⁶ the same way (its
@@ -2109,7 +2121,7 @@ this region. Evidence for the "less torque in reserve near top speed" Known Issu
 
 ### PL-188 -- the obstacle mirror zeroes its count on the pass that sees the latch
 
-> **Status (2026-10-03): FIXED in `test_bench_dual` SRC_REV 80**, awaits the third visit (the count is kept on the pass that
+> **Status (2026-10-03): ✅ CERTIFIED** by the third visit: BLKSTOP PASS, counts 997 / 1,003 passes. **Earlier: FIXED in `test_bench_dual` SRC_REV 80** (the count is kept on the pass that
 > first sees ESTOP). **Earlier:** ⛔ FIX, harness, 6.1.0 («#3668»); found by the second 6.1.0 visit
 > (`DOCs/analyses/bench/2026-10-02b/VISIT-6.1.0B-EVALUATION.md` §3.2, G-1).
 
@@ -2120,7 +2132,9 @@ is checked. **Fix:** check the latch before the count's bookkeeping, or keep the
 
 ### PL-189 -- the limit hold (C4) protects a wheel only from its first set-back to its next forward tick, and keeps the field fast
 
-> **Status (2026-10-03): BUILT, DRIVER_REV 49; awaits the third visit.** STEPHEN 2026-10-03 *"yes A"* (design §4.12): U-1 the
+> **Status (2026-10-03): ✅ CERTIFIED by the third visit** (evaluation §2-3): BLKWIN PASS (lag held at 64 while blocked),
+> LDFLT PASS (no fault under the grab), OVRSTEP PASS on all four (no surge; field 9-20 % at the over-command's end).
+> **Earlier: BUILT, DRIVER_REV 49.** STEPHEN 2026-10-03 *"yes A"* (design §4.12): U-1 the
 > hold arms at every fold-back action; U-2 it stays armed until the rotor crosses a whole sector forward with no fold; U-5 its
 > release caps the field's speed at 4 sectors over the passes since the fold. MODELLED: over-command end 34 A → 3 A; obstacle
 > fault-band readings 4 → 0; steady grab faults 1 → 0 of 16. Certified by BLKWIN, the new LDFLT and OVRSTEP (SRC_REV 81).
@@ -2153,6 +2167,18 @@ same-session control, or a band derived from repeat runs of one driver.
 **MEASURED 2026-10-02** (`debug_261002-143653.log` 161.1-161.5 s): the stick went 0 → 5 → 35 → 45 while LEFT was slowing
 from 56.6 ×10⁶; the jerk-limited generator unwound the deceleration first, the field fell to 6.8 ×10⁶ (12 % of its new
 target) for ~300 ms, the wheel stood, and the steering object scaled both wheels (`EV_PATH_LIMIT` 184 ‰). Twice in the drive.
+
+### PL-192 -- LDHUNT fails a single clean limiter engagement by its own definition
+
+> **Status (2026-10-03): OPEN, harness** (third 6.1.0 visit §3.3, H-1; and SPINSTOP H-3 as a watch).
+
+**MEASURED 2026-10-02** (`DOCs/analyses/bench/2026-10-02c/debug_261002-182037.log`): the grab reached OVERLOAD for the first
+time (LEFT 31 %, RIGHT 70 %, `path_min` 733); the path limiter engaged once inside the judged window (`EV_PATH_LIMIT` 746 at
+15,588 ms) and held until the stop (released at 19,252 ms). LDHUNT counts every transition in the window against a bound of
+0, while its precondition accepts an engage inside the window, so a single held engagement FAILs (`flips,1`). Hunting, its
+own negative, is an engage-release cycle every 720-790 ms. **Fix:** count the transitions after the window's first engage.
+**Watch:** SPINSTOP failed once (`debug_261002-181611.log`, medium leg 3 RIGHT stopped at 216 against 212, one tick past its
+tolerance), new on DRIVER_REV 49, once in 20 stops.
 
 ### PL-185 -- a hand cannot slow the platform at the grab's 4 A limit, so the grab cells measure nothing
 

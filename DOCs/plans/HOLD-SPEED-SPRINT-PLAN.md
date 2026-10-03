@@ -399,7 +399,13 @@ finding. A finding that needs a fix and a run is the only way a second visit is 
 
 ---
 
-### 9.2 The third visit (added 2026-10-03)
+### 9.2 The third visit (added 2026-10-03; RUN and evaluated 2026-10-03)
+
+**Result:** DRIVER_REV 49 (e1b412d) certified — smooth to 245 ×10⁶, no surge after a limit, the blocked stop and its cells,
+no fault blocked or hand-slowed, held pivots, no reversal fault on heavy exposure
+(`DOCs/analyses/bench/2026-10-02c/VISIT-6.1.0C-EVALUATION.md`). No further visit for the driver; two harness defects (PL-182's
+trace cap, PL-192's LDHUNT definition) are recorded. Next: the documentation (Blast Radius), then the release (§10).
+
 
 The second visit (evaluation `DOCs/analyses/bench/2026-10-02b/VISIT-6.1.0B-EVALUATION.md`) certified the blocked stop, the
 kick fix, the pivot hold and the corrected floor cells, and found three gaps in C4 (PL-189) and a harness count defect
