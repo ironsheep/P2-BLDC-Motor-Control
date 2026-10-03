@@ -7,7 +7,7 @@
 ''               -- see below for terms of use
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Feb 2022
-''   Updated.... 28 Sep 2026
+''   Updated.... 03 Oct 2026
 ''
 ''   What it shows, in order:
 ''   1. start() checks the motor before anything moves, and refuses one that fails -- how to tell why (getHealth())
@@ -26,6 +26,9 @@
 
 CON { timing }
 
+  ' The motor objects work at any clock from the lowest start() accepts up to 350 MHz (DEVELOP.md, "Choosing a clock").
+  '  With the HDMI display in use, its video driver sets the clock its mode needs (270 MHz) when it starts, which is
+  '  before the motor starts (it takes its timing from the clock at start()).
   CLK_FREQ = 270_000_000                                        ' system freq as a constant
   _clkfreq = CLK_FREQ                                           ' set system clock
 
@@ -49,6 +52,7 @@ CON { the demo's drives }
 
     MTR_HOLD_AT_SPEED_IN_SEC = 15       ' each time-limited drive's limit
     END_HOLD_MS         = 20_000        ' a pause after the last drive, before stop(): the HDMI display stays live to read
+    HOLD_SLICE_MS       = 1_000         ' END_HOLD_MS is waited in slices this long, under waitms()'s bound at any clock
 
     ' bWaitUntilMotorDone()'s bound: the limit armed for the drive, plus this for the ramp down and a margin. A drive that
     '  is not over by then is stopped, and reported: something ended it late, or its limit never fired.
@@ -153,8 +157,8 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
             ' wait until the driver is ready to be commanded, before anything moves
             waitUntilMotorReady()
 
-            ' 2. prove the wiring. This TURNS THE WHEEL one electrical cycle (about 3.5 cm at the tyre) forward and
-            '  back. Its verdict is getHealth()'s HLT_WIRING bit.
+            ' 2. prove the wiring. This TURNS THE MOTOR one electrical cycle forward and back (a quarter turn of the
+            '  DocoEng motor's shaft; on a wheel, that turn's share of its tyre). Its verdict is getHealth()'s HLT_WIRING bit.
             if bCommandSucceeded(wheel.checkWiring(), @"checkWiring")
                 showWiring()
 
@@ -182,7 +186,8 @@ PUB main() | nGroups, pGroupTitles, pGroupNames, pGroupVarCts, pGroupVars, motor
             dbgUdec(END_HOLD_MS / 1_000)
             dbgText(@" s before stop()...")
             dbgShow()
-            waitms(END_HOLD_MS)
+            repeat END_HOLD_MS / HOLD_SLICE_MS                  ' in slices: one waitms() over 2^31 clocks returns at once
+                waitms(HOLD_SLICE_MS)
 
         ' turn off our motor drivers (safe whether or not they started)
         wheel.stop()
