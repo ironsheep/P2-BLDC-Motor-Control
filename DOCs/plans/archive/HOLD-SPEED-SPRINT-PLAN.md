@@ -1,8 +1,10 @@
 # 6.1.0 — Hold Speed Under Load — sprint plan
 
-**Status:** STARTED 2026-10-01 (§14 records the entry checks).
-**Release:** the next release, after this plan and a DocoEng motor qualification (§10); the ship call is Stephen's
-(doctrine overlay P5).
+**Status:** CLOSED 2026-10-03 — every commitment SHIPPED; audit in
+[`2026-10-03-HOLD-SPEED-CLOSEOUT.md`](2026-10-03-HOLD-SPEED-CLOSEOUT.md). Started 2026-10-01 (§14 records the entry
+checks).
+**Release:** v6.1.0, tagged `54f7c43` (§10; back in this plan by Stephen's 2026-10-02 ruling). DocoEng follows in its
+own plan.
 **Baseline at planning:** tree `54c4a1e` + the planning edits; `DRIVER_REV 46` (`src/isp_bldc_motor.spin2:6796`);
 `test_bench_dual` SRC_REV 70 (`:794`); gates: see §13.
 
@@ -555,6 +557,18 @@ certified, all 60 bench tiers within the DEBUG footprint; `tools/check_style.sh`
 | §9 | Evaluate the visit's logs | «#3659» | 15 |
 | Blast Radius | Bring the docs current | «#3660» | 16 |
 | §10 | ~~Release 6.1.0~~ — SUPERSEDED 2026-10-01: the release follows a later plan | «#3661» | — |
+| §1.5 | Root-cause and fix the blocked stop under D-5, the lag faults and the slow-down kick (added 2026-10-02) | «#3662» | — |
+| §1.6 | The pivot's inner wheel: Stephen's ruling, then the build (added 2026-10-02) | «#3663» | — |
+| §3.1 | Correct the floor tests the first visit disproved (added 2026-10-02) | «#3664» | — |
+| §9.1 | Prepare the second visit (added 2026-10-02) | «#3665» | — |
+| §10 | Release 6.1.0 — back in this plan by Stephen's 2026-10-02 ruling | «#3666» | — |
+| §9.1 | Evaluate the second visit's logs (added 2026-10-02) | «#3667» | — |
+| §1.7, §9.2 | T-1 and the limit hold's three gaps; prepare the third visit (added 2026-10-03) | «#3668» | — |
+| §9.2 | Evaluate the third visit's logs (added 2026-10-03) | «#3669» | — |
+
+**Reconciled at closeout (2026-10-03).** The rows from «#3662» down were added here at closeout: the tasks were created as
+the visits added sections, and the table was not extended with them. Every numbered section now has a row, and every row
+names a section; §0, §11-§15 carry no deliverable.
 
 **Superseded or closed at generation:** «#3640» (the PL-167 design, phase 1 delivered and approved) completed; «#3636»
 and «#3641» SUPERSEDED by §1 / §3. **The board holds this sprint and nothing else (corrected 2026-10-01 on Stephen's
@@ -593,3 +607,9 @@ the exclusive-resource roster. **Two-phase:** «#3645» (the design returns, the
 - **2026-10-02** — Stephen: fix everything found, then release the 6.5-inch changes, and DocoEng follows (§10). §1.6
   (PL-186, the pivot turn), §3.1 (the disproved premises) and §9.1 (the second visit) added; the release task returns.
   Cause **1** (an owner ruling not applied): the plan held the 2026-10-01 ordering until this ruling replaced it.
+- **2026-10-03** — the second visit's evaluation added a third visit (§0.2): §1.7 (PL-187, rough running above 175 ×10⁶,
+  Stephen's report) and §9.2 (T-1 with the limit hold's three gaps, PL-188 / PL-189). Cause **3** (a premise unmeasured):
+  D-5's limit hold was designed for the current limit and never measured on a duty-cap pass, and C4 assumed the first
+  set-back is the first limiter action. *Recorded at closeout: the line was not written when §1.7 and §9.2 were added.*
+- **2026-10-03 (closeout)** — §15 gains the rows for «#3662»-«#3669»; the status block stamped CLOSED. Not a revision:
+  no deliverable, verify criterion, order or scope changed.

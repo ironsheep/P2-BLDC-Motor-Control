@@ -811,6 +811,13 @@
 ''               why (201); four why tokens (NEAR_STOP, NOT_SLOWED, LIMIT_HELD, FIELD_NOT_SPEED; WHY_COUNT 59). evDrain() also stamps each
 ''               log's EV_FAULT / EV_FAULT_RESYNC after evdFltSinceMs and the EV_FOLDBACK reading against the judged window. No debug()
 ''               statement is added: the footprint is unchanged.
+''               03 Oct 2026 -- SRC_REV=82, FMT 53: PL-182, PL-192 (sprint closeout, HOLD-SPEED-SPRINT-PLAN.md): TWO HARNESS CORRECTIONS
+''               from the third visit (DOCs/analyses/bench/2026-10-02c/). PL-182: traceWalk() capped its emission at TRACE_EMIT_MAX
+''               apart from trEmitMax, so the slow spin leg's full trace stopped at the usual cap; it now caps at TRACE_EMIT_MAX #>
+''               trEmitMax. PL-192: LDHUNT counted a wheel's first path-limiter engage inside the window as a transition, so a hold
+''               that engaged once and held to the stop (15_588 ms on 2026-10-02c) read 1 and failed; evDrain() now keeps that onset
+''               apart (evdPathOn), and loadEngages() counts it toward the engaged precondition, not the flips. The hunting negative
+''               (an engage and release every 720-790 ms) still reads well above 0. No record, token or footprint change.
 ''
 '' =================================================================================================
 
@@ -928,7 +935,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 81                               ' hand-bumped whenever this file changes
+    SRC_REV     = 82                              ' hand-bumped whenever this file changes
     FMT_VERSION = 53                                   ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -22190,13 +22197,15 @@ PRI loadEngages() : nFlips, nEngagesPre, bEngaged
 ' that the limiter is engaged over the window: a wheel's last event before it was an engage, or one occurs inside it
 ' (a release needs a prior engage, so any transition with none before is an engage).
 '
-' @returns nFlips - the transitions, engages and releases, stamped inside the window
+' SRC_REV 82 (PL-192): a wheel's first engage inside the window, found released, is the onset and is not counted.
+'
+' @returns nFlips - the transitions, engages and releases, stamped inside the window, less each wheel's onset
 ' @returns nEngagesPre - the engages stamped before it
 ' @returns bEngaged - T/F where T means the limiter was engaged over the window (FALSE when there was no window)
 
     nFlips := evdPathIn
     nEngagesPre := evdPathPre
-    bEngaged := bLdWinValid and (evdPathEng[EVI_LEFT] or evdPathEng[EVI_RIGHT] or (evdPathIn > 0))
+    bEngaged := bLdWinValid and (evdPathEng[EVI_LEFT] or evdPathEng[EVI_RIGHT] or evdPathOn[EVI_LEFT] or evdPathOn[EVI_RIGHT] or (evdPathIn > 0))
 
 PRI loadEvents() | slotIdx
 ' SRC_REV 81 (PL-189): what the last GRAB drain read for LDFLT and LDPATH's premise -- whether it read whole, each wheel's EV_FAULT and
@@ -25266,7 +25275,8 @@ PRI traceIntegritySums() | sampleIdx
 PRI traceWalk(bEmit) | sampleIdx, kIdx, markK, lastK, posRel, hwRel, stNow, bFltNow, bUpNow, bWant, bChanged
 ' Walk the trace applying the emission rule. With bEmit FALSE it only counts the lines the rule wants
 ' (trLines), so bTraceDrain() can pick a dense window and stride; with bEmit TRUE it emits them, never
-' more than TRACE_EMIT_MAX (the last sample is always kept), and leaves trLines / trKSum as emitted.
+' more than TRACE_EMIT_MAX, or trEmitMax when a caller raised it (SRC_REV 82, PL-182: SRC_REV 80 raised only the fit's cap, so
+' the slow leg still emitted 400 lines) -- the last sample is always kept -- and leaves trLines / trKSum as emitted.
 ' Rule: k below mark_k + dense; or k within trTail of the last k (SRC_REV 79; no sample when trTail is 0); or, on every
 ' stride-th k, a change of pos, hw, st, flt or up from the last emitted line, or k a multiple of
 ' TRACE_SPARSE_EVERY x stride; or the first or last sample. Each pass reads the safety of the wheel trWatch names, when one is.
@@ -25310,7 +25320,7 @@ PRI traceWalk(bEmit) | sampleIdx, kIdx, markK, lastK, posRel, hwRel, stNow, bFlt
                 bChanged := bChanged or (stNow <> trLastSt) or (bFltNow <> trLastFlt) or (bUpNow <> trLastUp)
                 if bChanged or ((kIdx +// (TRACE_SPARSE_EVERY * trStride)) == 0)
                     bWant := TRUE
-            if bWant and ((bEmit == FALSE) or (trLines < TRACE_EMIT_MAX - 1) or (sampleIdx == drEndJ))
+            if bWant and ((bEmit == FALSE) or (trLines < (TRACE_EMIT_MAX #> trEmitMax) - 1) or (sampleIdx == drEndJ))
                 trLines += 1
                 trKSum := (trKSum + kIdx) <# LIM_MID
                 trLastPos := posRel
@@ -26058,6 +26068,7 @@ VAR { the driver's reporting (task 3621) -- one drain's staging, cog 0 only }
     LONG    evdPathPre                                      ' ...EV_PATH_LIMIT engages (value under PERMILLE_FULL, either wheel) stamped before the window
     LONG    evdPathIn                                       ' ...EV_PATH_LIMIT transitions, engages AND releases, stamped inside it
     LONG    evdPathEng[2]                                   ' ...per wheel (EVI_LEFT, EVI_RIGHT): the last one before the window was an engage
+    LONG    evdPathOn[2]                                    ' ...per wheel: SRC_REV 82 (PL-192): an engage inside the window found it released, the onset (not counted in evdPathIn)
     LONG    evdFoldMs[EV_WHEELS]                            ' SRC_REV 75 (BLKLIMIT): the stamp of the first EV_FOLDBACK engage (value 0) each log held...
     LONG    bEvdFold[EV_WHEELS]                             ' ...one was read
     LONG    evdBlockedMs[EV_WHEELS]                         ' ...and of the first EV_STOP whose reason was SR_BLOCKED, the protective stop's latch
@@ -26073,7 +26084,9 @@ PRI evDrain(src, stage) | eKind, nMs, eWheel, nValue, logIdx
 ' BM-EV and counted into the evd* staging, cleared first. The steering object merges both wheels' logs and the
 ' platform's; a wheel object's log is its own. SRC_REV 70: each path-limiter engage is also counted before or after
 ' the window evdSinceMs..evdUntilMs: the engages before it (evdPathPre), the transitions inside it (evdPathIn) and
-' whether each wheel's last one before it was an engage (evdPathEng), the GRAB trial's LDHUNT reading. SRC_REV 75: and each log's
+' whether each wheel's last one before it was an engage (evdPathEng), the GRAB trial's LDHUNT reading. SRC_REV 82 (PL-192): a wheel's
+' first engage inside the window that found it released is its onset (evdPathOn), not a transition: a hold that engages once and holds
+' to the stop is not hunting. SRC_REV 75: and each log's
 ' first EV_FOLDBACK engage and first SR_BLOCKED stop, with their stamps (bEvdFold, evdFoldMs, bEvdBlocked, evdBlockedMs: BLKLIMIT).
 ' SRC_REV 81 (PL-189): and each log's EV_FAULT and EV_FAULT_RESYNC stamped at or after evdFltSinceMs (evdFltAfter, evdRsyAfter: LDFLT),
 ' and its EV_FOLDBACK events inside the window evdSinceMs..evdUntilMs with whether the last before it was an engage (evdFoldIn,
@@ -26098,6 +26111,8 @@ PRI evDrain(src, stage) | eKind, nMs, eWheel, nValue, logIdx
     evdPathIn := 0
     evdPathEng[EVI_LEFT] := FALSE
     evdPathEng[EVI_RIGHT] := FALSE
+    evdPathOn[EVI_LEFT] := FALSE
+    evdPathOn[EVI_RIGHT] := FALSE
     longfill(@evdFoldMs, 0, EV_WHEELS)
     longfill(@bEvdFold, FALSE, EV_WHEELS)
     longfill(@evdBlockedMs, 0, EV_WHEELS)
@@ -26136,7 +26151,10 @@ PRI evDrain(src, stage) | eKind, nMs, eWheel, nValue, logIdx
                 if nValue < wheelL.PERMILLE_FULL
                     evdPathPre += 1
             elseif (nMs - evdUntilMs) <= 0
-                evdPathIn += 1
+                if (nValue < wheelL.PERMILLE_FULL) and (evdPathEng[logIdx] == FALSE) and (evdPathOn[logIdx] == FALSE)
+                    evdPathOn[logIdx] := TRUE               ' SRC_REV 82 (PL-192): the onset, not a flip
+                else
+                    evdPathIn += 1
         if (eKind == wheelL.EV_FAULT) and ((nMs - evdFltSinceMs) >= 0)              ' SRC_REV 81 (LDFLT): faults from the stamp on
             evdFltAfter[logIdx] += 1
         if (eKind == wheelL.EV_FAULT_RESYNC) and ((nMs - evdFltSinceMs) >= 0)
