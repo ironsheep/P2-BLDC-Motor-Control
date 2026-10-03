@@ -90,6 +90,11 @@ Every cell in `SIGNOFF-DECL` gets `PASS` / `FAIL` / `NOMEAS` from the log.
 Quote log lines; do not paraphrase them. Judge against the expectations and falsifiers the run sheet
 declared in advance, and **never renegotiate them after seeing the result** (D2).
 
+- **Read a record's fields by name, never by counted position:** `tools/logfield.py LOG RECORD FIELD ...` takes the
+  names from the log's own `*-FIELDS` line (positional records such as RC-TEL) or from the record's labels (BM-*), and
+  refuses a name the record does not carry. (2026-10-02: RC-TEL field 48, `r_flt`, was counted as `r_hs` and gave a
+  wrong finding.)
+
 - **A result is "settled" only when the falsifier separates the rival explanation.** If another mechanism predicts
   the same observation and no reading separates them, write *consistent with*, and name what would separate them.
 - **Before a mechanism is named as a suspect, evaluate the code's arithmetic over its whole input range as a table**,
@@ -209,7 +214,10 @@ Part 4 is forward-looking: the open question, what would settle it, and which ta
   happened.** Naming the destination is not arriving at it.
 - **Watch** → recorded where the next run's reader will see it.
 - Then update the plan/tasks and the sprint resume key, and **commit the evaluation together with its
-  logs**. Since Stephen's 2026-09-23 `.gitignore` change (`/DOCs/analyses`), a new evaluation and its logs stay in
+  logs**. ⛔ **A finding that adds or changes a plan section writes that plan's revision line, with its one cause code
+  (`sprint-plan` §6), in the same edit, and a task it creates gets its row in the plan's section-to-task table before
+  `todo_start`.** (2026-10-03: the second 6.1.0 visit added §1.7 and §9.2 with no revision line, and eight mid-sprint
+  tasks had no table row; both were found only at closeout.) Since Stephen's 2026-09-23 `.gitignore` change (`/DOCs/analyses`), a new evaluation and its logs stay in
   the tree untracked. Do not force-add them. The tracked record is the punch list and the run sheet, and those
   are committed.
 - **When the banner check fails because the tree was not pushed**, the run sheet's resume states the SHA to run
