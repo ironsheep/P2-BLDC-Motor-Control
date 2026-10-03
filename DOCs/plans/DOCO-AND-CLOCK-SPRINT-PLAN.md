@@ -1,6 +1,6 @@
 # 6.2.0 — DocoEng qualification, clock independence, serial — sprint plan
 
-**Status:** WRITTEN 2026-10-03, awaiting Stephen's review; not started (`sprint-start` runs the entry checks).
+**Status:** STARTED 2026-10-03 (`sprint-start`; entry record in §16).
 **Release:** v6.2.0 at the end of this plan (§12; STEPHEN 2026-10-03, *"yes a"*). The ship word is his.
 **Baseline at planning:** tree `08cad4f`; `DRIVER_REV 49` (`src/isp_bldc_motor.spin2:6818`); `test_bench_dual`
 SRC_REV 82; gates: §15.
@@ -397,6 +397,23 @@ Every other open entry stays on the list unchanged.
 **Questions:** one for Stephen is scheduled inside the plan, not before it: §1's new start refusal (P5), with its
 measured floor. Every other question is answered.
 
+## 16. Sprint start (2026-10-03)
+
+- **Outgoing build: v6.2.0** (STEPHEN 2026-10-03, *"yes a"*; §12). `VERSION` reads 6.1.0 until §12 sets it.
+- **Working tree:** clean in the sprint's blast radius (`src/`, `tools/`, `pythonSrc/`, `DOCs/plans/`: no edits, no
+  untracked files). One edit outside it, `.vscode/settings.json` — Stephen's VSCode extension settings; no task here
+  touches it, so it is left as it is. `main` is 4 commits ahead of origin before this record's commit.
+- **Tracking readiness: ready.** Board empty (0 tasks, nothing to archive); context holds one live key (the resume
+  pointer); auto-memory 4 index lines, no misfiled judgement. Records corrected at start: `.claude/skill-conventions.md`
+  *Rig facts* gains the Doco bench (the encoder supersedes "pnut-ts only" for Doco work — the §3 conventions update,
+  applied now as record-keeping); the `baseline-health` overlay's "config block" wording now describes the two
+  configuration symbols.
+- **Entry baseline** (on tree `14eb9d7`; this record's commit changes no compiled file): `tools/build-check.sh` PASS —
+  2 configurations, 51 files examined, 51/51 tops certified, both release demos certified, every bench tier within the
+  DEBUG footprint; 0 warnings; exclusion: `hng034rm` (PL-1, cannot compile). No failure groups, so no fix-when decision.
+  **A green gate is a compile result only**: behaviour is certified at the bench visits (§10).
+
 ## Revision history
 
 - **2026-10-03** — written.
+- **2026-10-03** — started: §16 records the build number, tree audit, tracking readiness and entry baseline.
