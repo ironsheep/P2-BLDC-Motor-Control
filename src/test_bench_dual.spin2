@@ -818,6 +818,13 @@
 ''               that engaged once and held to the stop (15_588 ms on 2026-10-02c) read 1 and failed; evDrain() now keeps that onset
 ''               apart (evdPathOn), and loadEngages() counts it toward the engaged precondition, not the flips. The hunting negative
 ''               (an engage and release every 720-790 ms) still reads well above 0. No record, token or footprint change.
+''               03 Oct 2026 -- SRC_REV=83, FMT 54: task 3674, THE CLOCK PART JUDGES ANY CLOCK (DOCO-AND-CLOCK plan 1, target 8).
+''               The CLOCK part's expected frame was a table of three clocks (4_545 / 6_136 / 6_818) and judged nothing at any other;
+''               DRIVER_REV 50 made the frame the even-rounded CLKFREQ / 44_000 at every clock, so it is now COMPUTED by the driver's own
+''               formula (expectedFrame(): 4_546 at 200 MHz, which the table had 4_545) and the pass it makes is judged against the
+''               motor object's nominal DRIVE_PASS_US (expectedPassUs()). A clock that is none of 200 / 270 / 300 carries cells ending
+''               -KANY and is judged (it was skipped). BM-CLOCK gains pass_us (FMT 54; about 175 bytes worst case). windowStats() sums its
+''               getct() span in 1 s slices, so a window longer than the 2^31-tick difference (LIMLOW's 7.5 s at 350 MHz) reads true.
 ''
 '' =================================================================================================
 
@@ -935,8 +942,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 82                              ' hand-bumped whenever this file changes
-    FMT_VERSION = 53                                   ' BM- record-format version
+    SRC_REV     = 83                              ' hand-bumped whenever this file changes
+    FMT_VERSION = 54                                   ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -949,7 +956,9 @@ CON { timing }
     TICKS_PER_US = CLK_FREQ / US_PER_SEC
 
     ' p2kbSpin2Waitms: a waitms() argument must stay at or under $8000_0000 clocks. Unsigned divide,
-    '  since $8000_0000 is negative as a signed long. 7_953 ms at 270 MHz, 7_158 at 300, 10_737 at 200.
+    '  since $8000_0000 is negative as a signed long. 7_953 ms at 270 MHz, 7_158 at 300, 10_737 at 200, 6_135 at 350
+    '  (the fastest clock a build may name, tools/bench-run.sh clk-350). A getct() DIFFERENCE has the same bound: a
+    '  window longer than this must be summed in slices, as windowStats() sums its own (WIN_SLICE_MS).
     WAITMS_MAX_MS = $8000_0000 +/ (CLK_FREQ / MS_PER_SEC)
 
     ' every waitms() argument in this file is one of these five, each far under WAITMS_MAX_MS
@@ -958,6 +967,15 @@ CON { timing }
     INST_EXIT_POLL_MS = 50                                  ' the instrument's parked loop after EXIT
     WD_POLL_MS        = 250                                 ' watchdog sample cadence
     WD_IDLE_MS        = 1_000                               ' idle-forever chunk
+
+    ' windowStats() sums a window's getct() span in slices of this many ms. PRECONDITION: consecutive ring samples are
+    '  less than WAITMS_MAX_MS apart (they are one instrument period, 6 ms at most) and CLK_FREQ is at most 350 MHz.
+    '  BOUND: a slice is WIN_SLICE_TICKS, 350_000_000 at 350 MHz, under the 2^31 getct() difference limit; the window
+    '  is not bounded, as one difference was (6_135 ms at 350 MHz, 7_953 at 270). CORRECT CASE: the 7_500 ms LIMLOW
+    '  window reads 7_5xx ms at 350 MHz. THE UNFIXED VALUE: one difference over 7_500 ms is 2_625_000_000 ticks at
+    '  350 MHz, a wrapped negative long, so the window read about -4_772 ms and its rate was left 0.
+    WIN_SLICE_MS      = 1_000
+    WIN_SLICE_TICKS   = WIN_SLICE_MS * TICKS_PER_MS
 
 CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 
@@ -1782,13 +1800,12 @@ CON { drive increments and powers }
     RWIRE_MOHM = 20
     PACK_MV    = 18_500
 
-    ' frame count expected at each swept clock (isp_bldc_motor.spin2:310; study :208-212)
+    ' The three clocks whose cells keep ids of their own (-K200 / -K270 / -K300, SF_CLOCK_SLOT); every other clock's cells
+    '  carry -KANY. They select an id and nothing else: since SRC_REV 83 the frame and the pass the CLOCK part expects are
+    '  COMPUTED from the clock it runs at (expectedFrame(), expectedPassUs()), not read from a table of three clocks.
     CLK_SWEEP_200 = 200_000_000
     CLK_SWEEP_270 = 270_000_000
     CLK_SWEEP_300 = 300_000_000
-    EXP_FRAME_200 = 4_545
-    EXP_FRAME_270 = 6_136
-    EXP_FRAME_300 = 6_818
 
 CON { ALIGN tier (task 3590) -- the hall zero measured cold, and the ONE per-motor block }
 
@@ -2698,18 +2715,19 @@ CON { sign-off cells -- manifest row 14, task 3508 (design sec 5.2) }
   ' Clock slot of this build (design sec 12.10). The collation lets only the latest build declaring a cell
   '  speak, so each clock build owns its cells; a CON comparison (TRUE -1, FALSE 0) selects the slot at
   '  compile time, so exactly one term below is non-zero at a swept clock and every term is zero otherwise:
-  '  SF_CLOCK_UNSWEPT - CLK_FREQ is none of the three swept clocks
+  '  SF_CLOCK_ANY     - CLK_FREQ is none of the three named clocks: ids end -KANY (SRC_REV 83: judged, no longer skipped;
+  '                     the run's clock is in BM-CLOCK's clkfreq, and the latest -KANY build speaks, as any slot's does)
   '  SF_CLOCK_200     - CLK_FREQ is CLK_SWEEP_200
   '  SF_CLOCK_270     - CLK_FREQ is CLK_SWEEP_270
   '  SF_CLOCK_300     - CLK_FREQ is CLK_SWEEP_300
-    #0, SF_CLOCK_UNSWEPT, SF_CLOCK_200, SF_CLOCK_270, SF_CLOCK_300
+    #0, SF_CLOCK_ANY, SF_CLOCK_200, SF_CLOCK_270, SF_CLOCK_300
     SF_CLOCK_SLOT = 0 - (((CLK_FREQ == CLK_SWEEP_200) * SF_CLOCK_200) + ((CLK_FREQ == CLK_SWEEP_270) * SF_CLOCK_270) + ((CLK_FREQ == CLK_SWEEP_300) * SF_CLOCK_300))
 
-    ' this build judges sign-off cells (TRUE) or none (FALSE): every part but PART_NONE, and the CLOCK part
-    '  only at a swept clock. The one test every declaration and emission site uses (emitSignoffDecls(),
+    ' this build judges sign-off cells (TRUE) or none (FALSE): every part but PART_NONE, the CLOCK part at ANY clock
+    '  (SRC_REV 83: it judged only the three swept clocks). The one test every declaration and emission site uses (emitSignoffDecls(),
     '  emitSignoffs(), declareStall()) -- except SRC_REV 71's R21-DUAL-TOKTAB, the record labels' self-check, which every
     '  build declares and prints, PART_NONE's too, so a build that runs nothing can still be shown to catch a bad label
-    SF_JUDGES_CELLS = (PART_ID <> PART_NONE) & ((PART_ID <> PART_CLOCK) | (SF_CLOCK_SLOT <> SF_CLOCK_UNSWEPT))
+    SF_JUDGES_CELLS = (PART_ID <> PART_NONE)
 
     ' R14-DUAL-DBGMASK-*: the quiet set, from the compiled user config's own channel names (sec 12.6)
     QUIET_DBG_MASK = DECOD user.DBGCH_ERROR | DECOD user.DBGCH_WARNING
@@ -3324,6 +3342,7 @@ sSfCellNoStallA BYTE    "R14-DUAL-NOSTALL-A", 0
 sSfCellNoStallK200 BYTE "R14-DUAL-NOSTLL-K200", 0
 sSfCellNoStallK270 BYTE "R14-DUAL-NOSTLL-K270", 0
 sSfCellNoStallK300 BYTE "R14-DUAL-NOSTLL-K300", 0
+sSfCellNoStallKAny BYTE "R14-DUAL-NOSTLL-KANY", 0
 sSfCellNoStallB BYTE    "R14-DUAL-NOSTALL-B", 0
 sSfCellNoStallH BYTE    "R14-DUAL-NOSTALL-H", 0
 sSfCellNoStallC BYTE    "R14-DUAL-NOSTALL-C", 0
@@ -3332,6 +3351,7 @@ sSfCellDbgMaskA BYTE    "R14-DUAL-DBGMASK-A", 0
 sSfCellDbgMaskK200 BYTE "R14-DUAL-DBGMSK-K200", 0
 sSfCellDbgMaskK270 BYTE "R14-DUAL-DBGMSK-K270", 0
 sSfCellDbgMaskK300 BYTE "R14-DUAL-DBGMSK-K300", 0
+sSfCellDbgMaskKAny BYTE "R14-DUAL-DBGMSK-KANY", 0
 sSfCellDbgMaskB BYTE    "R14-DUAL-DBGMASK-B", 0
 sSfCellDbgMaskH BYTE    "R14-DUAL-DBGMASK-H", 0
 sSfCellDbgMaskC BYTE    "R14-DUAL-DBGMASK-C", 0
@@ -3349,6 +3369,7 @@ sSfCellTracesC  BYTE    "R14-DUAL-TRACES-C", 0
 sSfCellClkFrameK200 BYTE "R14-DUAL-CLKFRM-K200", 0
 sSfCellClkFrameK270 BYTE "R14-DUAL-CLKFRM-K270", 0
 sSfCellClkFrameK300 BYTE "R14-DUAL-CLKFRM-K300", 0
+sSfCellClkFrameKAny BYTE "R14-DUAL-CLKFRM-KANY", 0
 sSfCellRstProvB BYTE    "R14-DUAL-RSTPROV-B", 0
 sSfCellRstProvC BYTE    "R14-DUAL-RSTPROV-C", 0
 sSfCellRampRest BYTE    "R14-DUAL-RAMPREST-B", 0
@@ -3401,6 +3422,7 @@ sSfCellIdleMvC  BYTE    "R17-DUAL-IDLEMOVE-C", 0
 sSfCellHallK200 BYTE    "R17-DUAL-HALL-K200", 0
 sSfCellHallK270 BYTE    "R17-DUAL-HALL-K270", 0
 sSfCellHallK300 BYTE    "R17-DUAL-HALL-K300", 0
+sSfCellHallKAny BYTE    "R17-DUAL-HALL-KANY", 0
 ' task 3573: a change of speed's transition kick against the start from rest (PL-87, PL-78)
 sSfCellTrKickA  BYTE    "R17-DUAL-TRKICK-A", 0
 ' task 3577: task 3569's promises -- an unequal driveForDistance() stops each wheel at its own limit (AB), and
@@ -6531,8 +6553,8 @@ PRI emitHallInt(side, nAllLow, nAllHigh, nMissed)
 
 PRI clockLifetime(side, signMul) | slotIdx, whyCode, deadGap, adcFrame, frameCnt, bFrameOk, rid, motorIncre, safeEvent
 ' One CLOCK lifetime (design sec 4.4, T1-4): start; testGetDriveConstants() -> BM-CLOCK, folded into
-' this clock's R14-DUAL-CLKFRM-K200 / -K270 / -K300 cell (ANDed over the motor's lifetimes; judged only at a
-' swept clock, SF_JUDGES_CELLS); zero (inside bWheelStart()); one rung at
+' this clock's R14-DUAL-CLKFRM-K200 / -K270 / -K300 / -KANY cell (ANDed over the motor's lifetimes; judged at
+' every clock since SRC_REV 83); zero (inside bWheelStart()); one rung at
 ' CLOCK_RUNG_INCRE -> BM-RUNG / BM-RUNG2 / BM-RUNG3.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -10341,8 +10363,8 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
 
   ' LIMLOW (E4). Per motor x sign, one lifetime: four rungs from the old floor down, then the same four with
   '  duty_min halved (read back, and restored and read back after). The window is as long as the ring's
-  '  timebase allows: a getct() difference wraps past 2^31 ticks, 7.9 s at 270 MHz, and windowStats() times
-  '  the window by one. At 250_000 that holds about 5 hall edges and at 100_000 about 2 -- enough to say
+  '  timebase allows: a getct() difference wraps past 2^31 ticks, 7.9 s at 270 MHz (6.1 s at 350), so windowStats()
+  '  (SRC_REV 83) sums the window in WIN_SLICE_MS slices and the window may be longer than that. At 250_000 that holds about 5 hall edges and at 100_000 about 2 -- enough to say
   '  whether a rung rotates, and how evenly, not to measure its rate finely.
   LIMLOW_RUNGS          = 4                                 ' 544_628 (the old floor), 400_000, 250_000, 100_000
   LIMLOW_VARIANTS       = 2                                 ' duty_min as built, then halved
@@ -25335,7 +25357,7 @@ PRI traceWalk(bEmit) | sampleIdx, kIdx, markK, lastK, posRel, hwRel, stNow, bFlt
                 if bEmit
                     emitTs(sampleIdx, kIdx, posRel, hwRel)
 
-PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, startJ, endJ, firstJ, lastJ, iSum, phSum, phUSum, phVSum, phWSum, dutySum, errSum, sampleI
+PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sliceBaseT, nSlices, sampleIdx, startJ, endJ, firstJ, lastJ, iSum, phSum, phUSum, phVSum, phWSum, dutySum, errSum, sampleI
 ' Compute a measurement window's statistics from drained samples (I2). The window is delimited by ring
 ' index, never by time (sec 12.7): only samples whose total index lies in winStartTotal..winEndTotal-1
 ' count (each bound is an instMarkIndex() total, the first sample at or after its mark). Sums run over
@@ -25347,6 +25369,8 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
 ' @param winStartTotal - total index at the window start, -1 when not recorded
 ' @param winEndTotal - total index at the window end, -1 when not recorded
 '
+' @local sliceBaseT - the window's getct() stamp as of the last whole slice taken (WIN_SLICE_TICKS each)
+' @local nSlices - whole slices taken so far: the window's span is nSlices x WIN_SLICE_MS plus the rest
 ' @local sampleIdx - logical index
 ' @local startJ - logical index of the first sample in the window
 ' @local endJ - logical index of the last sample in the window
@@ -25391,6 +25415,8 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
     rsIdleIMax := 0
     firstJ := -1
     lastJ := -1
+    sliceBaseT := 0
+    nSlices := 0
     startJ := 0
     endJ := -1
     if (winStartTotal >= 0) and (winEndTotal > winStartTotal) and (drStored > 0)
@@ -25401,9 +25427,13 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
             beat(CP_LOOP_DRAIN)
             if firstJ < 0
                 firstJ := sampleIdx
+                sliceBaseT := smpT(sampleIdx)
             elseif bSmpUp(sampleIdx, slotIdx)
                 rsIgSum := (rsIgSum + smpIg(sampleIdx, slotIdx)) <# LIM_BIG
             lastJ := sampleIdx
+            if (smpT(sampleIdx) - sliceBaseT) >= WIN_SLICE_TICKS    ' a whole slice since the base: take it, so no difference nears 2^31
+                sliceBaseT += WIN_SLICE_TICKS
+                nSlices++
             if bSmpUp(sampleIdx, slotIdx)
                 sampleI := smpI(sampleIdx, slotIdx)
                 rsN += 1
@@ -25444,7 +25474,7 @@ PRI windowStats(slotIdx, otherIdx, winStartTotal, winEndTotal) | sampleIdx, star
     if (firstJ >= 0) and (lastJ > firstJ)
         rsTicks := smpPos(lastJ, slotIdx) - smpPos(firstJ, slotIdx)
         rsHwTicks := smpHw(lastJ, slotIdx) - smpHw(firstJ, slotIdx)
-        rsWinMs := (smpT(lastJ) - smpT(firstJ)) / TICKS_PER_MS
+        rsWinMs := nSlices * WIN_SLICE_MS + (smpT(lastJ) - sliceBaseT) / TICKS_PER_MS     ' = (smpT(lastJ) - smpT(firstJ)) / TICKS_PER_MS, summed in slices
         if rsWinMs > 0
             rsRateX10 := (rsTicks * RATE_X10_SCALE) / rsWinMs
     rsLate := instLate
@@ -28520,40 +28550,80 @@ PRI emitLive(rid, side, motorIncre, rpmRead, bHeartbeatOk, bWindowValid, whyCode
 #endif
 
 #ifdef DBP_CLOCK
-PRI bEmitClock(side, adcFram, frameCnt, deadGap) : bFrameOk | expFrame, bSwept
-' BM-CLOCK: the driver's frame count against the compiled clock's expected value. Also returns the
-' comparison this clock's R14-DUAL-CLKFRM-K200 / -K270 / -K300 cell folds. Worst case 159 bytes.
+PRI expectedFrame(nClk) : nFrame
+' The PWM / ADC frame, in system clocks, the driver derives at start (DRIVER_REV 50, init()): nClk / PWM_RATE_IN_HZ
+' rounded to the nearest EVEN count, a tie rounding up. The SAME FORMULA as the driver's, written from its published
+' constants, so any clock is judged and a driver that stops following it fails this cell.
+'
+' PRECONDITION: nClk is the running system clock, CLKFREQ (not the compiled CLK_FREQ: they differ if the PLL cannot
+'  make it), up to 350 MHz; nClk + PWM_RATE_IN_HZ stays under 2^31.
+' BOUND: equality with the driver's adc_fram (the cell has no tolerance: a frame one clock off is a failure).
+' CORRECT CASE: 6_136 at 270 MHz, 4_546 at 200, 6_818 at 300, 7_954 at 350, 4_534 at 199_500_000. THE UNFIXED
+'  EXPECTATION (the old table, and the driver before DRIVER_REV 50: whole MHz x 22_727 / 1_000) gave 4_545 at 200 and
+'  4_522 at 199_500_000, so this cell read FAIL at either clock against the DRIVER_REV 50 driver.
+'
+' @param nClk - the clock, Hz
+' @returns nFrame - the frame, clocks
+
+    nFrame := ((nClk + wheelL.PWM_RATE_IN_HZ) / (2 * wheelL.PWM_RATE_IN_HZ)) * 2
+
+PRI expectedPassUs(nFrame, nClk) : nUs | nWhole
+' The drive pass's time at nClk, microseconds rounded UP: DRIVE_PASS_FRAMES frames (DRIVER_REV 50: the pass is 23 frames
+' at every clock), from the 64-bit product so no clock overflows a long.
+'
+' PRECONDITION: nFrame is expectedFrame(nClk); nClk is the running system clock, 100 MHz to 350 MHz (at 72 MHz and
+'  below the frame's one-clock rounding moves the pass by more than a microsecond and the nominal 523 no longer holds).
+' BOUND: equality with wheelL.DRIVE_PASS_US, the motor object's nominal pass (523), which has no clock in it.
+' CORRECT CASE: 523 at every clock from 100 to 350 MHz (522.73 us, +-23 clocks of rounding), e.g. 523 at 120, 199.5,
+'  270 and 350 MHz. THE UNFIXED EXPECTATION: DRIVER_REV 49 ran a 500 us deadline whose 22nd-frame test beat it off
+'  270 MHz, so the pass was not 23 frames there; no cell judged it.
+'
+' @param nFrame - the frame, clocks
+' @param nClk - the clock, Hz
+' @returns nUs - the pass, us, rounded up
+' @local nWhole - the quotient before rounding
+
+    nWhole := muldiv64(wheelL.DRIVE_PASS_FRAMES * nFrame, US_PER_SEC, nClk)
+    nUs := nWhole
+    if (wheelL.DRIVE_PASS_FRAMES * nFrame * US_PER_SEC) <> (nWhole * nClk)    ' the wrapped 32-bit products differ exactly when a remainder is left
+        nUs++
+
+PRI bEmitClock(side, adcFram, frameCnt, deadGap) : bFrameOk | expFrame, expPassUs, bPassOk
+' BM-CLOCK: the driver's frame count and the pass it makes, against the values the running clock requires, at ANY clock
+' (SRC_REV 83). Also returns the comparison this clock's R14-DUAL-CLKFRM-K200 / -K270 / -K300 / -KANY cell folds.
+' Worst case about 175 bytes (the 159 it was, plus pass_us; estimated, not measured).
+'
+' PRECONDITION: the driver is started at the clock this image runs at (CLKFREQ); the CLOCK part's lifetime has read adc_fram.
+' BOUND: adc_fram equals expectedFrame(CLKFREQ) exactly AND the pass that frame makes at CLKFREQ, rounded up to the
+'  microsecond, equals DRIVE_PASS_US.
+' CORRECT CASE: fram_ok TRUE at every clock (exp_fram 6_136 / pass_us 523 at 270 MHz). THE UNFIXED VALUE: the
+'  three-clock table gave no expectation off 200 / 270 / 300 MHz (the cell was not judged), and 4_545 at 200 MHz,
+'  where the driver makes 4_546.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param adcFram - adc_fram from testGetDriveConstants()
 ' @param frameCnt - frame_cnt from testGetDriveConstants()
 ' @param deadGap - dead_gap from testGetDriveConstants()
-' @returns bFrameOk - adc_fram equals the expected frame count at a swept clock
+' @returns bFrameOk - adc_fram equals the expected frame and the expected pass is the nominal one
 '
-' @local expFrame - expected frame count at CLK_FREQ
-' @local bSwept - CLK_FREQ is 200, 270 or 300 MHz
+' @local expFrame - expected frame count at CLKFREQ
+' @local expPassUs - the pass that frame makes, us rounded up
+' @local bPassOk - expPassUs is wheelL.DRIVE_PASS_US
 
-    bSwept := TRUE
-    case CLK_FREQ
-        CLK_SWEEP_200:
-            expFrame := EXP_FRAME_200
-        CLK_SWEEP_270:
-            expFrame := EXP_FRAME_270
-        CLK_SWEEP_300:
-            expFrame := EXP_FRAME_300
-        other:
-            expFrame := 0
-            bSwept := FALSE
-    bFrameOk := bSwept and (adcFram == expFrame)
+    expFrame := expectedFrame(CLKFREQ)
+    expPassUs := expectedPassUs(expFrame, CLKFREQ)
+    bPassOk := (expPassUs == wheelL.DRIVE_PASS_US)
+    bFrameOk := (adcFram == expFrame) and bPassOk
     recBegin(@"BM-CLOCK")
     benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
     benchLog.numField(@"clkfreq", CLKFREQ, LIM_BIG)
     benchLog.numField(@"adc_fram", adcFram, LIM_SMALL)
     benchLog.numField(@"frame_cnt", frameCnt, LIM_SMALL)
     benchLog.numField(@"dead_gap", deadGap, LIM_TINY)
-    benchLog.naNumField(@"exp_fram", expFrame, LIM_SMALL, bSwept)
+    benchLog.numField(@"exp_fram", expFrame, LIM_SMALL)
+    benchLog.numField(@"pass_us", expPassUs, LIM_SMALL)
     benchLog.boolField(@"fram_ok", bFrameOk)
-    whyField(bSwept ? WHY_NONE : WHY_UNSWEPT_CLOCK)
+    whyField(WHY_NONE)
     emitRecord()
 
 #endif
@@ -29442,7 +29512,7 @@ PRI partNoStallCell() : pCell
         PART_A:
             pCell := @sSfCellNoStallA
         PART_CLOCK:
-            pCell := clockCell(@sSfCellNoStallK200, @sSfCellNoStallK270, @sSfCellNoStallK300)
+            pCell := clockCell(@sSfCellNoStallK200, @sSfCellNoStallK270, @sSfCellNoStallK300, @sSfCellNoStallKAny)
         PART_B:
             pCell := @sSfCellNoStallB
         PART_BRAKE:
@@ -29485,7 +29555,7 @@ PRI partDbgMaskCell() : pCell
         PART_A:
             pCell := @sSfCellDbgMaskA
         PART_CLOCK:
-            pCell := clockCell(@sSfCellDbgMaskK200, @sSfCellDbgMaskK270, @sSfCellDbgMaskK300)
+            pCell := clockCell(@sSfCellDbgMaskK200, @sSfCellDbgMaskK270, @sSfCellDbgMaskK300, @sSfCellDbgMaskKAny)
         PART_B:
             pCell := @sSfCellDbgMaskB
         PART_BRAKE:
@@ -29519,14 +29589,15 @@ PRI partDbgMaskCell() : pCell
         other:
             pCell := @sUnknownTok
 
-PRI clockCell(pCell200, pCell270, pCell300) : pCell
-' The compiled clock's cell id, chosen from a cell's three per-clock ids by SF_CLOCK_SLOT (design sec 12.10;
+PRI clockCell(pCell200, pCell270, pCell300, pCellAny) : pCell
+' The compiled clock's cell id, chosen from a cell's four per-clock ids by SF_CLOCK_SLOT (design sec 12.10;
 ' reads only DAT, so it is safe from any cog).
 '
 ' @param pCell200 - pointer to the cell's 200 MHz id
 ' @param pCell270 - pointer to the cell's 270 MHz id
 ' @param pCell300 - pointer to the cell's 300 MHz id
-' @returns pCell - pointer to this clock's id, "?" at an unswept clock
+' @param pCellAny - pointer to the cell's id at every other clock (SRC_REV 83)
+' @returns pCell - pointer to this clock's id
 
     case SF_CLOCK_SLOT
         SF_CLOCK_200:
@@ -29536,11 +29607,11 @@ PRI clockCell(pCell200, pCell270, pCell300) : pCell
         SF_CLOCK_300:
             pCell := pCell300
         other:
-            pCell := @sUnknownTok
+            pCell := pCellAny
 
 PRI emitSignoffDecls()
-' One SIGNOFF-DECL per cell this build judges, before anything moves. A build that judges no cell (PART_NONE,
-' or a CLOCK build at an unswept clock: SF_JUDGES_CELLS) declares nothing but R21-DUAL-TOKTAB, which every build declares
+' One SIGNOFF-DECL per cell this build judges, before anything moves. A build that judges no cell (PART_NONE:
+' SF_JUDGES_CELLS) declares nothing but R21-DUAL-TOKTAB, which every build declares
 ' and judges (SRC_REV 71: the record labels' self-check; the negative tier dual-tokneg is a PART_NONE build). Each cell id
 ' is a DAT string passed by @label on the emitter's own line, so the CLOCK part names each clock's labels under its
 ' SF_CLOCK_SLOT.
@@ -29588,6 +29659,11 @@ PRI emitSignoffDecls()
                         emitSignoffDecl(@sSfCellDbgMaskK300)
                         emitSignoffDecl(@sSfCellClkFrameK300)
                         emitSignoffDecl(@sSfCellHallK300)
+                    other:
+                        emitSignoffDecl(@sSfCellNoStallKAny)
+                        emitSignoffDecl(@sSfCellDbgMaskKAny)
+                        emitSignoffDecl(@sSfCellClkFrameKAny)
+                        emitSignoffDecl(@sSfCellHallKAny)
 #elseifdef DBP_B
                 emitSignoffDecl(@sSfCellNoStallB)
                 emitSignoffDecl(@sSfCellDbgMaskB)
@@ -29883,8 +29959,8 @@ PRI emitSignoffs() | slotIdx, side
                 emitLagCells(@sSfCellLagA)
 #elseifdef DBP_CLOCK
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
-                    emitSignoffBool(clockCell(@sSfCellClkFrameK200, @sSfCellClkFrameK270, @sSfCellClkFrameK300), SIDE_LEFT + slotIdx, @sSfCritClkFrame, bSfClkRan[slotIdx], bSfClkOk[slotIdx], SIGNOFF_ONE_INSTANCE)
-                    emitSignoff(clockCell(@sSfCellHallK200, @sSfCellHallK270, @sSfCellHallK300), SIDE_LEFT + slotIdx, @sSfCritHall, sfHallLives[slotIdx] > 0, sfHallIllegal[slotIdx], HALL_ILLEGAL_LO, HALL_ILLEGAL_HI, sfHallLives[slotIdx], @sSfUnitsCount)
+                    emitSignoffBool(clockCell(@sSfCellClkFrameK200, @sSfCellClkFrameK270, @sSfCellClkFrameK300, @sSfCellClkFrameKAny),SIDE_LEFT + slotIdx, @sSfCritClkFrame, bSfClkRan[slotIdx], bSfClkOk[slotIdx], SIGNOFF_ONE_INSTANCE)
+                    emitSignoff(clockCell(@sSfCellHallK200, @sSfCellHallK270, @sSfCellHallK300, @sSfCellHallKAny),SIDE_LEFT + slotIdx, @sSfCritHall, sfHallLives[slotIdx] > 0, sfHallIllegal[slotIdx], HALL_ILLEGAL_LO, HALL_ILLEGAL_HI, sfHallLives[slotIdx], @sSfUnitsCount)
 #elseifdef DBP_B
                 emitSignoff(@sSfCellTracesB, SIDE_NONE, @sSfCritTraces, sfTraces > 0, sfTraceLost, TRACE_LOST_LO, TRACE_LOST_HI, sfTraces, @sSfUnitsCount)
                 repeat slotIdx from SLOT_LEFT to SLOT_RIGHT

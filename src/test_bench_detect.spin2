@@ -133,8 +133,12 @@ CON { build identity }
 '   verdict REFUSED replacing ABORT (the library aborts nowhere since task 3554).
 ' 01 Oct 2026, PL-68 -- SRC_REV 9, FMT_VERSION 4: BD-BUILD gains commit after src_rev (the short SHA in a bench
 '   pack, NOT_A_PACK from the source tree; isp_bench_commit.spin2), at most 20 bytes more.
-    SRC_REV     = 9
-    FMT_VERSION = 4                                         ' BD-BANNER record-format version
+' 03 Oct 2026, task 3674 -- SRC_REV 10, FMT_VERSION 5: in step with the library's DRIVER_REV 51 detect read: the sum
+'   is taken over a getct()-paced DETECT_WINDOW_US (371 us) and counts its reads; "no board" is pinSum > reads / 2
+'   (SUM_ITER and REVB_SUM_LIMIT are gone). BD-REP gains reads after sumtix (about 12 bytes more; BD-REP worst case
+'   about 241 of the 280-byte bound).
+    SRC_REV     = 10
+    FMT_VERSION = 5                                        ' BD-BANNER record-format version
 
 ' DETECT_PHASE2 implies DETECT_LIB: if phase 2 is compiled, the library must be linked
 #ifdef DETECT_PHASE2
@@ -199,11 +203,19 @@ CON { measurement parameters }
 ' actually lying is how you end up back at a one-shot bench. 32 is also a power of two.
     N_REP            = 32                                   ' repeats per passive cell
     N_LIVE           = 8                                    ' repeats per cell with a driver cog RUNNING
-    SUM_ITER         = 500                                  ' the library's own pinread count
+    ' SRC_REV 10 (task 3674; DRIVER_REV 51): the library's read is a WINDOW in time, DETECT_WINDOW_US, paced by getct(); it
+    '  counts its reads (nReads) and "no board" is pinSum > nReads / 2. This file's passive build links no library, so it
+    '  keeps its own copy of the window, and under -D DETECT_LIB the cross-check below (the replica's verdict against the
+    '  library's own) is what proves the copy has not drifted.
+    '  PRECONDITION: the same window and the same rule as isp_bldc_motor.spin2's getBoardType() -- 371 us, nReads / 2.
+    '  BOUND: the replica verdict equals the library's on every cell (the BD-CELL agree field).
+    '  CORRECT CASE: at 270 MHz Rev B sums 93-104 of about 500 reads (371 us), high time 69-77 us; Rev A 0; empty about all.
+    '  THE UNFIXED VALUE: SUM_ITER 500 reads at the loop's pitch was 1_000 us at 100 MHz and 286 us at 350, and the fixed
+    '   REVB_SUM_LIMIT 250 judged a window the library no longer takes, so the replica disagreed with the library off 270 MHz.
+    DETECT_WINDOW_US = 371                                  ' the library's own read window, microseconds
     PROBE_MAX_ITER   = 2_000                                ' first-low probe ceiling
     CAL_ITER         = 500                                  ' poll-loop calibration iterations
     CHARGE_MS        = 1                                    ' the library's own waitms(1)
-    REVB_SUM_LIMIT   = 250                                  ' pinSum > this reads as "not detected"
     REVB_MIN_US      = 20                                   ' high time below this reads as "not detected" (library DETECT_REVB_MIN_US)
     USEC_PER_SEC     = 1_000_000                            ' converts CLKFREQ to ticks per microsecond
     SETTLE_MS        = 200                                  ' let a started driver cog reach steady state
@@ -225,8 +237,8 @@ CON { measurement parameters }
 CON { record byte budget -- records are assembled by benchLog (isp_bench_log, PL-53) }
 
 ' Worst-case record bytes, against the 280-byte sign-off bound (task 3537 P2d; upper bounds since task 3574
-' removed BD-REP's bnc and BD-CELL's bnc_max): BD-REP 229
-' (gnm 14, ovl 16, sumtix and fltix 13 each, vrd 7); BD-CELL 225; BD-SKIPPED 130 (gnm 14,
+' removed BD-REP's bnc and BD-CELL's bnc_max; SRC_REV 10 adds reads, 12, to BD-REP): BD-REP 241 (229 before reads;
+' gnm 14, ovl 16, sumtix and fltix 13 each, vrd 7); BD-CELL 225; BD-SKIPPED 130 (gnm 14,
 ' ovl 16, cog 7, cogst 7, reason 12); BD-MAP 79 (ovl 16, guard 12); BD-SWEEP 64 (three
 ' NOMEAS counts on begin).
 
@@ -260,8 +272,8 @@ CON { cell axis codes }
 
 ' Verdict codes -- the replica's, the library's, and the per-cell modal value:
 '  VRD_REVA     - pinSum == 0
-'  VRD_REVB     - pinSum in 1..REVB_SUM_LIMIT and high time >= REVB_MIN_US
-'  VRD_NODET    - pinSum > REVB_SUM_LIMIT, or high time < REVB_MIN_US, "Board not detected!"
+'  VRD_REVB     - pinSum in 1..nReads / 2 and high time >= REVB_MIN_US
+'  VRD_NODET    - pinSum > nReads / 2, or high time < REVB_MIN_US, "Board not detected!"
 '  VRD_TIE      - per-cell modal only: no single verdict held a majority
 '  VRD_UNKNOWN  - library returned something outside REV_A/REV_B/REV_Unknown
 '  VRD_NOBASE   - group is not a legal base, so getBoardType() never measured
@@ -422,8 +434,9 @@ VAR { per-cell measurement capture }
 
 ' One slot per repeat. Filled silently during the measured passes; read back only after
 ' the last repeat of a cell, so no debug() ever lands inside a measured interval.
-    LONG    measured_sum[N_REP]                             ' the library's own 500-pinread sum
+    LONG    measured_sum[N_REP]                             ' the library's own DETECT_WINDOW_US pinread sum
     LONG    measured_sum_ticks[N_REP]                       ' getct() ticks spanning that sum loop
+    LONG    measured_reads[N_REP]                           ' pinreads that window took (nReads): it is a time, so the count varies
     LONG    measured_iter[N_REP]                            ' 1-based sample index of the first low read
     LONG    measured_flt_ticks[N_REP]                       ' getct() ticks from pinfloat() to first low
     LONG    measured_low_seen[N_REP]                        ' TRUE when the pin ever read low
@@ -664,7 +677,7 @@ PRI emitNoteRecords()
     emitNote(@"VOID RULE: a log with no BD-BANNER or with cfg_id not equal to BENCH or with BD-CLK match 0 is VOID -- not suspect but void")
     emitNote(@"VOID RULE: any BD-ENUM match 0 voids the run -- the local pin-group table has drifted from the library's")
     emitNote(@"SUM RULE: sum 0 is real data on a Rev A board and is also what a loop that never executed produces")
-    emitNote(@"SUM RULE: sum 0 is trustworthy ONLY when sumtix is at least 500 -- 500 Spin2 pinreads cannot complete in under 500 ticks")
+    emitNote(@"SUM RULE: sum 0 is trustworthy ONLY when sumtix is at least reads -- that many Spin2 pinreads cannot complete in fewer ticks than reads")
     emitNote(@"CAL RULE: BD-CAL is emitted three times against a pin held driven high so the loop can never exit early")
     emitNote(@"CAL RULE: if the three tix_per_iter values differ by more than a few percent then every sumtix and every fltix in this log is void")
     emitNote(@"CROSS-CHECK: iter and (fltix / tix_per_iter) are two independent routes to the same number; if they disagree the instrumentation is lying")
@@ -790,8 +803,8 @@ PRI runCell(swNum, grpBase, nRep, cogGrp, cogState, clrState) | repIdx, libVerdi
     libVerdict := runLibraryProbe(swNum, grpBase)
     emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict)
 
-PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, ctBefore, ctAfter, iterCount, lastLevel, bLowSeen
-' Take one repeat: the library's own 500-read sum pass and then, with its own fresh charge,
+PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, nReads, windowTicks, ctBefore, ctAfter, iterCount, lastLevel, bLowSeen
+' Take one repeat: the library's own DETECT_WINDOW_US sum pass and then, with its own fresh charge,
 ' the first-low probe pass. The two passes never share state. Results go into the VAR
 ' arrays; nothing is printed.
 '
@@ -799,7 +812,9 @@ PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, ctBefore, ctAfter, ite
 ' @param repIdx - slot in the VAR capture arrays to fill
 '
 ' @local sensePin - grpBase + SENSE_PIN_OFFSET, exactly as getBoardType() computes it
-' @local pinSum - running sum of the 500 pinread results
+' @local pinSum - running sum of the window's pinread results
+' @local nReads - pinreads taken in the DETECT_WINDOW_US window
+' @local windowTicks - DETECT_WINDOW_US in system ticks, as the library derives it
 ' @local ctBefore - getct() immediately before a measured loop
 ' @local ctAfter - getct() immediately after a measured loop
 ' @local iterCount - 1-based count of first-low probe samples taken
@@ -809,25 +824,29 @@ PRI measureOneRepeat(grpBase, repIdx) | sensePin, pinSum, ctBefore, ctAfter, ite
     sensePin := grpBase + SENSE_PIN_OFFSET
     measured_pre[repIdx] := snapshotGroupPins(grpBase)
 
-    ' Pass one is a transcription of isp_bldc_motor.spin2:776-784 with the two debug()
-    ' calls removed and two getct() calls added OUTSIDE the repeat. The loop body is one
-    ' statement, character-for-character the library's. Nothing is added inside the
-    ' measured interval.
+    ' Pass one is a transcription of isp_bldc_motor.spin2's getBoardType() read loop (DRIVER_REV 51: a getct()-paced
+    ' window of DETECT_WINDOW_US that counts its reads) with the debug() calls removed. The loop is the library's own
+    ' two statements and its test; the measured interval's end is read once more after it, as the library's sumTicks is.
     pinSum := 0
     pinhigh(sensePin)                                       ' charge 0.1uF capacitor on RevB boards
     waitms(CHARGE_MS)
     pinfloat(sensePin)                                      ' release the pin, ready to read state
+    windowTicks := muldiv64(CLKFREQ, DETECT_WINDOW_US, USEC_PER_SEC)
+    nReads := 0
     ctBefore := getct()
-    repeat SUM_ITER
+    repeat                                                  ' as the library's loop (DRIVER_REV 51): read for the window, count the reads
         pinSum += pinread(sensePin)
+        nReads++
+    while getct() - ctBefore < windowTicks
     ctAfter := getct()
     measured_sum[repIdx] := pinSum
     measured_sum_ticks[repIdx] := ctAfter - ctBefore
+    measured_reads[repIdx] := nReads
 
     ' Pass two is the measurement that is the point: the sample index and the tick delta at
     ' which the pin FIRST reads low -- the real RC discharge time, convertible to
-    ' microseconds and clock-independent. The 500-read sum is clock-dependent by the
-    ' library's own comment at isp_bldc_motor.spin2:787. During this probe the pin is
+    ' microseconds and clock-independent. The window's read count is clock-dependent (the
+    ' library's own comment in getBoardType(): more reads fit in the same discharge at a faster clock). During this probe the pin is
     ' floating and not driven, so a long probe on an empty group is electrically inert.
     pinhigh(sensePin)
     waitms(CHARGE_MS)
@@ -874,7 +893,8 @@ PRI emitRepeatRecord(swNum, grpBase, repIdx, cogGrp, cogState, clrState)
     benchLog.textField(@"clr", clearToken(clrState))
     benchLog.unclampedNumField(@"sum", measured_sum[repIdx])
     benchLog.unclampedNumField(@"sumtix", measured_sum_ticks[repIdx])
-    benchLog.textField(@"vrd", verdictToken(verdictForSum(measured_sum[repIdx], measured_sum_ticks[repIdx])))
+    benchLog.unclampedNumField(@"reads", measured_reads[repIdx])
+    benchLog.textField(@"vrd", verdictToken(verdictForSum(measured_sum[repIdx], measured_sum_ticks[repIdx], measured_reads[repIdx])))
     if measured_low_seen[repIdx] == TRUE
         benchLog.unclampedNumField(@"iter", measured_iter[repIdx])
         benchLog.unclampedNumField(@"fltix", measured_flt_ticks[repIdx])
@@ -928,7 +948,7 @@ PRI emitCellSummary(swNum, grpBase, nRep, cogGrp, cogState, clrState, libVerdict
         sumMin := sumMin <# measured_sum[repIdx]
         sumMax := sumMax #> measured_sum[repIdx]
         sumTotal += measured_sum[repIdx]
-        case verdictForSum(measured_sum[repIdx], measured_sum_ticks[repIdx])
+        case verdictForSum(measured_sum[repIdx], measured_sum_ticks[repIdx], measured_reads[repIdx])
             VRD_REVA:
                 cntA += 1
             VRD_REVB:
@@ -1108,23 +1128,30 @@ PRI snapshotGroupPins(grpBase) : pinBits
     pinBits := pinread(grpBase addpins HALF_GROUP_SPAN)
     pinBits |= pinread(grpBase + GROUP_HI_OFFSET addpins HALF_GROUP_SPAN) << HIGH_HALF_SHIFT
 
-PRI verdictForSum(pinSum, sumTicks) : verdictCode | highTimeUs
+PRI verdictForSum(pinSum, sumTicks, nReads) : verdictCode | highTimeUs
 ' The library getBoardType() verdict cascade, in the same order and with the same integer
-' arithmetic, so a sum of exactly 250 or 251, or a high time of exactly 19 or 20 uS, lands
-' where the library lands it: sum 0 REVA, sum > 250 NODET, high time < 20 uS NODET, else REVB.
-' High time is pinSum x (loop ticks / SUM_ITER) in microseconds, from the sumtix this file
-' already records around the same loop.
+' arithmetic (DRIVER_REV 51), so a sum of exactly nReads / 2 or one over it, or a high time of
+' exactly 19 or 20 uS, lands where the library lands it: sum 0 REVA, sum > nReads / 2 NODET,
+' high time < 20 uS NODET, else REVB. High time is pinSum x (loop ticks / nReads) in
+' microseconds, from the sumtix and reads this file records around the same loop.
 '
-' @param pinSum - the 500-pinread sum
-' @param sumTicks - ticks the 500-pinread loop took (sumtix)
+' PRECONDITION: pinSum, sumTicks and nReads come from one window of DETECT_WINDOW_US (nReads >= 1).
+' BOUND: the verdict equals getBoardType()'s on the same three numbers, at any clock.
+' CORRECT CASE: 0 -> REVA; 100 of 500 reads over 371 us at 270 MHz (high 74 us) -> REVB; 251 of 500 -> NODET.
+'  THE UNFIXED VALUE: the fixed limit 250 called 140 high of 270 reads (a 371 us window with slower reads) REVB where the library,
+'  with half the reads high, says NODET.
+'
+' @param pinSum - the window's pinread sum
+' @param sumTicks - ticks the read window took (sumtix)
+' @param nReads - pinreads the window took (reads)
 ' @returns verdictCode - VRD_REVA / VRD_REVB / VRD_NODET
 '
 ' @local highTimeUs - how long the released pin stayed high, in microseconds
 
-    highTimeUs := (pinSum * sumTicks / SUM_ITER) / ((CLKFREQ / USEC_PER_SEC) #> 1)
+    highTimeUs := muldiv64(muldiv64(pinSum, sumTicks, nReads #> 1), USEC_PER_SEC, CLKFREQ)
     if pinSum == 0
         verdictCode := VRD_REVA
-    elseif pinSum > REVB_SUM_LIMIT
+    elseif pinSum > nReads / 2
         verdictCode := VRD_NODET
     elseif highTimeUs < REVB_MIN_US
         verdictCode := VRD_NODET

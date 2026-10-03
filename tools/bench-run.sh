@@ -36,16 +36,20 @@
 # test_bench_scan and test_bench_dual, and the release demos demo_single_motor
 # and demo_dual_motor when built with -D BENCH_CFG (PL-149).
 #
-# Usage:  tools/bench-run.sh <tier>
-#   <tier>      -- tier name, see usage() below. It is the ONLY argument: nothing
-#                  numeric is ever typed at the bench (STEPHEN 2026-09-16: "please
-#                  don't create commands where the data entry due to length causes
-#                  risk to me typeing it correctly (e.g., Hz values that's silly)").
+# Usage:  tools/bench-run.sh <tier> [<clock>]
+#   <tier>      -- tier name, see usage() below.
+#   <clock>     -- optional, a clock NAME (clk-floor, clk-200, clk-270, clk-300, clk-350, clk-frac), for the tiers of
+#                  test_bench_dual and test_bench_t0 only. Nothing numeric is ever typed at the bench (STEPHEN
+#                  2026-09-16: "please don't create commands where the data entry due to length causes risk to me
+#                  typeing it correctly (e.g., Hz values that's silly)"): a name is the only way to choose a clock,
+#                  and the one table that maps a name to its Hz is clock_hz() below. Task 3674 chose a second argument
+#                  over a tier variant per clock (dual-clock-NNN, t0-NNN, ...) because six clocks times every tier of
+#                  two tops is a table that grows with every clock and tier; a name list grows with the clocks only.
 #
-# The clock sweep is three tiers, dual-clock-200 / -270 / -300, each naming its
-# clock. Those tiers are the ONLY thing that may cause this script to write to a
-# source file (test_bench_dual.spin2's "CLK_FREQ = ..." line); every other tier is
-# read-only with respect to the tree. Restored on exit, including on interrupt.
+# The three original clock tiers, dual-clock-200 / -270 / -300, still work: each is `dual-clock` with its clock named
+# (and `dual-clock <clock>` takes any name). A clock name is the ONLY thing that may cause this script to write to a
+# source file (the top's "CLK_FREQ = ..." line); every other run is read-only with respect to the tree. Restored on
+# exit, including on interrupt.
 
 set -u
 
@@ -89,12 +93,38 @@ MEASURE_ONLY="${BENCH_MEASURE_ONLY:-}"
 # any terminal or banner.
 PACK_DIR="${BENCH_PACK_DIR:-}"
 
-# The three clocks the dual-clock-* tiers sweep, in Hz, each named once by its tier
-# below. test_bench_dual.spin2 judges its CLKFRAME sign-off cell only at these (its
-# SF_CLOCK_* constants), so a run at any other clock judges nothing -- see PL-62.
-CLOCK_200_HZ="200000000"
-CLOCK_270_HZ="270000000"
-CLOCK_300_HZ="300000000"
+# THE CLOCK TABLE (task 3674): every clock a run can name, in ONE place. A name maps to Hz here and nowhere else, so a
+# later task that rules a clock changes ONE line. Since task 3674 test_bench_dual's CLOCK part and test_bench_t0 judge
+# any clock (the expected frame is computed from the running clock), so the names are chosen to cover the range:
+#   clk-floor  the lowest supported clock. PROVISIONAL 120 MHz: task 3683 rules the real floor and sets it HERE, this line only.
+#   clk-200    200 MHz, as the original dual-clock-200
+#   clk-270    270 MHz, the files' own default, as dual-clock-270
+#   clk-300    300 MHz, as dual-clock-300
+#   clk-350    350 MHz, the fastest the P2 PLL makes (VCO / 1): getct() differences wrap at 6.1 s
+#   clk-frac   271.25 MHz, a clock that is NOT a whole number of MHz (every whole-MHz arithmetic goes wrong on it).
+#              An integer in Hz, and the P2's PLL makes it EXACTLY from the 20 MHz crystal: 20 MHz x 217 / 16 (pnut-ts
+#              writes CLKMODE $013CD8FB: divide 16, multiply 217, VCO / 1) -- verified by compiling it, not on a board.
+# pnut-ts needs no _errfreq for any of them: each is reached exactly, so the default tolerance is never used.
+CLOCK_NAMES="clk-floor clk-200 clk-270 clk-300 clk-350 clk-frac"
+clock_hz() {
+    case "$1" in
+        clk-floor) echo "120000000" ;;
+        clk-200)   echo "200000000" ;;
+        clk-270)   echo "270000000" ;;
+        clk-300)   echo "300000000" ;;
+        clk-350)   echo "350000000" ;;
+        clk-frac)  echo "271250000" ;;
+        *)         return 1 ;;
+    esac
+}
+# The clock a shorthand tier names, if it is one: dual-clock-200 / -270 / -300 are `dual-clock` with that clock.
+tier_clock() {
+    case "$1" in
+        dual-clock-200) echo "clk-200" ;;
+        dual-clock-270) echo "clk-270" ;;
+        dual-clock-300) echo "clk-300" ;;
+    esac
+}
 
 # echo a command verbatim, then run it. "$@" is the real argv -- nothing
 # paraphrased, nothing elided.
@@ -130,7 +160,15 @@ usage() {
     #  refusal that only reaches stderr leaves them with a run that stopped for no
     #  visible reason.
     cat <<'EOF'
-Usage:  tools/bench-run.sh <tier>
+Usage:  tools/bench-run.sh <tier> [<clock>]
+  <clock>     -- optional, for the tiers of test_bench_dual and test_bench_t0 only: the clock the run is built at, by NAME
+                 (nothing numeric is typed). One of:
+                   clk-floor  120 MHz  the lowest supported clock (PROVISIONAL: task 3683 rules it)
+                   clk-200    200 MHz
+                   clk-270    270 MHz  (what a run without a clock uses)
+                   clk-300    300 MHz
+                   clk-350    350 MHz  the fastest clock the P2 makes
+                   clk-frac   271.25 MHz  not a whole number of MHz
   <tier>      -- one of:
                    t0             Tier 0 -- no motor, no motion, no risk
                    panel          PLOT pipeline probe: two windows differing ONLY in name, no motors, reads out in the log  [NOTHING MOVES, ATTENDED]
@@ -151,6 +189,7 @@ Usage:  tools/bench-run.sh <tier>
                    scan-droop     droop-stop self-test: pure logic, three point sequences through the real stop decision  [NOTHING MOVES]
                    dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER, LOWSPD  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-a-legacy  as dual-a, on the LEGACY commutation offsets 43/317 -- the control leg, draws far more current  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   dual-clock     motion harness clock load at the clock you name: PREFLT, CLOCK -- takes the <clock> argument, e.g. dual-clock clk-350  [WHEELS UP, UNATTENDED]
                    dual-clock-200 motion harness clock load at 200 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-270 motion harness clock load at 270 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-300 motion harness clock load at 300 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
@@ -199,19 +238,41 @@ Examples:
   tools/bench-run.sh detect
   tools/bench-run.sh char
   tools/bench-run.sh dual-clock-200
+  tools/bench-run.sh dual-clock clk-350
+  tools/bench-run.sh t0 clk-frac
 EOF
-    exit 2
+    exit "${1:-2}"          # usage 0 for --help; a refusal is 2
 }
 
-if [ $# -ne 1 ]; then
-    if [ $# -gt 1 ]; then
-        echo "ERROR: one argument only, the tier name -- a clock is chosen by the tier (dual-clock-200, dual-clock-270, dual-clock-300)"
+if [ $# -lt 1 ] || [ $# -gt 2 ]; then
+    if [ $# -gt 2 ]; then
+        echo "ERROR: at most two arguments, the tier name and optionally a clock NAME (never a number)"
     fi
     usage
 fi
 
 TIER="$1"
+CLOCK_NAME="${2:-}"
 CLK_OVERRIDE=""
+CLOCK_FROM_ARG="$CLOCK_NAME"          # a clock the operator typed, as against one a shorthand tier names
+# --help / -h print the usage and clock names; usage() starts no terminal and touches no file
+case "$TIER" in
+    -h|--help|help) usage 0 ;;
+esac
+
+# a shorthand tier (dual-clock-200 ...) names its clock; a second argument beside it must say the same
+SHORTHAND_CLOCK="$(tier_clock "$TIER")"
+if [ -n "$SHORTHAND_CLOCK" ]; then
+    if [ -n "$CLOCK_NAME" ] && [ "$CLOCK_NAME" != "$SHORTHAND_CLOCK" ]; then
+        die "tier '$TIER' already names its clock ($SHORTHAND_CLOCK); give no second argument (or use: dual-clock $CLOCK_NAME)"
+    fi
+    CLOCK_NAME="$SHORTHAND_CLOCK"
+    CLOCK_FROM_ARG=""
+fi
+# the name is looked up in the ONE table (clock_hz); anything else is refused and the names are listed
+if [ -n "$CLOCK_NAME" ]; then
+    CLK_OVERRIDE="$(clock_hz "$CLOCK_NAME")" || die "unknown clock '$CLOCK_NAME' -- a clock is chosen by NAME, one of: $CLOCK_NAMES"
+fi
 
 # Validate tier name, and map it to a top file plus its -D options.
 #
@@ -362,19 +423,18 @@ case "$TIER" in
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_A -D HUB_OFFSETS_LEGACY)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part A on the LEGACY commutation offsets (43 / 317). These draw 15x to 26x MORE current than the shipped pair at the same commanded speed (Visit 7b), so this leg runs hotter than any current dual-a: it is a control, not a normal run. The 10 A abort and the fold-back limiter are unchanged and both still apply. Run cap 25 minutes"
                     ;;
-    # PL-62: the clock is part of the tier name, so a mistyped clock is impossible rather than merely
-    #  detectable -- a wrong name is an unknown tier and is refused.
-    dual-clock-200|dual-clock-270|dual-clock-300)
+    # PL-62: the clock is chosen by NAME, so a mistyped clock is impossible rather than merely detectable -- a wrong name
+    #  is refused. Task 3674: dual-clock takes any name in the clock table (clock_hz), and dual-clock-200 / -270 / -300 are
+    #  shorthand for it with the clock named (tier_clock), so every name that ever worked still does. The CLOCK part judges
+    #  ANY clock now (its expected frame is computed), not only these three.
+    dual-clock-200|dual-clock-270|dual-clock-300|dual-clock)
                     BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_CLOCK)
-                    case "$TIER" in
-                        dual-clock-200) CLK_OVERRIDE="$CLOCK_200_HZ" ;;
-                        dual-clock-270) CLK_OVERRIDE="$CLOCK_270_HZ" ;;
-                        dual-clock-300) CLK_OVERRIDE="$CLOCK_300_HZ" ;;
-                    esac
-                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness clock load (PREFLT, CLOCK) at clkfreq $CLK_OVERRIDE, about 1 minute; one of three runs: dual-clock-200, dual-clock-270, dual-clock-300"
+                    if [ -z "$CLOCK_NAME" ]; then
+                        die "tier 'dual-clock' needs a clock NAME: dual-clock <clock>, one of: $CLOCK_NAMES (or the shorthand tiers dual-clock-200, dual-clock-270, dual-clock-300)"
+                    fi
+                    PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness clock load (PREFLT, CLOCK) at the clock $CLOCK_NAME, clkfreq $CLK_OVERRIDE, about 1 minute"
                     ;;
-    dual-clock)     die "tier 'dual-clock' is now three tiers that name their clock: dual-clock-200, dual-clock-270, dual-clock-300" ;;
     dual-b)         BENCH_FILE="test_bench_dual.spin2"
                     EXTRA_DEFS=(-D BENCH_QUIET -D DUAL_PART_B)
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS: NONE -- UNATTENDED motion harness part B (PREFLT, FAULTB ramp trials that fault on purpose, OVERSHT distance moves through the steering object), run cap 20 minutes"
@@ -648,6 +708,19 @@ case "$TIER" in
         ;;
 esac
 
+# a clock name belongs only to the tops that judge a clock (test_bench_dual's CLOCK part and test_bench_t0); any other
+# tier's source is never patched, so a name beside it would run at the file's own clock while saying otherwise
+if [ -n "$CLOCK_NAME" ]; then
+    case "$BENCH_FILE" in
+        test_bench_dual.spin2|test_bench_t0.spin2) ;;
+        *) die "tier '$TIER' (top $BENCH_FILE) takes no clock: a clock name is for the tiers of test_bench_dual.spin2 and test_bench_t0.spin2" ;;
+    esac
+fi
+# a prebuilt package and a pack build hold one binary per tier name, its clock built in: no clock is chosen there
+if [ -n "$CLOCK_FROM_ARG" ] && { [ -n "$PREBUILT" ] || [ -n "$PACK_DIR" ]; }; then
+    die "a prebuilt package (and a pack build) holds one binary per tier, its clock built in: no clock name can be given there -- use a shorthand tier (dual-clock-200, dual-clock-270, dual-clock-300)"
+fi
+
 # ---- sanity checks ----------------------------------------------------------
 # command -v, not [ -x ] -- these are PATH names, not paths, and -x on a bare
 # name tests a file in the current directory.
@@ -700,10 +773,10 @@ if [ -n "$PREBUILT" ]; then
 fi
 if [ -z "$PREBUILT" ]; then
 
-# ---- optionally patch CLK_FREQ in test_bench_t0.spin2 -------------------------
-# The ONLY source mutation this script ever performs, and only when a
-# clkfreq argument is explicitly given. Restored on exit, including on
-# interrupt.
+# ---- optionally patch CLK_FREQ in the tier's top (test_bench_dual / test_bench_t0) ----------
+# The ONLY source mutation this script ever performs, and only when a clock
+# NAME is given (or a shorthand tier names one). Restored on exit, including
+# on interrupt.
 BACKUP_BENCH=""
 if [ -n "$MEASURE_ONLY" ] && [ -n "$CLK_OVERRIDE" ]; then
     # The clock is one CON value; it does not move the DEBUG footprint, and a measurement
@@ -725,8 +798,12 @@ elif [ -n "$CLK_OVERRIDE" ]; then
     trap cleanup EXIT
     trap 'cleanup; exit 130' INT TERM
 
-    echo "bench-run.sh: patching CLK_FREQ to $CLK_OVERRIDE in $BENCH_FILE (restored on exit)"
-    if ! sed -i '' "s/CLK_FREQ = [0-9_]*/CLK_FREQ = $CLK_OVERRIDE/" "$BENCH_FILE"; then
+    # the line must be there to patch, or the run would be at the file's own clock while saying otherwise
+    if ! grep -q '^ *CLK_FREQ = [0-9_]*' "$BENCH_FILE"; then
+        die "$BENCH_FILE has no 'CLK_FREQ = <number>' line to set the clock $CLOCK_NAME in"
+    fi
+    echo "bench-run.sh: clock $CLOCK_NAME = $CLK_OVERRIDE Hz: patching CLK_FREQ in $BENCH_FILE (restored on exit)"
+    if ! sed -i '' "s/^\( *\)CLK_FREQ = [0-9_]*/\1CLK_FREQ = $CLK_OVERRIDE/" "$BENCH_FILE"; then
         echo "ERROR: failed to patch CLK_FREQ in $BENCH_FILE" >&2
         exit 2
     fi
