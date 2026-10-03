@@ -16,7 +16,9 @@
 ''  isp_bldc_motor_userconfig.spin2 remains the one file end users edit. This file is
 ''  not user-editable configuration -- it is a fixed, plain statement of Stephen's
 ''  bench: the dual 6.5" wheel platform, two Rev B Universal Motor Driver boards,
-''  18.5V pack (stated 2026-09-10). One configuration, no alternatives, no switching.
+''  18.5V pack (stated 2026-09-10). A fixed statement, never a choice made in this file. A second fixed
+''  statement, the Doco bench (one DocoEng motor, one Rev A board, a told voltage), is selected by also
+''  compiling with -D BENCH_DOCO and one DOCO_V* voltage symbol (tools/bench-run.sh).
 ''
 
 CON { Hardware Description }
@@ -44,8 +46,67 @@ CON { Hardware Description }
 
 '     --- DO NOT ADJUST ---
 
-'   (2) The bench, as it actually is -- dual 6.5" wheel platform, two Rev B
-'       Universal Motor Driver boards, 18.5V pack, Mini Edge Breakout Board (#64019)
+'   (2) The bench, as it actually is. TWO benches, each one fixed statement; -D BENCH_DOCO picks the Doco one:
+'       - without it: the dual 6.5" wheel platform, two Rev B Universal Motor Driver boards, 18.5V pack,
+'         Mini Edge Breakout Board (#64019)
+'       - with -D BENCH_DOCO (and exactly one DOCO_V* voltage symbol, below): the Doco bench, one DocoEng 4k-rpm motor on one
+'         Rev A board (STEPHEN 2026-10-03); tools/bench-run.sh chooses both symbols by NAME
+
+#ifdef BENCH_DOCO
+
+    MOTOR_TYPE = MOTR_DOCO_4KRPM
+
+    ' one motor, on the P16 group (the Doco bench's board, as in the shipped single-motor configuration)
+    ONLY_MOTOR_BASE = PINS_P16_P31
+
+    ' The board is READ, never told (BRD_AUTO_DET). The Doco bench's board is a Rev A: EXPECTED_BOARD says so, for the
+    '  harness to compare with what start() detected -- a run that reads anything else stops before it drives, and says so
+    '  on screen and in the log (that check is the harness's; this file only states what the bench is).
+    ONLY_BOARD_TYPE = BRD_AUTO_DET
+    EXPECTED_BOARD = BRD_REV_A
+
+    WHEEL_DIA_IN_INCH = 0.0   ' no wheel attached (floating point constant)
+
+    ' The shaft encoder's pins (A, B) are P48 and P49: reserved here (nothing else on this bench may use them).
+    ENCODER_PIN_A = 48
+    ENCODER_PIN_B = 49
+
+    ' THE DRIVE VOLTAGE IS TOLD, NEVER SENSED: this bench has no pack sensor, so the voltage named at the command line is the
+    '  only source there is. One DOCO_V* symbol per Doco voltage, given by tools/bench-run.sh from a voltage NAME (nothing is
+    '  typed); DRIVE_VOLTAGE_TOLD_MV is the same voltage in millivolts, for every log banner to print.
+#ifdef DOCO_V7P4
+    DRIVE_VOLTAGE = PWR_7p4V
+    DRIVE_VOLTAGE_TOLD_MV = 7_400
+#elseifdef DOCO_V11P1
+    DRIVE_VOLTAGE = PWR_11p1V
+    DRIVE_VOLTAGE_TOLD_MV = 11_100
+#elseifdef DOCO_V12P0
+    DRIVE_VOLTAGE = PWR_12p0V
+    DRIVE_VOLTAGE_TOLD_MV = 12_000
+#elseifdef DOCO_V14P8
+    DRIVE_VOLTAGE = PWR_14p8V
+    DRIVE_VOLTAGE_TOLD_MV = 14_800
+#elseifdef DOCO_V18P5
+    DRIVE_VOLTAGE = PWR_18p5V
+    DRIVE_VOLTAGE_TOLD_MV = 18_500
+#elseifdef DOCO_V22P2
+    DRIVE_VOLTAGE = PWR_22p2V
+    DRIVE_VOLTAGE_TOLD_MV = 22_200
+#elseifdef DOCO_V24P0
+    DRIVE_VOLTAGE = PWR_24p0V
+    DRIVE_VOLTAGE_TOLD_MV = 24_000
+#else
+#ifdef __PNUT_TS__
+#ERROR No Doco voltage selected: -D BENCH_DOCO needs one of -D DOCO_V7P4, DOCO_V11P1, DOCO_V12P0, DOCO_V14P8, DOCO_V18P5, DOCO_V22P2, DOCO_V24P0 (tools/bench-run.sh gives it, from the tier's voltage name)
+#endif
+#endif
+
+    ' ---- a check of the pin group above, as in isp_bldc_motor_userconfig.spin2 (do not edit). If the compiler stops on the
+    '  CHECK_ line below with "Divide by zero", its comment says what to change.
+    ONLY_IS_A_PIN_GROUP = (ONLY_MOTOR_BASE == PINS_P0_P15) or (ONLY_MOTOR_BASE == PINS_P8_P23) or (ONLY_MOTOR_BASE == PINS_P16_P31) or (ONLY_MOTOR_BASE == PINS_P32_P47) or (ONLY_MOTOR_BASE == PINS_P40_P55)
+    CHECK_ONLY_PIN_GROUP = 1 / -ONLY_IS_A_PIN_GROUP     ' ONLY_MOTOR_BASE is not a pin group: use PINS_P0_P15, PINS_P8_P23, PINS_P16_P31, PINS_P32_P47 or PINS_P40_P55
+
+#else
 
     MOTOR_TYPE = MOTR_6_5_INCH
 
@@ -79,6 +140,8 @@ CON { Hardware Description }
     CHECK_RIGHT_PIN_GROUP = 1 / -RIGHT_IS_A_PIN_GROUP   ' RIGHT_MOTOR_BASE is not a pin group: use PINS_P0_P15, PINS_P8_P23, PINS_P16_P31, PINS_P32_P47 or PINS_P40_P55
     CHECK_GROUPS_APART = 1 / -GROUPS_DO_NOT_OVERLAP     ' LEFT_MOTOR_BASE and RIGHT_MOTOR_BASE share pins: pick two groups whose pin ranges do not overlap (e.g. PINS_P16_P31 and PINS_P32_P47)
 
+#endif
+
 CON { DEBUG output }
 
 '  Mirrors isp_bldc_motor_userconfig.spin2's defaults, so a bench build prints what it printed
@@ -102,9 +165,17 @@ CON { pack voltage sensor }
 '  CALIBRATED 2026-09-26 (dual-pack, debug_260926-163930.log): DMM 20_740 mV at the Powerpole against the driver's
 '   uncalibrated 20_488 mV -> 1000 x 20_740 / 20_488 = 1012. The 0.3 % beyond the resistor prediction is 8 mV at the
 '   pin, the P2 pin ADC's documented offset (P2AN001, <= 9 mV).
+#ifdef BENCH_DOCO
+'  The Doco bench has no pack sensor (the voltage is told, see DRIVE_VOLTAGE above): not fitted, and the pin and calibration
+'   below are ignored when it is not.
+    PACK_SENSOR_FITTED = FALSE
+    PACK_SENSE_PIN = 0
+    PACK_SENSE_CAL_PERMILLE = 1000
+#else
     PACK_SENSOR_FITTED = TRUE
     PACK_SENSE_PIN = 0
     PACK_SENSE_CAL_PERMILLE = 1012
+#endif
 
 PUB null()      ' This is not a top level object
 

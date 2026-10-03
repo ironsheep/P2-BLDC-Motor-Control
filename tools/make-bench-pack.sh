@@ -13,6 +13,10 @@
 #           setup: t0-reva (Rev A, bench), floor-auto (spins, fault run, ramp legs), floor-obstacle (coast and brake
 #           trials), floor-grab (the one attended load) and floor-rc (STEPHEN 2026-09-30, R9: "I have no reason why you'd
 #           carry anything that's done in the pack"; R15: several checks per command when none needs him).
+#   <tier>@<clock>  a tier built at a named clock (task 3675; the clock NAMES are bench-run.sh's clock table: clk-200 ...),
+#           stored as <tier>@<clock>.bin -- one tier can be in the pack at several clocks, e.g. dual-clock@clk-200
+#           dual-clock@clk-350. The packaged ./bench-run.sh <tier> <clock> picks that binary by the same name. The Doco
+#           tiers (doco-demo-v12p0 ... one per told drive voltage) are named here like any other.
 #
 # Builds from the COMMITTED tree (git archive of HEAD), never the working directory, so the zip is exactly a commit.
 # Each tier is compiled by that tree's own tools/bench-run.sh (BENCH_PACK_DIR mode): the same one -l -d compile, with
@@ -62,10 +66,13 @@ run sed -i -e 's/^\(    COMMIT_PACKED = \)FALSE/\1TRUE/' -e "s/\"NOT_A_PACK\"/\"
 grep -q "^    COMMIT_PACKED = TRUE" "$COMMIT_OBJ" && grep -q "\"$COMMIT\"" "$COMMIT_OBJ" \
     || { echo "ERROR: could not write commit $COMMIT into $COMMIT_OBJ -- no pack built" >&2; exit 1; }
 
-for tier in "${TIERS[@]}"; do
+for entry in "${TIERS[@]}"; do
     echo
-    echo "== $tier"
-    BENCH_PACK_DIR="$WORK/$NAME" run "$WORK/tree/tools/bench-run.sh" "$tier"
+    echo "== $entry"
+    tier="${entry%%@*}"; clock=""
+    [ "$entry" != "$tier" ] && clock="${entry#*@}"
+    # a tier built at a named clock: the runner stores <tier>@<clock>.bin (the clock is a NAME, bench-run.sh refuses any other)
+    BENCH_PACK_DIR="$WORK/$NAME" run "$WORK/tree/tools/bench-run.sh" "$tier" ${clock:+"$clock"}
 done
 
 # ---- every file a binary asks pnut-term-ts to load comes with it ----------------------------------------------
@@ -74,7 +81,7 @@ done
 # list kept by hand, and a name with no file in the tree refuses the pack. (2026-09-29: the first pack carried no
 # bitmaps, dual-spin's panel loaded nothing, and the floor run ended at its first screen.)
 ASSETS=""
-for tier in "${TIERS[@]}"; do
+for tier in "${TIERS[@]}"; do      # here a "tier" is the entry as given: <tier> or <tier>@<clock>, the binary's own name
     # a binary that loads nothing (an unattended tier) matches nothing: grep's exit 1 there is not an error
     names=$( { LC_ALL=C grep -aoE "'[A-Za-z0-9_.-]+\.(bmp|BMP|png|PNG|jpg|JPG)'" "$WORK/$NAME/$tier.bin" || true; } | tr -d "'" | sort -u)
     for f in $names; do
@@ -102,12 +109,18 @@ cp -p "$WORK/tree/tools/bench-run.sh" "$WORK/$NAME/bench-run.sh"
     echo "It runs <test>.bin with the same safety banner and checks as the source tree's runner, and compiles"
     echo "nothing. The logs land in logs/ here. pnut-term-ts must be on the PATH."
     echo
-    for tier in "${TIERS[@]}"; do
+    for entry in "${TIERS[@]}"; do
+        tier="${entry%%@*}"; clock=""
+        [ "$entry" != "$tier" ] && clock="${entry#*@}"
         desc=$(sed -n "s/^ \{19\}$tier  *\(.*\)/\1/p" "$WORK/tree/tools/bench-run.sh" | head -1)
-        echo "$tier"
-        echo "    binary:   $tier.bin"
-        echo "    type:     ./bench-run.sh $tier"
-        echo "    runs:     pnut-term-ts -u -r $tier.bin --exit-on-end-session"
+        # the Doco tiers share one usage line, doco-demo-<voltage>
+        [ -z "$desc" ] && case "$tier" in
+            doco-demo-*) desc=$(sed -n "s/^ \{19\}doco-demo-<voltage>  *\(.*\)/\1/p" "$WORK/tree/tools/bench-run.sh" | head -1) ;;
+        esac
+        echo "$entry"
+        echo "    binary:   $entry.bin"
+        echo "    type:     ./bench-run.sh $tier${clock:+ $clock}"
+        echo "    runs:     pnut-term-ts -u -r $entry.bin --exit-on-end-session"
         echo "    what:     $desc"
         echo
     done

@@ -39,7 +39,10 @@
 # Usage:  tools/bench-run.sh <tier> [<clock>]
 #   <tier>      -- tier name, see usage() below.
 #   <clock>     -- optional, a clock NAME (clk-floor, clk-200, clk-270, clk-300, clk-350, clk-frac), for the tiers of
-#                  test_bench_dual and test_bench_t0 only. Nothing numeric is ever typed at the bench (STEPHEN
+#                  test_bench_dual, test_bench_t0 and the Doco harness test_bench_single only (task 3675). In a prebuilt
+#                  package (tools/make-bench-pack.sh <tier>@<clock>) the name picks the binary built at that clock.
+#                  The Doco bench (-D BENCH_DOCO, doco-* tiers): one motor, one Rev A board, a TOLD voltage chosen by NAME in
+#                  the tier (doco_voltage() below); it is built as its own fixed statement, never the 6.5in one. Nothing numeric is ever typed at the bench (STEPHEN
 #                  2026-09-16: "please don't create commands where the data entry due to length causes risk to me
 #                  typeing it correctly (e.g., Hz values that's silly)"): a name is the only way to choose a clock,
 #                  and the one table that maps a name to its Hz is clock_hz() below. Task 3674 chose a second argument
@@ -115,6 +118,25 @@ clock_hz() {
         clk-350)   echo "350000000" ;;
         clk-frac)  echo "271250000" ;;
         *)         return 1 ;;
+    esac
+}
+# THE DOCO VOLTAGE TABLE (task 3675, STEPHEN 2026-10-03): the Doco bench (one DocoEng motor on one Rev A board, no voltage
+# sensing) is TOLD its drive voltage, so the voltage is a build parameter of every Doco tier, chosen by NAME exactly as a clock
+# is. A name maps to the -D symbol that src/isp_bldc_motor_userconfig_bench.spin2 turns into DRIVE_VOLTAGE (and the voltage in
+# mV, which every log banner prints) HERE and nowhere else; the names follow the PWR_* enum (v12p0 = PWR_12p0V). A Doco tier is
+# named <base>-<voltage name> (doco-demo-v12p0), and it compiles with -D BENCH_DOCO -D <the symbol>.
+DOCO_VOLTAGE_NAMES="v7p4 v11p1 v12p0 v14p8 v18p5 v22p2 v24p0"
+# The one table: echoes "<symbol> <millivolts>" for a voltage name.
+doco_voltage() {
+    case "$1" in
+        v7p4)  echo "DOCO_V7P4 7400" ;;
+        v11p1) echo "DOCO_V11P1 11100" ;;
+        v12p0) echo "DOCO_V12P0 12000" ;;
+        v14p8) echo "DOCO_V14P8 14800" ;;
+        v18p5) echo "DOCO_V18P5 18500" ;;
+        v22p2) echo "DOCO_V22P2 22200" ;;
+        v24p0) echo "DOCO_V24P0 24000" ;;
+        *)     return 1 ;;
     esac
 }
 # The clock a shorthand tier names, if it is one: dual-clock-200 / -270 / -300 are `dual-clock` with that clock.
@@ -232,6 +254,7 @@ Usage:  tools/bench-run.sh <tier> [<clock>]
                    demo-single    the single-motor release demo on the RIGHT wheel: wiring check, 15 s forward and 15 s reverse at full power (PL-149), about 1 minute  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    demo-rc        the FlySky RC demo, driven by you with the transmitter (in this release, Stephen 2026-09-27); SBUS receiver on P58  [ATTENDED]
                    floor-rc       the RC demo's control loop ON THE FLOOR, driven by you with the transmitter, with a 25 Hz telemetry line of both wheels (RC-TEL) and every drive event (RC-EVT); SBUS receiver on P58; runs until you close the terminal  [WHEELS DOWN, ATTENDED]
+                   doco-demo-<voltage>  the DOCO BENCH (one motor, P16 board, a Rev A): the single-motor release demo, told its drive voltage by the tier's NAME -- one of doco-demo-v7p4, -v11p1, -v12p0, -v14p8, -v18p5, -v22p2, -v24p0 (7.4 11.1 12 14.8 18.5 22.2 24 V; nothing is sensed on this bench)  [MOTOR CONNECTED, FREE TO TURN, UNATTENDED]
                    demo-dual      the two-wheel release demo: wiring check, 1 ft forward, two 15 s steered drives, then each wheel alone 15 s at full power (PL-149), about 1.5 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
 
 Examples:
@@ -688,6 +711,17 @@ case "$TIER" in
     demo-single)    BENCH_FILE="demo_single_motor.spin2"
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, RIGHT WHEEL FREE TO TURN, HANDS: NONE -- UNATTENDED, YOU DO NOTHING: the single-motor release demo on the RIGHT wheel (the P16 board); the left wheel is never started. The start checks pulse the motor leads with nothing able to move, then the wiring check TURNS THE RIGHT WHEEL A LITTLE FORWARD AND BACK (about 3.5 cm at the tyre). Then the right wheel runs FORWARD AT FULL POWER for 15 seconds, stops, runs IN REVERSE AT FULL POWER for 15 seconds, and stops; the program then waits 20 seconds with the wheel still and ends. It also starts its HDMI output on P8-P15, which the bench config does not use. About 1 minute"
                     ;;
+    # doco-demo-<voltage> (task 3675) -- the Doco bench: the single-motor release demo on the DOCO BENCH's one motor (one DocoEng
+    #  4k-rpm motor on the P16 board, which must read Rev A), built under -D BENCH_CFG -D BENCH_DOCO -D <the voltage's symbol>.
+    #  One tier per Doco voltage, the voltage chosen by NAME in the tier (doco_voltage above): this bench has no voltage sensing,
+    #  so the told voltage is the only source, and the precondition names it. A later harness tier adds its own labels the same way.
+    doco-demo-v7p4|doco-demo-v11p1|doco-demo-v12p0|doco-demo-v14p8|doco-demo-v18p5|doco-demo-v22p2|doco-demo-v24p0)
+                    BENCH_FILE="demo_single_motor.spin2"
+                    DOCO_VNAME="${TIER#doco-demo-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_DOCO -D "${DOCO_VINFO% *}")
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED AND FREE TO TURN, HANDS: NONE -- the single-motor release demo on the Doco bench's one motor (the P16 board, a Rev A -- THIS DEMO BUILD DOES NOT CHECK THE BOARD, the Doco harness will). THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so make sure the pack is that voltage. The start checks pulse the motor leads with nothing able to move, then the wiring check turns the motor a little forward and back, then it runs forward and in reverse at full power for 15 seconds each. About 1 minute"
+                    ;;
     demo-rc)        BENCH_FILE="demo_dual_motor_rc.spin2"
                     PRECONDITION="ATTENDED -- YOU DRIVE IT WITH THE FLYSKY TRANSMITTER: the SBUS receiver wired to P58 and bound, the transmitter ON with swD (the kill switch) in its run position BEFORE the load. The two-wheel RC demo, as shipped: start checks, the wiring check (each wheel turns a little one way and back), then the sticks drive the platform and every event and stop is printed as it happens. Drive forward, reverse and both turns at low and full stick; flip swD to e-stop, then back to re-arm. It runs until you close the terminal. About 3 minutes, at your pace"
                     ;;
@@ -712,14 +746,15 @@ esac
 # tier's source is never patched, so a name beside it would run at the file's own clock while saying otherwise
 if [ -n "$CLOCK_NAME" ]; then
     case "$BENCH_FILE" in
-        test_bench_dual.spin2|test_bench_t0.spin2) ;;
-        *) die "tier '$TIER' (top $BENCH_FILE) takes no clock: a clock name is for the tiers of test_bench_dual.spin2 and test_bench_t0.spin2" ;;
+        test_bench_dual.spin2|test_bench_t0.spin2|test_bench_single.spin2) ;;   # test_bench_single: the Doco harness (task 3679)
+        *) die "tier '$TIER' (top $BENCH_FILE) takes no clock: a clock name is for the tiers of test_bench_dual.spin2, test_bench_t0.spin2 and the Doco harness test_bench_single.spin2" ;;
     esac
 fi
-# a prebuilt package and a pack build hold one binary per tier name, its clock built in: no clock is chosen there
-if [ -n "$CLOCK_FROM_ARG" ] && { [ -n "$PREBUILT" ] || [ -n "$PACK_DIR" ]; }; then
-    die "a prebuilt package (and a pack build) holds one binary per tier, its clock built in: no clock name can be given there -- use a shorthand tier (dual-clock-200, dual-clock-270, dual-clock-300)"
-fi
+# A prebuilt package and a pack build hold one binary per tier name, its clock built in: <tier>.bin. A tier built at a NAMED
+# clock is <tier>@<clock>.bin (task 3675, for Visit D1's per-clock pass-period probe): the pack builder stores it, and the
+# packaged runner given the same clock name picks it. No number is typed there either, and a package never compiles one.
+PACK_KEY="$TIER"
+[ -n "$CLOCK_FROM_ARG" ] && PACK_KEY="$TIER@$CLOCK_FROM_ARG"
 
 # ---- sanity checks ----------------------------------------------------------
 # command -v, not [ -x ] -- these are PATH names, not paths, and -x on a bare
@@ -728,14 +763,14 @@ if [ -n "$PREBUILT" ] && { [ -n "$MEASURE_ONLY" ] || [ -n "$PACK_DIR" ]; }; then
     die "this is a prebuilt package: it runs its binaries and builds none (BENCH_MEASURE_ONLY / BENCH_PACK_DIR belong to the source tree)"
 fi
 if [ -n "$PREBUILT" ]; then
-    PACK_BIN="$TIER.bin"
+    PACK_BIN="$PACK_KEY.bin"
     if [ ! -f "$SCRIPT_DIR/$PACK_BIN" ]; then
-        die "this package has no binary for tier '$TIER'. It carries: $(cd "$SCRIPT_DIR" 2>/dev/null && ls *.bin 2>/dev/null | sed 's/\.bin$//' | tr '\n' ' ')"
+        die "this package has no binary for tier '$TIER'${CLOCK_FROM_ARG:+ at clock '$CLOCK_FROM_ARG'} (looked for $PACK_BIN). It carries: $(cd "$SCRIPT_DIR" 2>/dev/null && ls *.bin 2>/dev/null | sed 's/\.bin$//' | tr '\n' ' ')"
     fi
     # Every file this binary loads at run time (a panel's LAYER bitmaps, loaded by bare name) must
     #  be beside it: BENCH-PACKAGE lists them, read from the binary when the pack was built. A missing one is a blank
     #  panel and a lost visit (2026-09-29), so it refuses here, before anything moves.
-    for asset in $(sed -n "s/^asset $TIER //p" "$PACKAGE_FILE"); do
+    for asset in $(sed -n "s/^asset $PACK_KEY //p" "$PACKAGE_FILE"); do
         [ -f "$SCRIPT_DIR/$asset" ] || die "tier '$TIER' loads '$asset' at run time and it is not in this package folder -- its panel would draw nothing. Unzip the whole package again."
     done
 elif ! command -v "$PNUT" >/dev/null 2>&1; then
@@ -769,6 +804,9 @@ echo "bench-run.sh: pwd is now $(pwd)"
 if [ -n "$PREBUILT" ]; then
     BINARY="$PACK_BIN"
     echo "bench-run.sh: prebuilt package -- nothing is compiled here; running $BINARY"
+    if [ -n "$CLOCK_FROM_ARG" ]; then
+        echo "bench-run.sh: clock $CLOCK_FROM_ARG = $CLK_OVERRIDE Hz is built into $BINARY (picked by name)"
+    fi
     sed 's/^/bench-run.sh: package: /' "$PACKAGE_FILE"
 fi
 if [ -z "$PREBUILT" ]; then
@@ -787,7 +825,7 @@ elif [ -n "$CLK_OVERRIDE" ]; then
         die "CLK_FREQ must be a number (got '$CLK_OVERRIDE')"
     fi
 
-    BACKUP_BENCH="$(mktemp -t bench-clkfreq)"
+    BACKUP_BENCH="$(mktemp "${TMPDIR:-/tmp}/bench-clkfreq.XXXXXX")"     # (a template with X's: `mktemp -t NAME` is BSD-only)
     cp -p "$BENCH_FILE" "$BACKUP_BENCH"
     cleanup() {
         if [ -n "$BACKUP_BENCH" ] && [ -f "$BACKUP_BENCH" ]; then
@@ -803,7 +841,8 @@ elif [ -n "$CLK_OVERRIDE" ]; then
         die "$BENCH_FILE has no 'CLK_FREQ = <number>' line to set the clock $CLOCK_NAME in"
     fi
     echo "bench-run.sh: clock $CLOCK_NAME = $CLK_OVERRIDE Hz: patching CLK_FREQ in $BENCH_FILE (restored on exit)"
-    if ! sed -i '' "s/^\( *\)CLK_FREQ = [0-9_]*/\1CLK_FREQ = $CLK_OVERRIDE/" "$BENCH_FILE"; then
+    # (no `sed -i`: its argument differs between BSD and GNU sed. The untouched copy is read, the file written.)
+    if ! sed "s/^\( *\)CLK_FREQ = [0-9_]*/\1CLK_FREQ = $CLK_OVERRIDE/" "$BACKUP_BENCH" > "$BENCH_FILE"; then
         echo "ERROR: failed to patch CLK_FREQ in $BENCH_FILE" >&2
         exit 2
     fi
@@ -887,8 +926,8 @@ else
     fi
     echo "bench-run.sh: DEBUG footprint not measured at the bench (PL-152) -- it is enforced at commit time by tools/build-check.sh, which measures every tier; image $(wc -c < "$BINARY" | tr -d ' ') bytes"
     if [ -n "$PACK_DIR" ]; then
-        run cp -p "$BINARY" "$PACK_DIR/$TIER.bin" || die "could not copy $BINARY to $PACK_DIR/$TIER.bin"
-        echo "bench-run.sh: packed -- tier '$TIER' compiled for a prebuilt package; not run"
+        run cp -p "$BINARY" "$PACK_DIR/$PACK_KEY.bin" || die "could not copy $BINARY to $PACK_DIR/$PACK_KEY.bin"
+        echo "bench-run.sh: packed -- tier '$TIER'${CLOCK_FROM_ARG:+ at clock $CLOCK_FROM_ARG} compiled for a prebuilt package as $PACK_KEY.bin; not run"
         exit 0
     fi
 fi
