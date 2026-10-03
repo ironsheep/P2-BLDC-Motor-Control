@@ -107,6 +107,10 @@ pNextMsg        long    0
 nTaskChr        long    0
 ' tsk vars
 
+' receive performance measurement
+nRxCharCostMax  long    0   ' worst-case cost in clocks per character in the receive loop
+nRxCharStart    long    0   ' getct() when the character being enqueued was returned by rxtime()
+
             '   pValues -> [0:nbrValues(1-n)]  (doesn't count "full string")    ENT_VALUE_CT_IDX
             '              [1:pStr] -> "full string"                            ENT_RAWSTR_IDX
             '              [2:pCmd] -> "cmd"                                    ENT_CMDSTR_IDX
@@ -425,6 +429,13 @@ PUB resetRxStatus()
     bQueOverrun := FALSE
     bStrQueOverrun := FALSE
 
+PUB testGetRxCharCostMax() : nCost
+'' Return worst-case per-character cost in clocks from the receive loop
+''
+'' @returns nCost - maximum cost in clocks for a single character enqueue
+
+    nCost := nRxCharCostMax
+
 PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx, bHaveNeg
 '' Return long value for given decimal string
 ''
@@ -605,7 +616,9 @@ PRI TaskSerialRx(pRxBffr, lenRxBffr)
         repeat until bRxExitReq
             nTaskChr := serialChan.rxtime(RX_POLL_MS)
             if (nTaskChr <> -1)
+                nRxCharStart := getct()                                         ' time the character's work, not the wait for it
                 bTskEnqueueChar(nTaskChr)
+                updateRxCharCost(nRxCharStart)                                  ' track worst-case cost
 
     ' EXIT: acknowledge, then park with no output until stop() stops this cog
     bRxParked := TRUE
@@ -684,6 +697,19 @@ PRI tskEnqueueStr(pStr) | strIdx
         bStrQueOverrun := TRUE ' signal that we lost incoming data!!!
         debug("TASK[Rx] !! ERROR ctrl-Q full!!")
     'debug("TASK[Rx] enqueueStr: ", udec(nQStrCount))
+
+PRI updateRxCharCost(nStart) : nCost
+' measure and record worst-case cost of character enqueue (in clocks)
+' Timing is from rxtime()'s return with a character to the end of its enqueue: the work a character costs this cog
+'  before it can receive the next (rxtime()'s own return path is not included). At GW_BAUDRATE a character lasts
+'  10 bits, about 16 us, which is the budget this cost is judged against.
+'
+' @param nStart - value from getct() when rxtime() returned the character
+' @returns nCost - elapsed clocks for this character's enqueue
+
+    nCost := getct() - nStart
+    if (nCost > nRxCharCostMax)
+        nRxCharCostMax := nCost
 
 PRI checkGoodStringPtr(pStr)
 ' report and halt if string not valid (with circular queue range)

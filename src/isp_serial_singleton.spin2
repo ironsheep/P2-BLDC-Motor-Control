@@ -99,7 +99,7 @@ PUB start(baudrate)
   startx(RX1, TX1, baudrate, P_HIGH_15K)                        ' use programming port
 
 
-PUB startx(rxpin, txpin, baudrate, txPullup) | bitperiod, bitmode, databits
+PUB startx(rxpin, txpin, baudrate, txPullup) | bitmode, databits
 '' Start simple serial coms on rxpin and txpin at baud
 ''
 '' @param rxpin - the receive pin
@@ -108,12 +108,10 @@ PUB startx(rxpin, txpin, baudrate, txPullup) | bitperiod, bitmode, databits
 '' @param txPullup - the transmit pin's pull-up: PU_NONE, PU_1K5, PU_3K3 or PU_15K
 
 ' Local Variables:
-' @local bitperiod - system clocks per bit
-' @local bitmode - the smart-pin X value: bit period and data-bit count
+' @local bitmode - the smart-pin X value: bit period and data-bit count (with fractional bits)
 ' @local databits - data bits per character, plus one for a second stop bit
 
   longmove(@rxp, @rxpin, 3)  ' also save baudrate incase driver is asked
-  bitperiod := clkfreq / baudrate
 
   case txPullup
     PU_NONE : txPullup := P_HIGH_FLOAT                            ' use external pull-up
@@ -125,7 +123,11 @@ PUB startx(rxpin, txpin, baudrate, txPullup) | bitperiod, bitmode, databits
   if (STOP_BITS == 2)
     databits += 1
 
-  bitmode := 7 + (bitperiod << 16)
+  ' Use fractional bit period for precise timing across all clock frequencies
+  ' Formula: X := muldiv64(clkfreq, $1_0000, baudrate) & $FFFFFC00 | (N-1)
+  ' X[31:16] = integer clocks/bit, X[15:10] = fractional (base-2 /64ths)
+  ' Reference: p2kbArchSmartPin11111AsyncSerialReceive, p2kbArchSmartPin11110AsyncSerialTransmit
+  bitmode := muldiv64(clkfreq, $1_0000, baudrate) & $FFFFFC00 | 7
 
   ' setup constants for tx() to use
     byteMask := $FF
