@@ -1,0 +1,495 @@
+'' =================================================================================================
+''
+''   File....... isp_bench_encoder.spin2
+''   Purpose.... Shared bench shaft-encoder reader (task 3676, plan section 3): starts a smart pin in quadrature
+''               mode on the Doco bench's 360 P/R encoder (P48 A, P49 B), captures the encoder count AT every
+''               hall edge in a PASM2 cog, and emits stable tagged records through isp_bench_log. HARNESS-SIDE:
+''               the shipped driver never owns these pins. The object takes its pins as arguments (the harness
+''               passes user.ENCODER_PIN_A / ENCODER_PIN_B and the motor's base pin), so it compiles as
+''               written, without the bench configuration.
+''   Authors.... Stephen M Moraco
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... Oct 2026
+''   Updated.... 3 Oct 2026
+''
+''   Facts from p2kb, by key:
+''     p2kbArchSmartPin01011QuadratureEncoder  mode %01011 totals all four edges per line, signed 32-bit, in Z;
+''                                             P_QUADRATURE | P_PLUS1_B takes B from the next pin up; X = 0 is
+''                                             the continuous totalizer; reversing the shaft counts down
+''     p2kbArchSmartPins                       a smart pin toggles/counts at up to clock/2 (performance:
+''                                             max_toggle_rate); input-only modes need no P_OE; the pin stays a
+''                                             plain input with no pull (WRPIN carries none)
+''     p2kbPasm2Rqpin / p2kbSpin2Rqpin         RQPIN reads Z in 2 clocks and does NOT acknowledge the pin
+''     p2kbArchSmartPins (reset_before_configure) configure with DIR low (pinclear), then pinstart
+''
+'' =================================================================================================
+
+CON { the encoder, and what it implies }
+
+    ENC_PULSES_PER_REV   = 360                              ' the Signswise encoder's lines per revolution (P/R)
+    ENC_EDGES_PER_PULSE  = 4                                ' mode %01011 counts all four edges of a line (p2kbArchSmartPin01011QuadratureEncoder)
+    ENC_COUNTS_PER_REV   = ENC_PULSES_PER_REV * ENC_EDGES_PER_PULSE     ' 1,440 counts = 0.25 degree
+    HALL_TICKS_PER_REV   = 24                               ' the DocoEng motor's hall ticks per revolution (DOCOENG_MOTOR.md)
+    COUNTS_PER_HALL_TICK = ENC_COUNTS_PER_REV / HALL_TICKS_PER_REV      ' 60
+    ENC_PIN_MODE         = P_QUADRATURE | P_PLUS1_B         ' B is the pin above A; filter off, no output, no pull
+
+CON { the self-check }
+
+    ' CHECK_TOL_COUNTS: how far one run's encoder count may sit from 60 x its hall ticks and still pass.
+    ' PRECONDITION: encoder and rotor turn together (tight coupling), the span covers whole hall ticks, at least one revolution (24), one direction; both numbers are taken at the same hall edges (from captured edges, never two reads a few ms apart, which skew by 60 counts).
+    ' BOUND: |counts - 60 x ticks| <= 2: the hall-edge capture adds under 0.03 count at 4,000 RPM (see the capture cog) and the totalizer is exact, so the 2 allows one count of rounding at each end; more is the instrument or the rig, not noise.
+    ' CORRECT CASE: 24 ticks read 1,440 counts (1,438..1,442) and PASS; B ignored reads about 720 (HALF-RATE), A/B swapped or a one-way totalizer reads the wrong sign (WRONG-WAY), a wrong P/R, a slipping coupling or a lost line reads off by more than 2 (TOO-FEW / TOO-MANY / NO-COUNT).
+    CHECK_TOL_COUNTS     = 2
+
+    ' the named reasons the check returns (CHK_OK passes; every other value is a failure, with a name)
+    #0, CHK_OK, CHK_TOO_SHORT, CHK_NO_COUNT, CHK_WRONG_WAY, CHK_HALF_RATE, CHK_TOO_FEW, CHK_TOO_MANY
+
+CON { start() results }
+
+    #0, ENC_OK, ENC_ERR_PINS, ENC_ERR_RUNNING, ENC_ERR_NO_COG
+
+CON { pins, capture ring and record limits }
+
+    HALL_PIN_OFFSET      = 5                                ' the motor group's hall U is base+5, V +6, W +7 (isp_bldc_motor.spin2 pin_hall_u..w)
+    HALL_PIN_SPAN        = 3                                ' three hall inputs
+    PORT_PIN_MASK        = 31                               ' a pin's bit within its 32-pin port
+    PORT_PIN_COUNT       = 32
+
+    RING_ENTRIES         = 64                               ' power of two; at most ~1,600 edges a second at 4,000 RPM, drained every few ms
+    RING_MASK            = RING_ENTRIES - 1
+    ENTRY_LONGS          = 4                                ' encoder count, getct(), new hall code, previous hall code
+    ENTRY_BYTES          = ENTRY_LONGS * 4
+    NO_HALL_YET          = 8                                ' hall code the cog can never read: marks "no edge seen yet"
+
+    CLOCKS_PER_US_DIV    = 1_000_000
+
+    TOKEN_MAX            = 16                               ' longest reason token, so a record's width is bounded
+
+OBJ
+
+    log : "isp_bench_log"                                   ' this object's own record builder
+
+VAR { the capture cog's parameter block: longs, in this order (the PASM reads them by offset) }
+
+    LONG parEncPin                                          ' +0  encoder A pin (the smart pin that totals)
+    LONG parHallPin                                         ' +4  lowest hall pin (hall U)
+    LONG parRingPtr                                         ' +8  hub address of the ring
+    LONG parRingMask                                        ' +12 RING_MASK
+    LONG parRingHead                                        ' +16 edges captured since start (the cog writes it, last)
+    LONG parCount                                           ' +20 the encoder's full 32-bit Z, written by the cog every poll pass
+
+    LONG ringBuf[RING_ENTRIES * ENTRY_LONGS]                ' the ring: ENTRY_LONGS longs per captured hall edge
+
+    LONG captureCog                                         ' cog id + 1 (0: not running)
+    LONG encPinA
+    LONG encPinB
+    LONG hallLoPin
+    LONG ringTail                                           ' edges drained so far (the record sequence number)
+    LONG edgeLost                                           ' edges the ring overwrote before they were drained
+    LONG lastEdgeClocks                                     ' getct() of the previous drained edge
+    LONG bHaveLastEdge
+    LONG sampleSeq                                          ' timebase records emitted
+
+PUB null()
+'' This is not a top-level object
+''
+
+PUB start(nEncPinA, nEncPinB, nMotorBase) : eError | nHallLo
+'' Start the encoder's smart pin (quadrature, continuous totalizer) and the hall-edge capture cog. The two
+'' encoder pins stay plain inputs with no pull-up (the lines carry their own resistors); the hall pins are
+'' only ever read. Emits no record: the caller brackets this with log.cogEventBegin() / cogEventEnd().
+''
+'' @param nEncPinA - the encoder's A pin (user.ENCODER_PIN_A)
+'' @param nEncPinB - the encoder's B pin: must be nEncPinA + 1 (user.ENCODER_PIN_B)
+'' @param nMotorBase - the motor group's base pin; the hall inputs are base+5..7 (user.ONLY_MOTOR_BASE)
+'' @returns eError - ENC_OK, or ENC_ERR_PINS (B is not A+1, or the halls straddle a port), ENC_ERR_RUNNING, ENC_ERR_NO_COG
+
+' Local Variables:
+' @local nHallLo - the lowest hall pin, nMotorBase + HALL_PIN_OFFSET
+
+    nHallLo := nMotorBase + HALL_PIN_OFFSET
+    eError := ENC_OK
+    if captureCog <> 0
+        eError := ENC_ERR_RUNNING
+    elseif nEncPinB <> nEncPinA + 1
+        eError := ENC_ERR_PINS
+    elseif (nHallLo & PORT_PIN_MASK) + HALL_PIN_SPAN > PORT_PIN_COUNT
+        eError := ENC_ERR_PINS
+
+    if eError == ENC_OK
+        encPinA := nEncPinA
+        encPinB := nEncPinB
+        hallLoPin := nHallLo
+        pinclear(nEncPinB)                                  ' B: a plain input, read by A's smart pin through P_PLUS1_B
+        pinclear(nEncPinA)                                  ' DIR low, mode 0, before configuring (p2kbArchSmartPins)
+        pinstart(nEncPinA, ENC_PIN_MODE, 0, 0)              ' X = 0: continuous totalizer; the count starts at 0
+
+        parEncPin := nEncPinA
+        parHallPin := nHallLo
+        parRingPtr := @ringBuf
+        parRingMask := RING_MASK
+        parRingHead := 0
+        parCount := 0
+        ringTail := 0
+        edgeLost := 0
+        bHaveLastEdge := FALSE
+        sampleSeq := 0
+
+        captureCog := coginit(NEWCOG, @capture, @parEncPin) + 1
+        if captureCog <= 0                                  ' failed: -1, or negative in the form seen under cog exhaustion
+            captureCog := 0
+            pinclear(nEncPinA)
+            eError := ENC_ERR_NO_COG
+
+PUB stop()
+'' Stop the capture cog and release the encoder pins. Safe to call when not running.
+''
+
+    if captureCog <> 0
+        log.cogEventBegin()                                 ' PL-41: a cog stop opens the quiet window (a stop needs no close)
+        cogstop(captureCog - 1)
+        captureCog := 0
+        pinclear(encPinA)
+        pinclear(encPinB)
+
+PUB isRunning() : bRunning
+'' Report whether the capture cog is running.
+''
+'' @returns bRunning - TRUE after a successful start() and before stop()
+
+    bRunning := (captureCog <> 0)
+
+PUB readCount() : nCount
+'' Read the encoder's signed count: the full 32-bit Z the capture cog read with its own RQPIN and published
+'' to a hub long on its last poll pass (at most ~26 clocks old, 0.13 us at 200 MHz). There is no Spin2 RQPIN
+'' of the encoder pin anywhere: Spin2's RQPIN returns bit 31 as the pin's C flag (p2kbSpin2Rqpin), which
+'' would corrupt a negative count. 1,440 counts is one revolution; the sign follows the shaft's direction.
+''
+'' @returns nCount - encoder counts since start()
+
+    nCount := parCount
+
+PUB readHallCode() : nCode
+'' Read the three hall inputs now, hall U in bit 0 (pinread is a plain read of the pins; nothing is driven).
+''
+'' @returns nCode - the hall code, 0..7
+
+    nCode := pinread(hallLoPin addpins (HALL_PIN_SPAN - 1))
+
+PUB edgesCaptured() : nEdges
+'' Return how many hall edges the capture cog has stored since start().
+''
+'' @returns nEdges - edges captured
+
+    nEdges := parRingHead
+
+PUB edgesLost() : nLost
+'' Return how many captured edges were overwritten before emitHallEdges() drained them. Non-zero means the
+'' hall map has gaps: drain more often.
+''
+'' @returns nLost - edges lost since start()
+
+    nLost := edgeLost
+
+PUB emitHallEdges(nMaxRecords) : nEmitted | nHead, nPending, pSlot, nEnc, nClocks, nCode, nPrev, nDtUs, nClocksPerUs
+'' Drain the capture ring and emit one BE-HALL record per captured hall edge, oldest first, at most
+'' nMaxRecords: the hall map (the encoder count at each hall edge). Fields, all numeric: seq (edge number,
+'' from 1), code (the hall code after the edge), prev (the code before it), enc (the count AT the edge),
+'' dtUs (microseconds since the previous edge, 0 for the first), lost (edges lost so far). The longest
+'' record is 87 bytes. A drain that finds more than RING_ENTRIES pending counts the overrun in edgesLost().
+''
+'' @param nMaxRecords - the most records to emit this call
+'' @returns nEmitted - records emitted
+
+' Local Variables:
+' @local nHead - edges captured, read from the cog's count
+' @local nPending - edges waiting in the ring
+' @local pSlot - hub address of the ring entry being read
+' @local nEnc - the entry's encoder count
+' @local nClocks - the entry's getct() value
+' @local nCode - the entry's hall code after the edge
+' @local nPrev - the entry's hall code before the edge
+' @local nDtUs - microseconds since the previous drained edge
+' @local nClocksPerUs - system clocks in one microsecond
+
+    nEmitted := 0
+    nClocksPerUs := clkfreq / CLOCKS_PER_US_DIV
+    repeat while nEmitted < nMaxRecords
+        nHead := parRingHead
+        nPending := nHead - ringTail
+        if nPending <= 0
+            quit
+        if nPending > RING_ENTRIES                          ' the cog lapped us: the oldest are gone
+            edgeLost += nPending - RING_ENTRIES
+            ringTail := nHead - RING_ENTRIES
+
+        pSlot := @ringBuf + ((ringTail & RING_MASK) * ENTRY_BYTES)
+        nEnc := LONG[pSlot][0]
+        nClocks := LONG[pSlot][1]
+        nCode := LONG[pSlot][2]
+        nPrev := LONG[pSlot][3]
+
+        if parRingHead - ringTail > RING_ENTRIES            ' lapped while reading this entry: it may be torn
+            edgeLost += 1
+            ringTail += 1
+        else
+            ringTail += 1
+            nDtUs := 0
+            if bHaveLastEdge
+                nDtUs := (nClocks - lastEdgeClocks) +/ nClocksPerUs
+            lastEdgeClocks := nClocks
+            bHaveLastEdge := TRUE
+
+            log.begin(@"BE-HALL")
+            log.numField(@"seq", ringTail, log.LIM_SMALL)
+            log.numField(@"code", nCode, log.LIM_TINY)
+            log.numField(@"prev", nPrev, log.LIM_TINY)
+            log.numField(@"enc", nEnc, log.LIM_BIG)
+            log.numField(@"dtUs", nDtUs, log.LIM_BIG)
+            log.numField(@"lost", edgeLost, log.LIM_SMALL)
+            emitRecord()
+            nEmitted += 1
+
+PUB emitSample(nTimeMs, nHallPos, eDriveState, nDutyPct, nCurrentMa)
+'' Emit one BE-SAMP record on the instrument's timebase: the encoder count (read first, here), then the
+'' values the harness read just before the call. Fields: seq, tMs (the harness's timebase), enc, hall (the
+'' driver's hall-tick position), state (the drive state), duty (percent), mA (current, milliamps). The
+'' longest record is 103 bytes.
+''
+'' @param nTimeMs - the harness's timebase, milliseconds
+'' @param nHallPos - hall position (isp_bldc_motor getRawHallTicks())
+'' @param eDriveState - the drive state (isp_bldc_motor getDriverState())
+'' @param nDutyPct - drive duty, percent
+'' @param nCurrentMa - motor current, milliamps
+
+    sampleSeq += 1
+    log.begin(@"BE-SAMP")
+    log.numField(@"seq", sampleSeq, log.LIM_SMALL)
+    log.numField(@"enc", readCount(), log.LIM_BIG)
+    log.numField(@"tMs", nTimeMs, log.LIM_BIG)
+    log.numField(@"hall", nHallPos, log.LIM_BIG)
+    log.numField(@"state", eDriveState, log.LIM_TINY)
+    log.numField(@"duty", nDutyPct, log.LIM_TINY)
+    log.numField(@"mA", nCurrentMa, log.LIM_SMALL)
+    emitRecord()
+
+PUB selfCheck(nEncCounts, nHallTicks) : bPass, eReason | nHallAbs, nEncAbs, nExpected
+'' The self-check: does the encoder agree with the hall sensors over one run? Pure arithmetic, no pin is
+'' touched. Pass when |nEncCounts| is within CHECK_TOL_COUNTS of 60 x |nHallTicks|, the same sign, over at
+'' least HALL_TICKS_PER_REV ticks; otherwise a named reason (CHK_*), and the harness stops the run.
+'' See CHECK_TOL_COUNTS for the precondition, the bound and the correct case.
+''
+'' @param nEncCounts - encoder counts over the span (signed)
+'' @param nHallTicks - hall ticks over the same span (signed, the same hall edges)
+'' @returns bPass - TRUE when the encoder agrees
+'' @returns eReason - CHK_OK, or the CHK_* reason it did not
+
+' Local Variables:
+' @local nHallAbs - the hall ticks, unsigned
+' @local nEncAbs - the encoder counts, unsigned
+' @local nExpected - the counts the hall ticks predict
+
+    nHallAbs := abs(nHallTicks)
+    nEncAbs := abs(nEncCounts)
+    nExpected := nHallAbs * COUNTS_PER_HALL_TICK
+
+    if nHallAbs < HALL_TICKS_PER_REV
+        eReason := CHK_TOO_SHORT                            ' under a revolution of hall ticks: nothing to judge
+    elseif nEncCounts == 0
+        eReason := CHK_NO_COUNT                             ' the halls moved and the encoder did not: a lost line
+    elseif (nEncCounts < 0) <> (nHallTicks < 0)
+        eReason := CHK_WRONG_WAY                            ' A/B swapped, or a one-way totalizer
+    elseif abs(nEncAbs - nExpected) <= CHECK_TOL_COUNTS
+        eReason := CHK_OK
+    elseif abs(nEncAbs * 2 - nExpected) <= 2 * CHECK_TOL_COUNTS
+        eReason := CHK_HALF_RATE                            ' half the edges: B (or A) is not being counted
+    elseif nEncAbs < nExpected
+        eReason := CHK_TOO_FEW                              ' wrong P/R, a slipping coupling, or dropped lines
+    else
+        eReason := CHK_TOO_MANY                             ' wrong P/R, or noise counted as edges
+
+    bPass := (eReason == CHK_OK)
+
+PUB emitCheck(nEncCounts, nHallTicks) : bPass, eReason
+'' Run selfCheck() and emit its BE-CHECK record: verdict (PASS or FAIL), reason (the CHK_* name), enc, ticks,
+'' expect (60 x |ticks|), tol. The longest record is 110 bytes (TOKEN_MAX-bounded reason). The harness stops the run on FAIL.
+''
+'' @param nEncCounts - encoder counts over the span (signed)
+'' @param nHallTicks - hall ticks over the same span (signed)
+'' @returns bPass - TRUE when the encoder agrees
+'' @returns eReason - CHK_OK, or the CHK_* reason it did not
+
+    bPass, eReason := selfCheck(nEncCounts, nHallTicks)
+    log.begin(@"BE-CHECK")
+    log.tokenField(@"verdict", bPass ? @sPass : @sFail, 4)
+    log.tokenField(@"reason", reasonName(eReason), TOKEN_MAX)
+    log.numField(@"enc", nEncCounts, log.LIM_BIG)
+    log.numField(@"ticks", nHallTicks, log.LIM_BIG)
+    log.numField(@"expect", abs(nHallTicks) * COUNTS_PER_HALL_TICK, log.LIM_BIG)
+    log.numField(@"tol", CHECK_TOL_COUNTS, log.LIM_TINY)
+    emitRecord()
+
+PUB reasonName(eReason) : pName
+'' Return the token for a CHK_* reason ("?" for a value outside the enum).
+''
+'' @param eReason - a CHK_* value
+'' @returns pName - pointer to the zero-terminated token
+
+    case eReason
+        CHK_OK:         pName := @sOk
+        CHK_TOO_SHORT:  pName := @sTooShort
+        CHK_NO_COUNT:   pName := @sNoCount
+        CHK_WRONG_WAY:  pName := @sWrongWay
+        CHK_HALF_RATE:  pName := @sHalfRate
+        CHK_TOO_FEW:    pName := @sTooFew
+        CHK_TOO_MANY:   pName := @sTooMany
+        other:          pName := @sUnknown
+
+PUB emitInit()
+'' Emit one BE-INIT record naming what was started: the pins and the encoder's constants. The longest record
+'' is 78 bytes.
+''
+
+    log.begin(@"BE-INIT")
+    log.numField(@"encA", encPinA, log.LIM_TINY)
+    log.numField(@"encB", encPinB, log.LIM_TINY)
+    log.numField(@"hallLo", hallLoPin, log.LIM_TINY)
+    log.numField(@"cpr", ENC_COUNTS_PER_REV, log.LIM_SMALL)
+    log.numField(@"ticksRev", HALL_TICKS_PER_REV, log.LIM_TINY)
+    log.numField(@"ring", RING_ENTRIES, log.LIM_SMALL)
+    emitRecord()
+
+CON { --- Internal Methods --- }
+
+PRI emitRecord()
+' Emit the assembled record: the one debug() statement in this object, so its DEBUG footprint is one record.
+
+    debug(zstr_(log.pLine()))
+
+DAT { token strings }
+
+sPass           BYTE    "PASS", 0
+sFail           BYTE    "FAIL", 0
+sOk             BYTE    "OK", 0
+sTooShort       BYTE    "TOO-SHORT", 0
+sNoCount        BYTE    "NO-COUNT", 0
+sWrongWay       BYTE    "WRONG-WAY", 0
+sHalfRate       BYTE    "HALF-RATE", 0
+sTooFew         BYTE    "TOO-FEW", 0
+sTooMany        BYTE    "TOO-MANY", 0
+sUnknown        BYTE    "?", 0
+
+DAT { hall-edge capture cog }
+'
+' Polls the three hall pins (plain pins, INA or INB). On a pass with no change it reads the encoder's full
+' 32-bit Z with RQPIN (2 clocks, no acknowledge) and publishes it to parCount (readCount()). On any change
+' it reads the count at once and stores {count, getct(), new code, previous code} in the ring, then
+' publishes the new head last. LOOP (no change): mov, shr, and, cmp 2 each = 8; not-taken jmp 2; rqpin 2;
+' wrlong up to 10 (3 + a hub-window wait of up to 7, ASSUMED, not quoted by p2kb); taken jmp 4 = 26 clocks.
+' LATENCY from a hall pin's change to the count latched: pin-input register up to 3 clocks (ASSUMED), then a
+' change just after a sample waits one whole loop (26), then the next pass's 8 + taken jmp 4 + RQPIN 2:
+' 3 + 26 + 8 + 4 + 2 = 43 clocks, stated as <= 48 with margin. At 200 MHz that is 0.24 us; the shaft at
+' 4,000 RPM makes 96,000 counts a second, so the capture's error is <= 0.023 count (at any clock f:
+' 48 / f x counts-per-second).
+
+                org     0
+
+capture         mov     parp, ptra                          ' parameter block
+                rdlong  encPin, parp
+                add     parp, #4
+                rdlong  hallPin, parp
+                add     parp, #4
+                rdlong  ringPtr, parp
+                add     parp, #4
+                rdlong  ringMask, parp
+                add     parp, #4
+                mov     headPtr, parp
+                mov     countPtr, parp
+                add     countPtr, #4                        ' parCount, the long after the head
+                mov     headCnt, #0
+                wrlong  headCnt, headPtr
+                mov     hallShift, hallPin
+                and     hallShift, #31                      ' the hall U bit within its port
+                cmp     hallPin, #32 wc                     ' C: the pins are in port A
+        if_nc   sets    hallPoll, #inb                      ' port B: read INB instead (modified well ahead of its use)
+                mov     hallLast, #NO_HALL_YET
+                nop
+                nop
+
+hallPoll        mov     hallNow, ina                        ' all three hall pins at one instant
+                shr     hallNow, hallShift
+                and     hallNow, #7
+                cmp     hallNow, hallLast wz
+        if_nz   jmp     #hallEdge
+
+                rqpin   encNow, encPin                      ' no change: publish the full 32-bit Z for readCount()
+                wrlong  encNow, countPtr
+                jmp     #hallPoll
+
+hallEdge        rqpin   encNow, encPin                      ' the count AT the edge, first
+                getct   ctNow
+                mov     hallPrev, hallLast
+                mov     hallLast, hallNow
+                cmp     hallPrev, #NO_HALL_YET wz           ' the first reading only primes the last-seen code
+        if_z    jmp     #hallPoll
+
+                mov     slot, headCnt
+                and     slot, ringMask
+                shl     slot, #4                            ' ENTRY_BYTES = 16
+                add     slot, ringPtr
+                wrlong  encNow, slot
+                add     slot, #4
+                wrlong  ctNow, slot
+                add     slot, #4
+                wrlong  hallNow, slot
+                add     slot, #4
+                wrlong  hallPrev, slot
+                add     headCnt, #1
+                wrlong  headCnt, headPtr                    ' publish last
+                jmp     #hallPoll
+
+parp           res     1
+encPin          res     1
+hallPin         res     1
+ringPtr         res     1
+ringMask        res     1
+headPtr         res     1
+countPtr        res     1
+headCnt         res     1
+hallShift       res     1
+hallLast        res     1
+hallNow         res     1
+hallPrev        res     1
+encNow          res     1
+ctNow           res     1
+slot            res     1
+
+                fit     496
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}
