@@ -18,7 +18,9 @@
 #   release-notes.md                the version's CHANGELOG.md entry, which becomes the release page
 #
 # Each archive holds one folder named after it, flat like a Propeller Tool archive, with a _README_ per
-# top-level program drawing its object tree (and one in pythonSrc/ naming its two files). A top's files are
+# top-level program drawing its object tree (and one in pythonSrc/ naming its two files), and, at the top of
+# that folder, the repository's LICENSE and CHANGELOG.md as committed at the packaged ref (Stephen, 2026-10-03:
+# a zip passed on without the repository still carries its terms and its version history). A top's files are
 # found from its OBJ blocks by tools/release_closure.py. The release gates compile every top before the
 # tag; when pnut-ts is on the PATH here as well, every top is also compiled from inside its staged folder,
 # and its _README_ says so.
@@ -155,6 +157,15 @@ done
     echo "  https://github.com/ironsheep/P2-BLDC-Motor-Control"
 } > "$WORK/stage/serial-control-archive-set/pythonSrc/_README_.txt"
 
+# ---- 3b. every archive carries the terms and the history: LICENSE and CHANGELOG.md, from the committed tree ----
+SET_DOCS="LICENSE CHANGELOG.md"
+for set in demo-1mot-archive-set demo-2mot-archive-set serial-control-archive-set; do
+    for f in $SET_DOCS; do
+        [ -f "$WORK/tree/$f" ] || { echo "ERROR: $f is not committed at $REF -- every archive set carries it" >&2; exit 1; }
+        cp -p "$WORK/tree/$f" "$WORK/stage/$set/"
+    done
+done
+
 # ---- 4. the zips and the notes ----------------------------------------------------------------------------------
 mkdir -p "$OUT"
 OUT_ABS="$(cd "$OUT" && pwd)"
@@ -167,6 +178,6 @@ printf '%s\n' "$NOTES" | sed -e '/./,$!d' > "$OUT_ABS/release-notes.md"
 echo
 echo "Release $VERSION_TAG ready in $OUT:"
 for set in demo-1mot-archive-set demo-2mot-archive-set serial-control-archive-set; do
-    echo "  $set.zip  ($(unzip -Z1 "$OUT_ABS/$set.zip" | grep -vc '/$') files)"
+    echo "  $set.zip  ($(unzip -Z1 "$OUT_ABS/$set.zip" | grep -vc '/$') files, with $(for f in $SET_DOCS; do unzip -Z1 "$OUT_ABS/$set.zip" "$set/$f" > /dev/null 2>&1 && printf '%s ' "$f"; done))"
 done
 echo "  release-notes.md  (the CHANGELOG.md entry for $VERSION_TAG)"

@@ -428,6 +428,12 @@ release closes this plan once §1.5, §1.6, §3.1 and the second visit (§9.1) a
 qualification follows it as its own plan. This supersedes the 2026-10-01 ordering below. The ship call itself stays his
 (P5): the release task prepares everything and stops at his word.
 
+**Rulings at release prep (2026-10-03):** STEPHEN, of the three v6.0.0 Known Issues this sprint addressed (spins slow /
+changes late; a yielding obstacle; torque in reserve near top speed): *"these are non-issues now aren't they?"* — dropped
+from the 6.1.0 entry; the two cases the bench did not run (a yielding obstacle, a true 18.5 V pack) are stated in the
+6.5-inch manual's limits, not in the CHANGELOG (central:changelog-voicing excludes test-evidence lines). STEPHEN: every
+release zip carries `LICENSE` and `CHANGELOG.md` (*"yes, good. let's do this"*): `tools/make-release.sh` step 3b.
+
 *Earlier (2026-10-01):* the release was to happen after this plan, following a DocoEng motor qualification. What this
 plan leaves for the release, recorded so nothing is lost:
 - **Known Issues evidence.** The evaluation (§9) brings Stephen, for each v6.0.0 Known Issue this sprint touches (the

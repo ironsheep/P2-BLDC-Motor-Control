@@ -3,6 +3,41 @@
 Changes to the P2-BLDC-Motor-Control objects, newest first. Each release's entry is also its
 GitHub release page.
 
+## v6.1.0 (2026-10-03)
+
+The drive holds its commanded speed under load, giving way only at its current limit.
+
+### Improvements
+
+- Under load the drive answers with torque up to its current limit and keeps its commanded speed: spins in
+  place no longer run slow, and speed changes arrive at the set rate
+- A wheel held at its current limit cannot lag-fault when pushed back, and resumes without a current surge
+  when the limit releases
+- Past full power a wheel keeps up smoothly at the voltage ceiling instead of running rough
+- Two wheels: `EV_FOLDBACK` marks a wheel at its current limit, and `EV_PATH_LIMIT` both wheels slowed
+  together because one is at its limit
+- The FlySky demos hold a stopped wheel, so a full left or right turn pivots about it instead of spinning
+- The FlySky demos send a knob's rate only when the knob moves, and always at either end
+- Overlapping or unknown motor pin groups are refused at compile time, with a message naming the problem
+- [DRIVER_BOARDS.md](DRIVER_BOARDS.md) describes the Rev A and Rev B boards and when to be careful with each
+- Each release archive carries `LICENSE` and `CHANGELOG.md`
+
+### Known Issues
+
+- The drive does not use the pack sensor's voltage yet: `getCurrent()`'s watts and the speed table assume
+  the configured `DRIVE_VOLTAGE`
+- `getCurrent()` does not show regenerative current
+- Braking by shorted phases (`emergencyCutoff()`, `holdAtStop(true)`) is not current-limited; ramp down
+  before stopping where you can, as `stopMotor()` and the stop limits do
+- `setHoldLimits()`'s defaults were sized with the wheels unloaded
+- `calibrate()` is not implemented
+- The drive is supported at a 270 MHz system clock (`_clkfreq = 270_000_000`, as in every demo); below about
+  250 MHz its timing is unproven
+- The DocoEng 4,000 RPM motor is not validated for v6.1.0; v6.1.0 is validated on the 6.5″ hub motor with
+  Rev B boards
+- The serial control path (`isp_steering_serial.spin2`, the Python host demo) is not validated on hardware
+  for v6.1.0
+
 ## v6.0.0 (2026-10-01)
 
 A reworked drive: lower current, a quiet start, built-in protection, and every command reporting its result.
