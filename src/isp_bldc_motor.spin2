@@ -1223,7 +1223,7 @@ PUB testGetHold() : nHoldDuty, nCeilDuty, nCeilPasses, nSlipEvents, nLimitEvents
 ''
 '' @returns nHoldDuty - the duty the driver applies at rest now
 '' @returns nCeilDuty - the hold's duty ceiling
-'' @returns nCeilPasses - consecutive front passes (ms) the hold has spent at its ceiling
+'' @returns nCeilPasses - consecutive front slots (ms, at any clock) the hold has spent at its ceiling
 '' @returns nSlipEvents - holds ended by a slip since start
 '' @returns nLimitEvents - holds ended by the time limit since start
 
@@ -1352,7 +1352,7 @@ PUB restZeroBegin() : eStatus | startMs
 PUB restZeroAddSample()
 '' INTERNAL USE: PL-45 step 2 of 3 -- accumulate one sense_i_mV sample into the rest-zero total
 ''
-'' Call REST_ZERO_SAMPLE_COUNT times, REST_ZERO_SAMPLE_MS apart, after a successful restZeroBegin();
+'' Call REST_ZERO_SAMPLE_COUNT times, REST_ZERO_SAMPLE_MS apart (on a getct() grid: captureRestZero()), after a successful restZeroBegin();
 '' skip it after a failed restZeroBegin(), as isp_steering_2wheel's start() does per wheel.
 
     restZeroSampleSum += sense_i_mV
@@ -1374,7 +1374,7 @@ PUB restZeroFinish()
         restZeroSenseMv := unbiasedMeanMv(restZeroSampleSum, restZeroSampleCount)
     applySenseZero()
 
-PUB captureRestZero() | idx
+PUB captureRestZero() | idx, nextTicks, sampleTicks
 '' INTERNAL USE: sample the current-sense rest zero, with the drive floated (PL-45); ~1 s
 ''
 '' Call once, after the driver is confirmed running and released, and before any drive request is
@@ -1384,14 +1384,21 @@ PUB captureRestZero() | idx
 ''
 '' Composed from restZeroBegin()/restZeroAddSample()/restZeroFinish(), so isp_steering_2wheel's
 '' start() can sample both wheels in one ~1 s window. The sample count and spacing are explained at
-'' REST_ZERO_SAMPLE_COUNT.
+'' REST_ZERO_SAMPLE_COUNT. DRIVER_REV 51: the samples are paced on a getct() grid, REST_ZERO_SAMPLE_MS apart from
+'' the first, so the window is REST_ZERO_SAMPLE_COUNT x REST_ZERO_SAMPLE_MS (1_000 ms) at any clock, not that plus
+'' every sample's own cost (waitms() after the body).
 
 ' Local Variables:
 ' @local idx - the sample loop counter
+' @local nextTicks - getct() at which the next sample is due
+' @local sampleTicks - REST_ZERO_SAMPLE_MS in system ticks
 
     if restZeroBegin() == NO_ERROR
+        sampleTicks := muldiv64(CLKFREQ, REST_ZERO_SAMPLE_MS, MS_PER_SEC)
+        nextTicks := getct()
         repeat idx from 1 to REST_ZERO_SAMPLE_COUNT
-            waitms(REST_ZERO_SAMPLE_MS)
+            nextTicks += sampleTicks
+            waitUntilTicks(nextTicks)
             restZeroAddSample()
         restZeroFinish()
 
@@ -1517,7 +1524,7 @@ PUB walkRamps(bOn) : eError
 '' however a setter interleaves. A caller posts no leg without it (checkWiring()); no walk request applies a ramp.
 ''
 '' @param bOn - T/F where T means apply the built-in ramp now, F the kept one
-'' @returns eError - NO_ERROR once the front cog has applied it; ERR_NOT_STARTED when no start has applied the settings (only the flag is set: the next start() clears it, init()); ERR_NO_RESPONSE when the front cog did not apply it within REQ_ACK_TIMEOUT_MS (it stays asked for). Recorded nowhere
+'' @returns eError - NO_ERROR once the front cog has applied it; ERR_NOT_STARTED when no start has applied the settings (only the flag is set: the next start() clears it, init()); ERR_NO_RESPONSE when the front cog did not apply it within REQ_ACK_TIMEOUT_MS (times the slots a late front pass stands for; it stays asked for). Recorded nowhere
 
     bWalkRamps := bOn                                                           ' first: the front cog's apply reads it
     eError := ERR_NOT_STARTED
@@ -1669,7 +1676,7 @@ PUB startPackSense() | nPin
             debug[user.DBGCH_LIFECYCLE]("* pack sensor ", sdec_long(nPin), sdec_long(packGioRaw), sdec_long(packVioRaw), sdec_long(packMvFromAvg()))
 
 PUB frontSamplePack(nRawSum, nSamples)
-'' FRONT COG ONLY: once every WINDOW_PASSES passes, on PACK_PHASE -- fold the pack samples summed since the last call into the average (R19.5)
+'' FRONT COG ONLY: once every WINDOW_PASSES slots, on PACK_PHASE -- fold the pack samples summed since the last call into the average (R19.5)
 ''
 '' PL-161: the front cog reads the pin once a pass, inline, and only sums the raw samples (while isPackRead()); this
 '' folds that sum in once a slot, on the pass phase PACK_PHASE, which carries no other slot work. No conversion is made
@@ -1678,7 +1685,7 @@ PUB frontSamplePack(nRawSum, nSamples)
 '' A no-op on an instance that does not read the sensor (startPackSense()), or with no sample summed.
 ''
 '' @param nRawSum - the pin's raw SINC2 samples (rdpin(user.PACK_SENSE_PIN)) summed since the last call
-'' @param nSamples - how many samples {nRawSum} holds: WINDOW_PASSES, except in a front cog's first slot
+'' @param nSamples - how many samples {nRawSum} holds: WINDOW_PASSES, except in a front cog's first slot or while passes run late (DRIVER_REV 51: fewer, one a pass)
 
     if (bPackOwned == TRUE) and (nSamples > 0)
         packAvgRaw += (((nRawSum << PACK_AVG_SHIFT) / nSamples) - packAvgRaw) SAR PACK_AVG_SHIFT
@@ -1923,22 +1930,25 @@ PUB boardIdString() : pZStr
             debug[user.DBGCH_ERROR]("* [CODE] bad return value from getBoardType()")
             pZStr := @"????"
 
-PUB getBoardType() : eBoardRev | pSenseCommon, pinSum, readStartTicks, sumTicks, highTimeUs
+PUB getBoardType() : eBoardRev | pSenseCommon, pinSum, nReads, readStartTicks, windowTicks, sumTicks, highTimeUs
 '' ID Revision of attached BLDC driver board
 ''
 '' @returns eBoardRev - REV_A or REV_B when a 64010 board is recognised at this pin group, else REV_Unknown (while this motor's driver is running: the revision recorded when it was started)
 
 ' Local Variables:
 ' @local pSenseCommon - the detection pin, pinbase + DETECT_SENSE_OFFSET
-' @local pinSum - how many of the DETECT_READ_COUNT reads found the pin high
+' @local pinSum - how many of the nReads reads found the pin high
+' @local nReads - pinread()s taken in the DETECT_WINDOW_US window
 ' @local readStartTicks - getct() taken just before the read loop
+' @local windowTicks - DETECT_WINDOW_US in system ticks
 ' @local sumTicks - ticks the whole read loop took, measured so the threshold does not depend on CLKFREQ
 ' @local highTimeUs - how long the released pin stayed high, in microseconds
 
 { Detection contract (auto-detect only; a forced BRD_REV_A / BRD_REV_B is returned as given):
 
    pinSum == 0                              -> REV_A        1K pulldown, first read already low
-   pinSum >  DETECT_NODET_MIN_SUM           -> REV_Unknown  nothing discharges the pin: empty group
+   pinSum >  nReads / 2                     -> REV_Unknown  nothing discharges the pin: empty group (high
+                                                            for over half the window)
    high time <  DETECT_REVB_MIN_US          -> REV_Unknown  something pulls the pin down fast, but it is
                                                             not a Rev B sense node -- e.g. a group that
                                                             overlaps another board, whose base+4 is that
@@ -1947,7 +1957,11 @@ PUB getBoardType() : eBoardRev | pSenseCommon, pinSum, readStartTicks, sumTicks,
 
   The pin sum alone depends on CLKFREQ (more reads fit in the same discharge at a faster clock),
   so the Rev B floor is applied to the high TIME: pinSum x (loop ticks / reads) converted to
-  microseconds. The loop body is unchanged; getct() is taken outside it.
+  microseconds. DRIVER_REV 51 (task 3671): the WINDOW is a time too, DETECT_WINDOW_US paced by
+  getct(): the loop reads until it has run that long and counts its reads. It was DETECT_READ_COUNT
+  (500) reads at the loop's own pitch, about 200 clocks a read: 371 us at 270 MHz, but 1_000 us at
+  100 MHz and 286 us at 350. The window is 371 us at every clock now, so at 270 MHz each decision
+  reads the same time it did; the sum is of fewer, slower reads (the loop also tests getct()).
 
   MEASURED at 270 MHz (bench 2026-09-11 / 2026-09-12, both rigs, rail on): real Rev B sums
   93-104 = 69-77 uS; the overlapping-group signature sums 1 (Rev B rig) and 7-9 (Rev A rig)
@@ -1991,16 +2005,20 @@ PUB getBoardType() : eBoardRev | pSenseCommon, pinSum, readStartTicks, sumTicks,
                 waitms(DETECT_CHARGE_MS)
                 pinfloat(pSenseCommon)                  ' release the pin, ready to read state
 
+                windowTicks := muldiv64(CLKFREQ, DETECT_WINDOW_US, US_PER_SEC)
+                nReads := 0
                 readStartTicks := getct()
-                repeat DETECT_READ_COUNT                ' check pin state DETECT_READ_COUNT times, x = sum of results
+                repeat                                  ' DRIVER_REV 51: read for DETECT_WINDOW_US, x = sum of results
                     pinSum += pinread(pSenseCommon)
+                    nReads++
+                while getct() - readStartTicks < windowTicks
                 sumTicks := getct() - readStartTicks
-                highTimeUs := (pinSum * sumTicks / DETECT_READ_COUNT) / (ticks1us #> 1)
+                highTimeUs := muldiv64(muldiv64(pinSum, sumTicks, nReads), US_PER_SEC, CLKFREQ)
                 ' Handle the result! (the detection contract is in the block comment above)
                 if pinSum == 0
                     debug[user.DBGCH_DETECT]("--- ", udec(pinSum), ", 64010 Rev A, ", udec(highTimeUs))
                     eBoardRev := REV_A
-                elseif pinSum > DETECT_NODET_MIN_SUM
+                elseif pinSum > nReads / 2
                     debug[user.DBGCH_DETECT]("--- ", udec(pinSum), ", Board not detected!, ", udec(highTimeUs))
                 elseif highTimeUs < DETECT_REVB_MIN_US
                     debug[user.DBGCH_DETECT]("--- ", udec(pinSum), ", Board not detected! (below Rev B band, overlapping group?), ", udec(highTimeUs))
@@ -2544,8 +2562,8 @@ PUB testGetStopMs() : nMsDeadline
 PUB testGetRpm() : nRpm
 '' TESTING USE: return the motor's current RPM, averaged over the hall-tick window
 ''
-'' The window is HALL_WINDOW_SIZE samples, one every WINDOW_PASSES front-cog passes (1/FRONT_LOOP_HZ
-'' sec each), so it spans 1 second of motion. Valid only while the front cog (started by start() for
+'' The window is HALL_WINDOW_SIZE samples, one every WINDOW_PASSES front-cog slots (1/FRONT_LOOP_HZ
+'' sec each, at any clock), so it spans 1 second of motion. Valid only while the front cog (started by start() for
 '' a single motor, or by isp_steering_2wheel's start()) is running, and only from at least one full
 '' window (~1 sec) after motion starts -- before that the window has not filled and the average
 '' understates the true rate.
@@ -2558,7 +2576,7 @@ PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater |
 '' TESTING USE: return the front cog's loop health counters and its stack high-water mark
 ''
 '' @returns nPasses - passes the front cog has started since it was launched
-'' @returns nLatePasses - passes that ended within LATE_MARGIN_US of their slot's end (or past it) and were re-anchored, never caught up
+'' @returns nLatePasses - passes that ended within LATE_MARGIN_US of their slot's end (or past it); the slots each skipped are counted as time by the next pass, never lost (DRIVER_REV 51)
 '' @returns nMaxPassTicks - the longest pass body seen, in system ticks
 '' @returns nStackHighWater - stack longs ever used, of STACK_SIZE_LONGS; STACK_SIZE_LONGS itself means an overflow is possible
 
@@ -2867,10 +2885,12 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum, bRun
 '' I_phase >= I_dc / (0.75 x m) with m = duty / (4 x frame_cnt) (DOCs/plans/CURRENT-LIMIT-AND-STOP-DESIGN.md section 3.4).
 '' Its ~1 s average above the continuous limit lowers the driver's fold-back to that limit, and the peak
 '' limit returns below I_RESTORE_PCT of it. A motor commanded to move that stays at the lag limit, or that a
-'' limiter has acted on since its last hall tick, with no hall tick for BLOCKED_PASSES is blocked; the caller latches
-'' the protective stop. Records no error; a derate's engage and release are logged as EV_CURRENT_LIMIT (R20.1).
+'' limiter has acted on since its last hall tick, with no hall tick for BLOCKED_PASSES slots is blocked; the caller
+'' latches the protective stop. Records no error; a derate's engage and release are logged as EV_CURRENT_LIMIT (R20.1).
+'' DRIVER_REV 51: both count SLOTS (frontPassSlots a pass), so the average's time constant and the blocked time are
+'' the same at any clock.
 ''
-'' @returns bBlocked - T/F where T means this motor has been blocked for BLOCKED_PASSES
+'' @returns bBlocked - T/F where T means this motor has been blocked for BLOCKED_PASSES slots (1 s)
 
 ' Local Variables:
 ' @local dutyEff - the driver's duty, floored at the estimate's m = 0.1 (dutyFloorEst; the fold's own floor may be higher, PL-163)
@@ -2886,7 +2906,10 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum, bRun
         '  over 2) now the rest zero is the true offset (restZeroFinish()), so the ~1 s average centres on the current
         dcMa := muldiv64(((((sense_i_mV - restZeroSenseMv) << 1) + 1) #> 0), 500, rSenseForBoard)
         phaseMa := muldiv64(dcMa, 16 * frame_cnt, 3 * dutyEff) <# PHASE_MA_MAX
-        phaseAvgMa += ((phaseMa << CURRENT_AVG_SHIFT) - phaseAvgMa) SAR CURRENT_AVG_SHIFT
+        ' DRIVER_REV 51: one step per SLOT, so the time constant is 2^CURRENT_AVG_SHIFT slots at any clock: a pass
+        '  standing for n slots takes n steps toward this reading (n x 1/1024 for 1 - (1 - 1/1024)^n, n <= 8: within
+        '  0.4 % of the step); n is 1 on every on-time pass, the step exactly as before
+        phaseAvgMa += (((phaseMa << CURRENT_AVG_SHIFT) - phaseAvgMa) SAR CURRENT_AVG_SHIFT) * frontPassSlots
         if (bDerated == FALSE) and (phaseAvgMa >= (limitContA * 1_000) << CURRENT_AVG_SHIFT)
             bDerated := TRUE
             setFoldLimit(limitContA)
@@ -2913,7 +2936,7 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum, bRun
     elseif nowLimSum <> blockedLimiterSum
         bLimSinceTick := TRUE                                                   ' a limiter acted with no tick since
     if ((targetIncre & !SYNC_BIT) <> 0) and ((abs(err) >= LAG_SOFT) or bLimSinceTick) and (nowPos == blockedPos) and (bRun or (drv_state == DCS_SPIN_DN))
-        blockedPasses++
+        blockedPasses += frontPassSlots                                         ' DRIVER_REV 51: slots, so BLOCKED_PASSES is 1 s at any clock
     else
         blockedPasses := 0
     blockedPos := nowPos
@@ -2967,7 +2990,7 @@ PUB frontSetHoldLimits(ceilingPct, riseMs, limitMs)
     holdRiseMs := riseMs
     holdLimitMs := limitMs
     holdCeilDuty := muldiv64(duty_max, ceilingPct, 100) #> duty_min
-    holdRisePasses := muldiv64(riseMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1
+    holdRisePasses := muldiv64(riseMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1          ' slots (DRIVER_REV 51: frontHold() counts slots)
     holdLimitPasses := muldiv64(limitMs, FRONT_LOOP_HZ, MS_PER_SEC) #> 1
 
 PUB frontSetFaultResponse(eMode, brakePct)
@@ -3040,7 +3063,7 @@ PUB frontQueueEvent(eKind, nValue) | slotIdx
     evHead++                                                                    ' LAST: publishes the slot written above
 
 PUB frontEventChecks(nowMs) | nNow, ePackNow
-'' FRONT COG ONLY: every WINDOW_PASSES passes, on the phase opposite the rpm window's slot pass -- queue the rate-limited
+'' FRONT COG ONLY: every WINDOW_PASSES slots, on the phase opposite the rpm window's slot pass -- queue the rate-limited
 '' and counted events: missed and illegal hall codes, the pack sensor's status, and the driver's current fold-back (R20.1)
 ''
 '' Each rate-limited kind is queued at most once per EV_RATE_GAP_MS, and carries every count since its last event, so no
@@ -3098,7 +3121,8 @@ PUB frontHold() | nowPos
 '' displacement. While the hall position is off the hold position this raises the duty the driver applies,
 '' up to holdCeilDuty, and never lowers it within one rest, so a held load does not hunt. A displacement of
 '' HOLD_SLIP_TICKS, or holdLimitPasses at the ceiling, hands the hold off to the phase short (the driver's
-'' restBridge); that is reported through getHoldStatus() and stays until the next command.
+'' restBridge); that is reported through getHoldStatus() and stays until the next command. DRIVER_REV 51: the rise
+'' and the limit count SLOTS (frontPassSlots a pass), so riseMs and limitMs hold at any clock.
 
 ' Local Variables:
 ' @local nowPos - the driver's hall position this pass
@@ -3127,16 +3151,18 @@ PUB frontHold() | nowPos
                 holdSlipEvents++
                 frontQueueEvent(EV_HOLD_SLIP, holdDisp)                         ' R20.1: after the hand-off is written
             else
-                if holdDisp <> 0                                                ' the duty follows the displaced passes, so the
-                    holdDispPasses := (holdDispPasses + 1) <# holdRisePasses    '  ceiling comes after exactly riseMs displaced
+                if holdDisp <> 0                                                ' the duty follows the displaced slots, so the
+                    holdDispPasses := (holdDispPasses + frontPassSlots) <# holdRisePasses  '  ceiling comes after exactly riseMs displaced
                     hold_duty := duty_min + muldiv64(holdCeilDuty - duty_min, holdDispPasses, holdRisePasses)
                 if hold_duty < holdCeilDuty
                     holdCeilPasses := 0
-                elseif ++holdCeilPasses >= holdLimitPasses
-                    hold_short := TRUE
-                    holdState := HS_LIMITED
-                    holdLimitEvents++
-                    frontQueueEvent(EV_HOLD_LIMIT, hold_duty)                   ' R20.1: after the hand-off is written
+                else
+                    holdCeilPasses += frontPassSlots                            ' DRIVER_REV 51: slots, so limitMs at any clock
+                    if holdCeilPasses >= holdLimitPasses
+                        hold_short := TRUE
+                        holdState := HS_LIMITED
+                        holdLimitEvents++
+                        frontQueueEvent(EV_HOLD_LIMIT, hold_duty)               ' R20.1: after the hand-off is written
 
 PUB frontArmWalkGuard()
 '' FRONT COG ONLY: arm the current guard for the walk leg just commanded (REQ_WALK, PL-122)
@@ -3216,7 +3242,7 @@ PUB testGetWalkGuardMv() : nGuardMv
 '' TESTING USE: the wiring walk's current guard in force, on this board's sense scale (DRIVER_REV 40)
 ''
 '' WALK_I_LIMIT_MA converted by the detected board's rSense at start (init()): 150 mV on Rev B, 5 mV on Rev A, never
-'' under FOLD_MIN_MV + 1. frontWalkGuard() ends a leg on a net reading at or above it, and EV_WALK_GUARD carries that
+'' under the fold floor in force + 1 (FOLD_MIN_MV, or more at a clock whose ADC count is coarser; DRIVER_REV 51). frontWalkGuard() ends a leg on a net reading at or above it, and EV_WALK_GUARD carries that
 '' reading, so a guard event's value is always at least this. A bench criterion judges against this, not against
 '' WALK_I_LIMIT_MV, which is Rev B's value only.
 ''
@@ -3278,15 +3304,17 @@ PUB frontDriverCogBit() : cogBit
     if motorCog <> 0
         cogBit := 1 << (motorCog - 1)
 
-PUB frontTrack(passCount) | eDrvState, nowPos, nStep
-'' FRONT COG ONLY: once per pass, latch a new fault's cause and accumulate position tracking; every WINDOW_PASSES passes advance the rpm window
+PUB frontTrack(slotJobs) | eDrvState, nowPos, nStep
+'' FRONT COG ONLY: once per pass, latch a new fault's cause and accumulate position tracking; every WINDOW_PASSES slots advance the rpm window
 ''
 '' PL-153: the travel is added every pass, faulted and emergency-stopped included -- a wheel that coasts or is pushed
 '' then has travelled -- to the odometer (posTrkHallTicks, reset only by resetTracking() and start()) and to the travel
 '' the limits count from their arming (trkTravelTicks, never reset while the front cog runs). Only the rpm window and
 '' the HDMI maxima restart every pass while faulted or e-stopped, as they always did.
+'' DRIVER_REV 51: the window advances on the pass that crosses slot phase 0, so a window slot is WINDOW_PASSES slots
+'' (8 ms) of time and the window's span 1 s, to within one pass, whatever the clock (was: every WINDOW_PASSES passes).
 ''
-'' @param passCount - the owner's pass counter, advanced by one every pass
+'' @param slotJobs - the owner's slot jobs for this pass (SLOT_JOB_*); SLOT_JOB_WINDOW set advances the window
 
 ' Local Variables:
 ' @local eDrvState - the driver state read once for this pass
@@ -3304,8 +3332,60 @@ PUB frontTrack(passCount) | eDrvState, nowPos, nStep
         ' a faulted or emergency-stopped motor restarts its rpm window every pass (PL-153: its odometer is kept)
         resetWindowAccumulators(nowPos)
         LARESET()                                                               ' reset LA tracking
-    elseif (passCount +// WINDOW_PASSES) == 0
+    elseif (slotJobs & SLOT_JOB_WINDOW) <> 0
         updateWindowAccumulators()
+
+PUB frontLateSlots(nDue, nSlotTicks, nMarginTicks) : nNextDue, nSlots | nBehind
+'' FRONT COG ONLY: after a late pass, when the next pass starts and how many slots it stands for (DRIVER_REV 51, task 3671)
+''
+'' The late pass's slot ends at {nDue}, a slot boundary. The next pass starts k slots after it, k the least that leaves
+'' at least {nMarginTicks} before the start: with x = now - nDue + margin (positive, since the pass was late),
+'' k = x / slot + 1, so nDue + k x slot - now = margin + k x slot - x > margin. That pass stands for k + 1 slots: the
+'' late pass's own and the k skipped, which its owner then counts as time. A pass standing for more than WINDOW_PASSES
+'' slots (a stall of over 8 ms: a body that long is no clock's) is counted as WINDOW_PASSES, and the schedule
+'' re-anchored a slot from now, the excess lost as every late pass's time was before; so no pass crosses two window
+'' slots. Only the late branch calls this: an on-time pass costs nothing here.
+''
+'' @param nDue - getct() at which the late pass's slot ended
+'' @param nSlotTicks - system ticks in one slot (CLKFREQ / FRONT_LOOP_HZ)
+'' @param nMarginTicks - LATE_MARGIN_US in system ticks
+'' @returns nNextDue - getct() at which the next pass starts, a slot boundary at least {nMarginTicks} ahead
+'' @returns nSlots - the slots the next pass stands for, 2 .. WINDOW_PASSES
+
+' Local Variables:
+' @local nBehind - x, the ticks past the latest start that would still have left the margin
+
+    nBehind := getct() - nDue + nMarginTicks
+    nSlots := (nBehind +/ nSlotTicks) + 2
+    if nSlots > WINDOW_PASSES
+        nSlots := WINDOW_PASSES
+        nNextDue := getct() + nSlotTicks                                        ' re-anchored: the excess is not counted
+    else
+        nNextDue := nDue + (nSlots - 1) * nSlotTicks
+
+PUB frontSlotJobsCrossed(nSlotClock, nSlots) : nJobs
+'' FRONT COG ONLY: the slot jobs of a pass that stands for {nSlots} slots, ending at slot {nSlotClock} (DRIVER_REV 51)
+''
+'' A bit per slot phase the pass crossed (SLOT_JOB_*): the {nSlots} phases ending at this slot's, wrapping round
+'' WINDOW_PASSES. Called only after a late pass; an on-time pass's mask is its own phase's bit alone.
+''
+'' @param nSlotClock - the owner's slot clock as of this pass
+'' @param nSlots - the slots the pass stands for, 1 .. WINDOW_PASSES
+'' @returns nJobs - the mask of phases crossed, within SLOT_JOBS_ALL
+
+    nJobs := ((1 << nSlots) - 1) << ((nSlotClock + 1 - nSlots) +// WINDOW_PASSES)
+    nJobs := (nJobs | (nJobs >> WINDOW_PASSES)) & SLOT_JOBS_ALL
+
+PUB frontSetPassSlots(nSlots)
+'' FRONT COG ONLY: an owner's front cog (isp_steering_2wheel) gives this motor the slots its passes now stand for (DRIVER_REV 51)
+''
+'' Called only when the count changes: after a late pass, and on the first on-time pass after one. The time-counted
+'' consumers (bFrontProtect(), frontHold()) add it per pass; requestRamps() bounds its wait by the most it has been.
+''
+'' @param nSlots - the slots each pass stands for from the next, 1 .. WINDOW_PASSES
+
+    frontPassSlots := nSlots
+    frontSlotsMax #>= nSlots
 
 PUB frontStopTicks() : nTicks
 '' FRONT COG ONLY: return the hall ticks the field still travels if a stop is written now
@@ -3332,6 +3412,10 @@ PUB frontStopMs() : nMs
 '' 22.5 frames = 511 us, DRIVER_REV 50), and the plan is published at most ~232 us after T_k (ten PWM frames), so a stop written within ~268 us
 '' of the read is taken by pass k + 1 or k + 2, the two cases the plan covers. Both front cogs write a limit's stop
 '' before any other work on its path, a few method calls after the read.
+'' DRIVER_REV 51, AT ANY CLOCK: the ~268 us is the driver's, in frames, so the same at every clock; the read-to-write
+'' span is Spin2 work in one front pass with no wait in it, a fixed count of clocks (at most ~4_750 ESTIMATED for the
+'' worst path, the steering platform limit's left wheel: 17.6 us at 270 MHz, 47.5 us at 100), under 268 us above
+'' ~18 MHz. A slower or late front pass changes neither: the read and the write stay in the same pass.
 ''
 '' @returns nMs - the stopping time, rounded up; a few ms at rest (a take pass might yet start a drive)
 
@@ -3537,8 +3621,9 @@ PUB frontApplyRamps()
 '' none, rampsFor(), jerkForAccel() twice), two MULDIV64, about twelve compares and clamps, four hub writes, and NO
 '' float: the built-in steps are init()'s (rampBuiltinUp, rampBuiltinDn), no longer converted from mm/s^2 here (that
 '' was two builtinStep() chains a wheel, each six calls and 13 float operations, 26 in all). The wait it answers is
-'' bounded: a raised flag is applied within 2 passes (this object) or 4 (a steering wheel), about 4 ms at worst,
-'' inside REQ_ACK_TIMEOUT_MS.
+'' bounded: a raised flag is applied within 2 slots (this object) or 4 (a steering wheel), about 4 ms at worst,
+'' inside REQ_ACK_TIMEOUT_MS. DRIVER_REV 51: the phases are slots', so a late pass that crosses an odd phase applies it,
+'' and two wheels' applies may then share a pass.
 
     if bRampsStale <> FALSE
         bRampsBusy := TRUE                                                      ' first: a caller that sees the flag down waits on this
@@ -3634,11 +3719,13 @@ PRI readEvent(bAdvance) : eKind, nMs, nValue | cogIdx, nCursor, nHead, nLag, slo
         if bAdvance == TRUE
             evCursor[cogIdx] := nHead - EV_QUEUE_DEPTH                          ' the oldest event still retained is read next
 
-PRI probeLeads(eWithheld) : nPhasesFailed | ePhase, eOther, nSample, nPhaseMv[3], nFollows[3], bDriven[3]
+PRI probeLeads(eWithheld) : nPhasesFailed | ePhase, eOther, nSample, nextTicks, ticksPerMs, nPhaseMv[3], nFollows[3], bDriven[3]
 ' The start checks' lead probe (R19.4): drive each phase in turn at 50 % with the other two off, and judge each lead.
 '
 ' Called only from runStartChecks(), at rest and before any drive request, so the probe longs have one writer. Leaves
 ' probe_phase at PRB_NONE and the bridge settled. Records each probe's readings in probeMv (testGetProbe()).
+' DRIVER_REV 51: a probe's PROBE_SAMPLES readings are 1 ms apart on a getct() grid, so each probe holds its phase
+' PROBE_SETTLE_MS + PROBE_SAMPLES ms at any clock (was each 1 ms plus the reading's own cost).
 '
 ' @param eWithheld - PRB_U, PRB_V or PRB_W to leave undriven (TEST-USE), or PRB_NONE
 ' @returns nPhasesFailed - the HLT_PHASE_* bits of the leads that followed no other phase or could not be driven
@@ -3647,22 +3734,27 @@ PRI probeLeads(eWithheld) : nPhasesFailed | ePhase, eOther, nSample, nPhaseMv[3]
 ' @local ePhase - the phase being probed, PRB_U..PRB_W
 ' @local eOther - a phase index 0..2 while reading or judging
 ' @local nSample - the reading loop counter
+' @local nextTicks - getct() at which the next reading's 1 ms ends
+' @local ticksPerMs - system ticks in 1 ms
 ' @local nPhaseMv - this probe's averaged U, V and W readings, mV
 ' @local nFollows - per phase, the probes in which it followed the driven phase
 ' @local bDriven - per phase, T/F where T means it read at least CONT_MIN_DRIVEN_MV when it was the one driven
 
     nPhasesFailed := 0
+    ticksPerMs := muldiv64(CLKFREQ, 1, MS_PER_SEC)
     longfill(@nFollows, 0, 3)
     longfill(@bDriven, FALSE, 3)
     repeat ePhase from PRB_U to PRB_W
         probe_phase := (ePhase == eWithheld) ? PRB_NONE : ePhase                ' the driver's restBridge takes BR_PROBE on its next pass; a withheld phase stays undriven
         waitms(PROBE_SETTLE_MS)
         longfill(@nPhaseMv, 0, 3)
+        nextTicks := getct()                                                    ' DRIVER_REV 51: the readings on a 1 ms getct() grid
         repeat nSample from 1 to PROBE_SAMPLES
             nPhaseMv[0] += sense_u_mV
             nPhaseMv[1] += sense_v_mV
             nPhaseMv[2] += sense_w_mV
-            waitms(1)
+            nextTicks += ticksPerMs
+            waitUntilTicks(nextTicks)
         repeat eOther from 0 to 2
             nPhaseMv[eOther] /= PROBE_SAMPLES
             probeMv[(ePhase - PRB_U) * 3 + eOther] := nPhaseMv[eOther]
@@ -3732,13 +3824,15 @@ PRI unbiasedMeanMv(nSum, nCount) : nMv | nFloorMean
         nFloorMean--                                                            ' ... so floored below 0
     nMv := nFloorMean + 1
 
-PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTaken, nStill, nPos, bTripped, nVoltMv, nLimitMv, nMinMv
+PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTaken, nStill, nPos, bTripped, nVoltMv, nLimitMv, nMinMv, nextTicks, ticksPerMs
 ' TEST USE (R19.4 1e, task 3610): drive each winding pair at WIND_DUTY_PCT and record its resistance (testGetWinding())
 '
 ' Called only from runStartChecks(), at rest and before any front cog commands the driver, so the probe longs have one
 ' writer. Each pair: the return phase's low side on, then the driven phase at nLevel. Readings are taken only after
 ' WIND_SETTLE_MS and once the halls have held still for WIND_STILL_MS, since a turning rotor's back-EMF biases the
-' current; a hall change discards them and starts again. The pair ends at once if the net DC-link reading passes
+' current; a hall change discards them and starts again. DRIVER_REV 51: each iteration is one 1 ms step of a getct()
+' grid (was waitms(1) plus the body), so WIND_SETTLE_MS, WIND_STILL_MS, WIND_SETTLE_MAX_MS and the WIND_SAMPLES
+' readings' 1 ms spacing are times at any clock. The pair ends at once if the net DC-link reading passes
 ' WIND_I_LIMIT_MA. R = d^2 x V / I_dc = (nLevel / F)^2 x V x rSense / net. V is windVoltage()'s, read before the first
 ' pair and kept for testGetWindingVoltage() (R20.4): the measured pack when the sensor reads one, else the nominal.
 ' DRIVER_REV 40: the net mean is unbiasedMeanMv()'s, as the rest zero is (it was the truncated mean, 0.5 .. 1.5 mV low).
@@ -3760,7 +3854,10 @@ PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTake
 ' @local nVoltMv - the drive voltage R is computed with, mV (windVoltage())
 ' @local nLimitMv - WIND_I_LIMIT_MA on this board's sense scale, mV
 ' @local nMinMv - WIND_MIN_VISIBLE_MA on this board's sense scale, mV
+' @local nextTicks - getct() at which the present 1 ms iteration ends (DRIVER_REV 51)
+' @local ticksPerMs - system ticks in 1 ms
 
+    ticksPerMs := muldiv64(CLKFREQ, 1, MS_PER_SEC)
     windVoltSrc, nVoltMv := windVoltage()                                       ' R20.4: at rest, before any pair is driven
     windVoltMv := nVoltMv
     nLevel := muldiv64(frame_cnt / 2, WIND_DUTY_PCT, 100)
@@ -3786,8 +3883,10 @@ PRI measureWindings() | ePair, eFrom, eSink, nLevel, nElapsed, nNet, nSum, nTake
             probe_phase := eFrom
             nPos := pos
             nStill := 0
-            repeat nElapsed from 1 to WIND_SETTLE_MAX_MS
-                waitms(1)
+            nextTicks := getct()                                                ' DRIVER_REV 51: one iteration per 1 ms of a getct() grid,
+            repeat nElapsed from 1 to WIND_SETTLE_MAX_MS                        '  so nElapsed and nStill count ms at any clock
+                nextTicks += ticksPerMs
+                waitUntilTicks(nextTicks)
                 nNet := sense_i_mV - restZeroSenseMv
                 if nNet >= nLimitMv                                             ' DRIVER_REV 40: r + 1/2 > n (was r > n, a count late)
                     bTripped := TRUE
@@ -3958,15 +4057,17 @@ PRI packCalibrate(nPin)
     packVioRaw := packRead(nPin)
     wrpin(nPin, P_ADC | P_ADC_1X)
 
-PRI windVoltage() : ePackStatus, nMilliVolts | nPin, nSum
+PRI windVoltage() : ePackStatus, nMilliVolts | nPin, nSum, gapTicks, nextTicks
 ' The drive voltage the winding check computes with (R20.4): the pack sensor's reading when the sensor is fitted, this
 ' instance may read it (bPackPinUsable()) and it reads a pack now; otherwise the nominal drive voltage (getDriveVoltage()).
 '
 ' THE READING IS TAKEN HERE, AVERAGED. runStartChecks() runs before startPackSense() in every start, and a steering
 ' object's right wheel never reads the sensor at all, so no front-cog average exists yet. This takes its own:
 ' packCalibrate(), then PACK_CHECK_READS readings PACK_CHECK_GAP_MS apart, each itself PACK_CAL_SAMPLES SINC2 samples
-' after the flush (packRead()) -- the same ~64 ms the front cog's average spans, never one sample. ~70 ms, only when
-' the winding check is armed. The pin is left reading (P_ADC_1X), not cleared: startPackSense() starts it again, and
+' after the flush (packRead()) -- the same ~64 ms the front cog's average spans, never one sample. ~65 ms, only when
+' the winding check is armed. DRIVER_REV 51: the reads start on a getct() grid PACK_CHECK_GAP_MS apart, so the span is
+' 16 x 4 = 64 ms plus the last read (12 SINC2 samples of 2^13 clocks: 0.36 ms at 270 MHz, 0.98 at 100) at any clock;
+' it was 16 x (the gap + a read), 69.8 ms at 270 MHz and 79.7 at 100. The pin is left reading (P_ADC_1X), not cleared: startPackSense() starts it again, and
 ' another object already reading the pin keeps its reading. An instance that already reads it uses its own average.
 '
 ' @returns ePackStatus - PACK_PRESENT when nMilliVolts is the pack's reading; PACK_ABSENT (fitted, read no pack) or
@@ -3975,6 +4076,8 @@ PRI windVoltage() : ePackStatus, nMilliVolts | nPin, nSum
 '
 ' @local nPin - user.PACK_SENSE_PIN
 ' @local nSum - the readings summed, mV; then their mean
+' @local gapTicks - PACK_CHECK_GAP_MS in system ticks
+' @local nextTicks - getct() at which the next read is due
 
     _, nMilliVolts := getDriveVoltage()
     ePackStatus := PACK_NOT_FITTED
@@ -3985,8 +4088,11 @@ PRI windVoltage() : ePackStatus, nMilliVolts | nPin, nSum
         else
             packCalibrate(nPin)
             nSum := 0
-            repeat PACK_CHECK_READS
-                waitms(PACK_CHECK_GAP_MS)
+            gapTicks := muldiv64(CLKFREQ, PACK_CHECK_GAP_MS, MS_PER_SEC)
+            nextTicks := getct()
+            repeat PACK_CHECK_READS                                             ' DRIVER_REV 51: each read starts on a getct() grid
+                nextTicks += gapTicks                                           '  PACK_CHECK_GAP_MS apart, so the span is
+                waitUntilTicks(nextTicks)                                       '  PACK_CHECK_READS x the gap at any clock
                 nSum += packMvFromRaw(packRead(nPin))
             nSum /= PACK_CHECK_READS
         ePackStatus := packStatusFor(nSum)
@@ -4520,10 +4626,13 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
         rSenseForBoard := F_REV_A_RSENSE
     elseif eDetectedBoard == REV_B
         rSenseForBoard := F_REV_B_RSENSE
+    ' DRIVER_REV 51 (task 3671): the least reading that is a measurement, at this clock's ADC count (FOLD_MIN_COUNTS): 4 mV
+    '  at 270 MHz as before, more where a count is coarser (11 mV at 100 MHz)
+    foldMinMv := FOLD_MIN_MV #> mulDivUp(FOLD_MIN_COUNTS, ADC_FULL_SCALE_MV, frame_cnt)
     ' DRIVER_REV 40: the walk's current guard, WALK_I_LIMIT_MA on this board's sense scale (Rev B 150 mV, Rev A 5 mV), never
-    '  under FOLD_MIN_MV + 1, the least reading that is a measurement. No board, no scale: that least reading (no driver
+    '  under foldMinMv + 1, the least reading that is a measurement. No board, no scale: that least reading (no driver
     '  starts on an undetected board, so no walk runs on it)
-    walkGuardMv := FOLD_MIN_MV + 1
+    walkGuardMv := foldMinMv + 1
     if rSenseForBoard <> VALUE_NOT_SET
         walkGuardMv #>= muldiv64(WALK_I_LIMIT_MA, rSenseForBoard, 1_000)
 
@@ -4545,6 +4654,8 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     phaseAvgMa := 0
     bDerated := FALSE
     blockedPasses := 0
+    frontPassSlots := 1                                                     ' DRIVER_REV 51: one slot a pass until a pass runs late
+    frontSlotsMax := 1
     blockedPos := 0
     blockedLimiterSum := 0                                                  ' PL-167 D-5b: the driver zeroes both counts at start
     bLimSinceTick := FALSE                                                  ' PL-179 F-a
@@ -4743,12 +4854,12 @@ PRI requestRamps() : eError | startMs
 ' makes the front cog's next apply read them (frontApplyRamps()). The flag seen down proves a front apply lowered it
 ' after it was raised here, and that apply reads the inputs afterwards; bRampsBusy, read after the flag, is up until
 ' that apply ends. So the wait ends only once the ramp is in force, and a setter's read-back (testGetRampLimits())
-' sees it. The front cog applies a raised flag within 2 passes (4 for a steering wheel: RAMP_PHASE_BIT,
-' RAMP_WHEEL_BIT), about 4 ms at worst, so REQ_ACK_TIMEOUT_MS holds with room. A front cog that does not serve it
+' sees it. The front cog applies a raised flag within 2 slots (4 for a steering wheel: RAMP_PHASE_BIT,
+' RAMP_WHEEL_BIT), about 4 ms at worst plus one pass, so reqAckTimeoutMs() holds with room. A front cog that does not serve it
 ' in that bound (stopping, or not started) ends the wait with ERR_NO_RESPONSE, which the setters do not report: the
 ' flag stays up, so the front cog applies it on a later pass, and a start applies it.
 '
-' @returns eError - NO_ERROR once the apply has finished, or ERR_NO_RESPONSE when REQ_ACK_TIMEOUT_MS ran out first
+' @returns eError - NO_ERROR once the apply has finished, or ERR_NO_RESPONSE when reqAckTimeoutMs() ran out first
 
 ' Local Variables:
 ' @local startMs - getms() when the wait began
@@ -4761,8 +4872,19 @@ PRI requestRamps() : eError | startMs
             if bRampsBusy == FALSE                                              ' read second: the apply that lowered the flag is over
                 eError := NO_ERROR
                 quit
-        if getms() - startMs > REQ_ACK_TIMEOUT_MS
+        if getms() - startMs > reqAckTimeoutMs()                                ' DRIVER_REV 51: in the front cog's slots
             quit
+
+PRI reqAckTimeoutMs() : nMs
+' Return the bound on a front cog's answer, ms: REQ_ACK_TIMEOUT_MS times the most slots a pass has stood for (DRIVER_REV 51).
+'
+' The answer bound is counted in front passes (bFrontServiceRequests(): 18), which REQ_ACK_TIMEOUT_MS covers at one
+' slot a pass. A pass that stands for n slots is n ms long, so n x 18 + the 1 ms poll <= n x 20 for every n >= 1. At a
+' clock where no pass is late n is 1, and the bound is REQ_ACK_TIMEOUT_MS exactly as before. Caller side; no front work.
+'
+' @returns nMs - the wait's bound, ms
+
+    nMs := REQ_ACK_TIMEOUT_MS * frontSlotsMax
 
 PRI msForPasses(nPasses) : nMs
 ' Return the milliseconds {nPasses} drive passes take, rounded up; 0 for none (frontStopMs()).
@@ -4773,6 +4895,19 @@ PRI msForPasses(nPasses) : nMs
     nMs := 0
     if nPasses > 0
         nMs := nPasses * drivePassUs / 1_000 + 1
+
+PUB waitUntilTicks(nTicks)
+'' INTERNAL USE: wait until getct() reaches {nTicks}, returning at once if it already has (DRIVER_REV 51)
+''
+'' The start-time loops pace their samples on a getct() grid with this, so a loop's span is its count x its period at
+'' any clock, not that plus each pass's own cost. A busy wait, not WAITCT: a target already passed (a body that
+'' overran its period) returns at once, where WAITCT would wait for the counter to wrap; the grid is kept, so the
+'' next target is not moved. Caller cogs only, for waits under 2^31 clocks (the signed difference). isp_steering_2wheel's
+'' rest-zero loop uses it too.
+''
+'' @param nTicks - the getct() value to wait for
+
+    repeat while (getct() - nTicks) < 0
 
 PRI mulDivUp(nMult1, nMult2, nDivisor) : nResult
 ' Return {nMult1} x {nMult2} / {nDivisor} from the 64-bit product, rounded UP (DRIVER_REV 50: the clock derivations).
@@ -4850,8 +4985,10 @@ CON { board detection and pin-group geometry }
 
     DETECT_SENSE_OFFSET  = 4                        ' detection pin is pinbase + 4, which is also the driver's pin_adc_cur_i
     DETECT_CHARGE_MS     = 1                        ' pinhigh() time that charges the Rev B board's 0.1uF capacitor
-    DETECT_READ_COUNT    = 500                      ' pinread() samples taken after the pin is released
-    DETECT_NODET_MIN_SUM = DETECT_READ_COUNT / 2    ' more highs than this: nothing discharged the pin, no board
+    DETECT_WINDOW_US     = 371                      ' DRIVER_REV 51: pinread()s are taken for this long after the pin is released;
+                                                    '  the window 500 reads made at 270 MHz (MEASURED: Rev B 93-104 highs read
+                                                    '  69-77 us, 0.742 us a read), now a time at every clock. More than half
+                                                    '  of it high: nothing discharged the pin, no board
     DETECT_REVB_MIN_US   = 20                       ' a pin high for less than this is not a Rev B sense node
 
     ' ADDPINS cannot cross a 32-pin port boundary, so every 16-pin group operation is two 8-pin calls
@@ -5371,6 +5508,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@walkWatchLeg, @bWlRan[WALK_LEGS - 1])          ' PL-137: the walk's per-leg record
     bValid &= bOutsideDriverRuns(@trkTravelTicks, @bSettingsLive)                ' PL-153 / PL-155: the limits' travel, the kept settings
     bValid &= bOutsideDriverRuns(@pendStage, @pendTicks)                         ' PL-161: the front cog's in-flight request
+    bValid &= bOutsideDriverRuns(@frontPassSlots, @foldMinMv)                    ' DRIVER_REV 51: the front cog's slots, the fold floor
     if bValid == FALSE
         debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@drv_stop_fp - @drive_u), udec_long(@sense_zero - @offset_fwd))
 
@@ -5528,21 +5666,39 @@ CON ' -- TASK: the front cog --
 '  sees them crossed. C-3 (task 3512): at 1 ms a stop is commanded within one pass and taken within
 '  one drive pass (522.7 us, PL-50), about 1.5 ms, under one tick at top speed. The DECELERATION
 '  distance is unchanged and dominates every distance stop (C-4: 76 ticks from half speed).
-    FRONT_LOOP_HZ          = 1_000      ' one pass per ms, on an absolute getct() schedule
-    HALL_WINDOW_SIZE       = 125        ' rpm window slots: 125 slots x WINDOW_PASSES passes = 1 s span
-    WINDOW_PASSES          = FRONT_LOOP_HZ / HALL_WINDOW_SIZE   ' 8: one window slot every 8 passes (125 Hz)
-    ' PL-161: the slot work's phases within WINDOW_PASSES, one job per pass so no pass carries two: 0 the rpm window (and
-    '  an owner's path limiter), WINDOW_PASSES / 2 the event checks, PACK_PHASE the pack's fold. An owner may use the
-    '  rest (isp_steering_2wheel's state report is on 3 / 4 of the way round).
+    FRONT_LOOP_HZ          = 1_000      ' one SLOT per ms, on an absolute getct() schedule: a pass starts on a slot boundary
+    ' DRIVER_REV 51 (task 3671): EVERY TIME THE FRONT COG COUNTS IS COUNTED IN SLOTS, NOT PASSES. A slot is 1 / FRONT_LOOP_HZ
+    '  on the getct() schedule, whatever the clock. A pass normally stands for one slot. A pass whose body leaves less
+    '  than LATE_MARGIN_US of its slot (a slow clock: the body is a fixed count of clocks) is late, and the next pass
+    '  starts on the first slot boundary that leaves that margin, standing for every slot since this one (nSlots in
+    '  frontLoop(), frontPassSlots here, at most WINDOW_PASSES). Each time-counted consumer adds a pass's slots, and
+    '  each slot job runs on the pass that crosses its phase, so a slower clock lengthens the pass, never a time.
+    '  At a clock where no pass is late (270 MHz) every pass is one slot, and every count is what it was.
+    HALL_WINDOW_SIZE       = 125        ' rpm window slots: 125 window slots x WINDOW_PASSES slots = 1 s span
+    WINDOW_PASSES          = FRONT_LOOP_HZ / HALL_WINDOW_SIZE   ' 8: one window slot every 8 slots, 8 ms (125 Hz)
+    ' PL-161: the slot work's phases within WINDOW_PASSES, one job per pass so no on-time pass carries two: 0 the rpm
+    '  window (and an owner's path limiter), WINDOW_PASSES / 2 the event checks, PACK_PHASE the pack's fold. An owner may
+    '  use the rest (isp_steering_2wheel's state report is on 3 / 4 of the way round). DRIVER_REV 51: a phase is a slot's,
+    '  and a late pass that stands for several slots runs every job whose phase it crossed (SLOT_JOB_*).
     PACK_PHASE             = WINDOW_PASSES / 4                  ' 2: the pack samples' fold into the average (frontSamplePack())
     ' DRIVER_REV 40 (PL-161): the ramp's apply (frontApplyRamps()) runs only on a pass whose phase has this bit set, an
     '  ODD phase. Every slot job's phase is even -- 0, PACK_PHASE (2), WINDOW_PASSES / 2 (4) and isp_steering_2wheel's
-    '  STATE_PHASE (6) -- for WINDOW_PASSES (8) is a multiple of 8, so no apply shares a pass with slot work. Changing
-    '  WINDOW_PASSES to other than a multiple of 8 breaks this: re-derive it then.
+    '  STATE_PHASE (6) -- for WINDOW_PASSES (8) is a multiple of 8, so no apply shares an on-time pass with slot work.
+    '  Changing WINDOW_PASSES to other than a multiple of 8 breaks this: re-derive it then.
     RAMP_PHASE_BIT         = 1
     ' ...and a front cog serving two motors applies one a pass: the left on the odd phases with this bit clear (1, 5),
-    '  the right on those with it set (3, 7), so each wheel's apply comes round every 4 passes (isp_steering_2wheel)
+    '  the right on those with it set (3, 7), so each wheel's apply comes round every 4 slots (isp_steering_2wheel)
     RAMP_WHEEL_BIT         = 2
+    ' DRIVER_REV 51: a pass's slot jobs as a mask, bit p set when the pass crossed slot phase p (frontLoop(), and
+    '  isp_steering_2wheel's). An on-time pass sets exactly one bit, its phase's, so each test below is the phase compare
+    '  it replaces; a late pass sets one for every slot it stands for.
+    SLOT_JOBS_ALL          = (1 << WINDOW_PASSES) - 1           ' every phase
+    SLOT_JOB_WINDOW        = 1 << 0                             ' the rpm window (frontTrack()), an owner's path limiter
+    SLOT_JOB_PACK          = 1 << PACK_PHASE                    ' the pack's fold (frontSamplePack())
+    SLOT_JOB_EVENTS        = 1 << (WINDOW_PASSES / 2)           ' the event and late checks
+    SLOT_JOBS_RAMP         = $AAAA_AAAA & SLOT_JOBS_ALL         ' the odd phases (RAMP_PHASE_BIT): a ramp apply
+    SLOT_JOBS_RAMP_LEFT    = $2222_2222 & SLOT_JOBS_ALL         ' odd, RAMP_WHEEL_BIT clear (1, 5): the left wheel's apply
+    SLOT_JOBS_RAMP_RIGHT   = $8888_8888 & SLOT_JOBS_ALL         ' odd, RAMP_WHEEL_BIT set (3, 7): the right wheel's apply
     ' DRIVER_REV 50: the running driver's pass time is the VAR drivePassUs, derived at start from DRIVE_PASS_FRAMES, frame_cnt
     '  and CLKFREQ. This constant is its nominal value in time units alone, DRIVE_PASS_FRAMES / PWM_RATE_IN_HZ rounded up
     '  (522.7 -> 523 us), for a bench's compile-time sizing; no clock enters it, and no running code reads it
@@ -5550,11 +5706,13 @@ CON ' -- TASK: the front cog --
     FRONT_SYNC_WAIT_PASSES = 4          ' bound on an in-flight request's wait for its driver (fault left, sync taken, e-stop
                                         '  left), in drive passes; polled once a front pass, never waited in one (PL-161)
     REQ_ACK_TIMEOUT_MS     = 20         ' bound on a posted request's answer; the front cog's worst case is 19 ms (the
-                                        '  derivation is at bFrontServiceRequests())
+                                        '  derivation is at bFrontServiceRequests()). DRIVER_REV 51: it is 20 slots' worth,
+                                        '  so a caller waits it times the most slots a pass has stood for (reqAckTimeoutMs())
     REQ_POLL_MS            = 1          ' caller-side poll period while waiting for an answer
     FRONT_START_TIMEOUT_MS = 100        ' bound on the front cog's first pass after cogspin()
     FRONT_PARK_MS          = 1_000      ' period of the parked front cog's idle wait after EXIT
-    LATE_MARGIN_US         = 100        ' a pass with less than this left before its slot ends is late: waitct() is skipped
+    LATE_MARGIN_US         = 100        ' a pass with less than this left before its slot ends is late: its slot's waitct()
+                                        '  target is passed over for the first slot boundary at least this far ahead
     US_PER_SEC             = 1_000_000
     MS_PER_SEC             = 1_000
 
@@ -5640,7 +5798,7 @@ CON { front cog requests }
 VAR { * sense buffer and stack arrays * }
     LONG    taskStack[STACK_SIZE_LONGS]
 
-    ' summing sense values, one slot every WINDOW_PASSES front passes
+    ' summing sense values, one window slot every WINDOW_PASSES front slots (8 ms)
     LONG    hallCountsWindow[HALL_WINDOW_SIZE]
     LONG    hallWinIndex
     LONG    hallWinEntryCt
@@ -5775,18 +5933,23 @@ PRI LALOOPEND()
   Nothing reachable from frontLoop() calls recordError() or recordCallerError().
 }
 
-PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, nowMs, packRawSum, packSamples
+PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, slotClock, nSlots, slotJobs, nowMs, packRawSum, packSamples
 ' FRONT COG: this motor's loop -- apply posted requests, track position, enforce the stop limits, once per ms.
+'
+' DRIVER_REV 51 (task 3671): the schedule is a grid of FRONT_LOOP_HZ slots, and every time this cog counts is counted in
+' slots (see FRONT_LOOP_HZ): a late pass is accounted, not re-anchored, so a slow clock lengthens the pass, not the times.
 '
 ' @param bReleaseDriver - T/F where T means the driver was launched parked and is released here with one ATN
 
 ' Local Variables:
-' @local ticksPerPass - system ticks in one FRONT_LOOP_HZ pass
+' @local ticksPerPass - system ticks in one FRONT_LOOP_HZ slot
 ' @local lateMarginTicks - LATE_MARGIN_US in system ticks
-' @local nextDue - getct() value at which the next pass is due
+' @local nextDue - getct() value at which the next pass is due, a slot boundary
 ' @local passStartTicks - getct() when this pass began
 ' @local passBodyTicks - ticks this pass's body took
-' @local passCount - passes run so far, the rpm window's cadence counter
+' @local slotClock - slots since the loop began, as of this pass: the slot phases' clock (was the pass count)
+' @local nSlots - the slots this pass stands for, 1 .. WINDOW_PASSES: 1 unless the pass before it was late
+' @local slotJobs - this pass's slot jobs, a bit per slot phase it crossed (SLOT_JOB_*)
 ' @local nowMs - getms() once for this pass's limit and timeout checks
 ' @local packRawSum - the pack pin's raw samples summed since the last fold (PL-161)
 ' @local packSamples - how many samples packRawSum holds
@@ -5794,8 +5957,9 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
     ' The entry writes none of targetIncre, e_stop or the stop limits: it adopts them, so a stop
     '  written directly inside start()'s window (no front cog yet) survives the launch.
     ticksPerPass := CLKFREQ / FRONT_LOOP_HZ
-    lateMarginTicks := (CLKFREQ / US_PER_SEC) * LATE_MARGIN_US
-    passCount := 0
+    lateMarginTicks := muldiv64(CLKFREQ, LATE_MARGIN_US, US_PER_SEC)            ' DRIVER_REV 51: exact at any clock (27_000 at 270 MHz, as before)
+    slotClock := 0
+    nSlots := 1
     packRawSum := packSamples := 0
     pendStage := PST_NONE                                                       ' PL-161: no request in flight
     frontStartTracking()                                                        ' PL-153: the odometer and the limits' travel start at 0
@@ -5807,11 +5971,14 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
     repeat
         passStartTicks := getct()
         frontPasses++                                                           ' heartbeat: start() waits for the first one
-        passCount++
+        slotClock += nSlots                                                     ' DRIVER_REV 51: the slots this pass stands for
+        slotJobs := 1 << (slotClock +// WINDOW_PASSES)                          ' on time: this slot's phase alone
+        if nSlots > 1
+            slotJobs := frontSlotJobsCrossed(slotClock, nSlots)                 ' late before: every phase crossed since
 
         ' 0. a stop written in an earlier pass is confirmed, or written again
         frontConfirmStop()
-        if ((passCount +// WINDOW_PASSES) & RAMP_PHASE_BIT) <> 0                ' DRIVER_REV 40: the ramp's one writer, before any
+        if (slotJobs & SLOT_JOBS_RAMP) <> 0                                     ' DRIVER_REV 40: the ramp's one writer, before any
             frontApplyRamps()                                                   '  request, on an odd phase: never a slot job's pass
 
         ' 1. requests: the one in flight polled first (PL-161: never waited on), then securing, the rest in slot
@@ -5821,7 +5988,7 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
 
         LALOOPSTART()                                                           ' main LA tracking code
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
-        frontTrack(passCount)
+        frontTrack(slotJobs)
         frontWalkGuard()                                                        ' PL-122: a walk leg's current, checked every pass
         nowMs := getms()
         ' R20.1: each stop's record follows its command write (D6)
@@ -5840,10 +6007,10 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         if bPackOwned == TRUE                                                   ' R19.5, PL-161: the pack pin, one read a pass, summed
             packRawSum += rdpin(user.PACK_SENSE_PIN)                            '  inline -- no call, no conversion
             packSamples++
-        if (passCount +// WINDOW_PASSES) == PACK_PHASE                          ' PL-161: folded once a slot, on a pass with no other
+        if (slotJobs & SLOT_JOB_PACK) <> 0                                      ' PL-161: folded once a slot, on a pass with no other
             frontSamplePack(packRawSum, packSamples)                            '  slot work
             packRawSum := packSamples := 0
-        if (passCount +// WINDOW_PASSES) == WINDOW_PASSES / 2                    ' R20.1: opposite the rpm window's slot pass
+        if (slotJobs & SLOT_JOB_EVENTS) <> 0                                    ' R20.1: opposite the rpm window's slot pass
             frontEventChecks(nowMs)
             frontLateCheck(nowMs)
         LALOOPEND()                                                             ' let LA know end of loop
@@ -5853,14 +6020,18 @@ PRI frontLoop(bReleaseDriver) | ticksPerPass, lateMarginTicks, nextDue, passStar
         deltaTicks := passBodyTicks
         frontMaxPassTicks := frontMaxPassTicks #> passBodyTicks
         if (nextDue - getct()) < lateMarginTicks
-            ' Late. WAITCT waits until the counter MATCHES its target, so a target already past would
-            '  wait for the 32-bit counter to wrap (about 16 s). The wait is skipped and the schedule
-            '  re-anchored: missed slots are counted, never replayed.
+            ' Late. WAITCT waits until the counter MATCHES its target, so a target already past would wait for the
+            '  32-bit counter to wrap (about 16 s). DRIVER_REV 51: the schedule is kept: the next pass starts on the first
+            '  slot boundary at least LATE_MARGIN_US ahead and stands for every slot since this pass's (nSlots), so the
+            '  slots skipped are counted as time, not lost (frontLateSlots()).
             frontLatePasses++
-            nextDue := getct() + ticksPerPass
-        else
-            waitct(nextDue)
-            nextDue += ticksPerPass
+            nextDue, nSlots := frontLateSlots(nextDue, ticksPerPass, lateMarginTicks)
+            frontSetPassSlots(nSlots)                                           ' the time-counted consumers' weight
+        elseif nSlots <> 1                                                      ' on time again: one slot a pass
+            nSlots := 1
+            frontSetPassSlots(1)
+        waitct(nextDue)
+        nextDue += ticksPerPass
 
     ' EXIT: parked with no output until stop() cogstops this cog. It never returns, so its cog id
     '  cannot be released and reused before that cogstop.
@@ -5885,6 +6056,9 @@ PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken
 ' holds the slot order for at most 3 passes (one stage, its bound gone: the bound is 2.09 ms and passes are at least
 ' 0.9 ms apart), so one posted behind them is taken by the 15th pass after it and answered by the 18th: 18 ms at the
 ' nominal 1 ms pass, and seen within the caller's 1 ms poll (19 ms), under REQ_ACK_TIMEOUT_MS (20).
+' DRIVER_REV 51: every pass starts on a slot boundary, so passes are at least one slot (1 ms) apart and the 3 above
+' holds at any clock; a pass that stands for n slots is n ms long, and the caller's bound is 20 x the most n seen
+' (reqAckTimeoutMs()): 18 n + 1 <= 20 n.
 ' A request needing two stages (a synchronized drive of a FAULTED motor) adds 3 passes when both bounds go, as the
 ' two in-pass waits it replaces added 2 x 2.09 ms; with a live driver it is answered on the second pass.
 '
@@ -6114,7 +6288,7 @@ PRI frontNoteDriveCommand(eStatus, nPowerOrIncre)
         frontRecordStop(SR_COMMANDED)
 
 PRI frontLateCheck(nowMs)
-' FRONT COG: every WINDOW_PASSES passes -- log this front cog's late passes as EV_LATE_PASS, at most once per
+' FRONT COG: every WINDOW_PASSES slots -- log this front cog's late passes as EV_LATE_PASS, at most once per
 ' EV_RATE_GAP_MS, each event carrying every late pass since the last (R20.1).
 '
 ' @param nowMs - getms() for this pass
@@ -6329,7 +6503,7 @@ PRI postRequest(eCmd, nArg1, nArg2, nArg3) : eStatus | slotIdx, mySeq, startMs, 
             if ackSeq[slotIdx] == mySeq
                 bAnswered := TRUE
                 quit
-            if getms() - startMs > REQ_ACK_TIMEOUT_MS
+            if getms() - startMs > reqAckTimeoutMs()                            ' DRIVER_REV 51: in the front cog's slots
                 quit
         if bAnswered == FALSE
             reqSeq[slotIdx] := SEQ_IDLE                                         ' withdraw: the front cog can no longer take it
@@ -6346,7 +6520,7 @@ PRI currentLimitK(amps) : nK
 ' Return the driver's fold-back factor for a phase-current limit: threshold mV = duty x nK >> 16.
 '
 ' The driver folds on a whole-mV reading ABOVE that floored threshold (DRIVER_REV 38), i.e. at or above its ceiling.
-' The threshold's duty floor comes with it from setFoldLimit(), which keeps it at or above FOLD_MIN_MV (PL-163).
+' The threshold's duty floor comes with it from setFoldLimit(), which keeps it at or above foldMinMv (PL-163).
 '
 ' The driver compares the DC-link reading against 0.75 x m x amps x rSense, m = duty / (4 x frame_cnt),
 ' so nK = 3 x amps x rSense x 65536 / (16 x frame_cnt). With no board detected there is no scale, and
@@ -6363,9 +6537,10 @@ PRI currentLimitK(amps) : nK
 
 PRI setFoldLimit(amps) | nK, nFloor
 ' Set the driver's fold-back to a phase-current limit: i_limit_k, and the fold's duty floor that keeps its threshold at
-' or above FOLD_MIN_MV (PL-163, DRIVER_REV 40). init() before the driver runs, then the front cog only.
+' or above foldMinMv (PL-163, DRIVER_REV 40; DRIVER_REV 51: FOLD_MIN_MV, or more at a clock whose ADC count is coarser).
+' init() before the driver runs, then the front cog only.
 '
-' The floor is max(dutyFloorEst, ceil(FOLD_MIN_MV << 16 / nK)), so floor x nK >> 16 is at least FOLD_MIN_MV (and, nK
+' The floor is max(dutyFloorEst, ceil(foldMinMv << 16 / nK)), so floor x nK >> 16 is at least foldMinMv (and, nK
 ' under $1_0000, exactly it when raised); SCA takes 16 bits, so it is capped at $FFFF. The two longs are written in the
 ' order whose one-frame mix is the lower threshold: a lower nK first (its floor then rises), else the floor first.
 '
@@ -6376,7 +6551,7 @@ PRI setFoldLimit(amps) | nK, nFloor
 ' @local nFloor - the fold's duty floor for it
 
     nK := currentLimitK(amps)
-    nFloor := dutyFloorEst #> (((FOLD_MIN_MV << 16) + nK - 1) / nK) <# $FFFF
+    nFloor := dutyFloorEst #> (((foldMinMv << 16) + nK - 1) / nK) <# $FFFF
     if nK < i_limit_k
         i_limit_k := nK
         duty_floor := nFloor
@@ -6847,7 +7022,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 50      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 51      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7124,6 +7299,28 @@ CON { driver internal Constants }
                                             '     is the VAR drivePassUs, derived at start. At 270 MHz only cfg_ctcks (135000 ->
                                             '     138060), dead_gap (70 -> 71) and bias (1499 -> 1498) change. No PASM change;
                                             '     no ABI change; cog 463 of 496, run image 505 and start image 145 of 512, unchanged
+                                            ' 51: task 3671, the front cogs' times hold at any clock (DOCO-AND-CLOCK plan 1,
+                                            '     targets 3-4; overlay P14). Both front cogs (this object's and
+                                            '     isp_steering_2wheel's) count time in SLOTS of their 1 ms getct() grid, not
+                                            '     passes: a late pass is no longer re-anchored; the next starts on the first
+                                            '     slot boundary LATE_MARGIN_US ahead and stands for every slot since
+                                            '     (frontLateSlots(), at most WINDOW_PASSES), and each time-counted consumer
+                                            '     adds those slots (frontPassSlots): the blocked count, the derate average,
+                                            '     the hold's rise and limit; each slot job (the rpm window, so SHORT_SLOTS and
+                                            '     the path limiter, the pack fold, the event checks, the ramp applies) runs
+                                            '     on the pass that crosses its phase (SLOT_JOB_*). A caller's request bound is
+                                            '     REQ_ACK_TIMEOUT_MS x the most slots a pass has stood for. The fold floor is
+                                            '     FOLD_MIN_MV or FOLD_MIN_COUNTS ADC counts at this clock, whichever is more
+                                            '     (foldMinMv: 4 mV at 270 MHz, 11 at 100). The board-detect reads span
+                                            '     DETECT_WINDOW_US (371 us), paced by getct(), not 500 reads. At 270 MHz,
+                                            '     where no pass is late, every count and the fold floor are as before; only
+                                            '     the detect loop's read count changes (its window and decisions do not). The
+                                            '     start-time loops are paced on a getct() grid (waitUntilTicks()), so each
+                                            '     span is its count x its period at any clock: the rest zero (200 x 5 ms,
+                                            '     both objects), the lead probe's readings (4 x 1 ms), the winding check's
+                                            '     settle (WIND_SETTLE_MS, WIND_STILL_MS, WIND_SETTLE_MAX_MS, in 1 ms steps)
+                                            '     and its pack reads (16 x 4 ms); the steering fault-clear test wait is a
+                                            '     getms() bound (FAULT_CLEAR_TIMEOUT_MS). No PASM change; no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7166,7 +7363,7 @@ CON { driver internal Constants }
     SERVO_BOOST_SHL             = SERVO_ACC_SHIFT - SERVO_BOOST_SHIFT ' 6: that slope in accumulator units, 64 x the
                                             '  calm trim's gain per count; derived, so it follows SERVO_ACC_SHIFT
     HOLD_DECAY_SHIFT            = 6         ' D-5: a held pass takes 1/64 off drv_incr, a 33 ms time constant
-    SHORT_SLOTS                 = 4         ' D-6: a motor held in any of the last 4 slots (32 ms) is SHORT
+    SHORT_SLOTS                 = 4         ' D-6: a motor held in any of the last 4 window slots (32 ms; DRIVER_REV 51: at any clock) is SHORT
     ' R19.1 (task 3608): the hold at rest in SM_BRAKE. The field stays at the stop angle, a spring whose restoring
     '  torque grows with the rotor's displacement; the front cog raises the duty while the hall position is off
     '  the hold position, up to a ceiling, and falls back to the phase short on a slip or after the time limit.
@@ -7328,7 +7525,8 @@ CON { driver internal Constants }
     PACK_DIVIDER_X100           = 781       ' pack = pin x 7.81: 10.0k / (68.1k + 10.0k), VOLTAGE-SENSOR.md
     PACK_ABSENT_MV              = 1_000     ' a pack under 1 V is no pack: R4 pulls an unplugged sensor to about 0 V
     PACK_AVG_SHIFT              = 3         ' PL-161: the raw average over about 8 slots, each slot the mean of its
-                                            '  WINDOW_PASSES samples, one read a pass (8 x 8 ms = 64 ms; exact time constant
+                                            '  samples, one read a pass (WINDOW_PASSES while no pass is late; DRIVER_REV 51:
+                                            '  a slot is 8 ms at any clock) (8 x 8 ms = 64 ms; exact time constant
                                             '  59.9 ms, plus the slot mean's 4 ms). It was 6 over single samples (64 x 1 ms;
                                             '  63.5 ms). Same samples, same span, so the same noise; folded an eighth as often
     ' R20.4 (task 3611): the winding check's own pack reading (windVoltage()), taken before any front-cog average exists:
@@ -7342,7 +7540,7 @@ CON { driver internal Constants }
     I_PEAK_A                    = 40        ' 0.75 x the package-limited 54 A at Tc 100 C: the driver loop folds back here
     I_CONT_A                    = 27        ' junction <= 125 C at 50 C ambient, 55 C/W: the front cog derates to this
     I_RESTORE_PCT               = 80        ' the peak limit returns once the average falls below this % of I_CONT_A
-    CURRENT_AVG_SHIFT           = 10        ' the average's time constant: 2^10 front passes, about 1 s
+    CURRENT_AVG_SHIFT           = 10        ' the average's time constant: 2^10 front slots (DRIVER_REV 51: 1 ms each), about 1 s
     PHASE_MA_MAX                = 1_000_000 ' clamp on one pass's phase estimate, so the scaled average cannot overflow
     DUTY_FLOOR_PCT              = 10        ' the phase estimate's modulation floor, m = 0.1
     ' PL-163 (DRIVER_REV 40): the fold-back decides only on a reading the sense chain can resolve. The driver folds on
@@ -7369,8 +7567,21 @@ CON { driver internal Constants }
     '  floor: the fold itself on any net reading over 4 mV; duty_min, which bounds a stall to m x V / R; the lag gates
     '  (LAG_SOFT, LAG_HOLD, the fault test) and the blocked stop (BLOCKED_PASSES); and the 1 s derate average, which
     '  resolves under 1 mV since it averages.
+    ' DRIVER_REV 51 (task 3671, DOCO-AND-CLOCK plan 1 target 4): THE FLOOR AT THE RUNNING CLOCK. The ADC count spans one
+    '  frame, frame_cnt clocks, so one count is at least ADC_FULL_SCALE_MV / frame_cnt mV (VIO - GIO is at most frame_cnt
+    '  counts; P_COUNT_HIGHS counts the clocks the ADC's bit is high, p2kbArchSmartPin01111CountHighsOptionalDec): 0.538
+    '  mV at 270 MHz (frame 6136), 1.452 at 100 (frame 2272). The noise and the count above were measured at 270 MHz,
+    '  where 4 mV is 7.43 counts. So the floor in force, foldMinMv (init()), is FOLD_MIN_MV or FOLD_MIN_COUNTS counts,
+    '  whichever is more, rounded up: a reading must clear at least the whole counts it cleared where the premise was
+    '  measured. FOLD_MIN_COUNTS is the most that keeps 270 MHz at 4 (7 x 0.538 = 3.77 -> 4; 8 would be 4.30 -> 5). Per
+    '  clock: 100 MHz 11 mV, 150 MHz 7, 200 MHz 6, 254 MHz and up 4. Where it is above 4, I_CONT_A on Rev A (t = 10.1 mV
+    '  at the duty floor) is raised too (at 100 MHz); I_PEAK_A and every Rev B limit are not. FOLD_MIN_MV stays the
+    '  constant floor a caller can name (test_bench_t0's T0-27 judges it); the floor in force is foldMinMv.
     FOLD_MIN_MV                 = 4
-    BLOCKED_PASSES              = 1_000     ' ~1 s of front passes held at the lag limit or a limiter without a hall tick
+    FOLD_MIN_COUNTS             = 7         ' the fold floor in ADC counts (3300 / frame_cnt mV each), DRIVER_REV 51
+    ADC_FULL_SCALE_MV           = 3_300     ' VIO - GIO, the ratiometric full scale the driver's numerator carries (3300 << 11)
+    BLOCKED_PASSES              = 1_000     ' ~1 s of front SLOTS (DRIVER_REV 51: 1 ms each at any clock) held at the lag limit or
+                                            '  a limiter without a hall tick (BLOCKED_PASSES keeps its name: callers name it)
 
     SYNC_TIMEOUT_MS             = 50        ' SyncStatus() bound: about 100 drive passes, each polling for ATN
 
@@ -7524,6 +7735,11 @@ VAR { R18.4 D-6: what the path limiter reads }
 VAR { the drive pass's time, set by init() (DRIVER_REV 50) }
     LONG    drivePassUs          ' us: DRIVE_PASS_FRAMES x frame_cnt clocks at CLKFREQ, rounded up (was the constant DRIVE_PASS_US = 523)
 
+VAR { the front cog's slots and the clock-derived fold floor (DRIVER_REV 51, task 3671); init() sets each before any front cog }
+    LONG    frontPassSlots       ' front-written (frontSetPassSlots()): the slots each pass now stands for, 1 unless passes run late
+    LONG    frontSlotsMax        ' front-written: the most slots a pass has stood for since start; scales REQ_ACK_TIMEOUT_MS
+    LONG    foldMinMv            ' init(): FOLD_MIN_MV, or FOLD_MIN_COUNTS of the ADC's count at this clock if coarser (setFoldLimit())
+
 CON { error record }
 
     COG_SLOT_COUNT = 8          ' one error slot per P2 cog, indexed by COGID()
@@ -7554,7 +7770,7 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    limitContA                  ' front-written (init() before start): the continuous phase-current limit, amps
     LONG    phaseAvgMa                  ' front-written: average phase-current estimate, mA << CURRENT_AVG_SHIFT
     LONG    bDerated                    ' front-written: T/F where T means i_limit_k holds the continuous limit
-    LONG    blockedPasses               ' front-written: consecutive passes held at the lag limit or a limiter without a hall tick
+    LONG    blockedPasses               ' front-written: consecutive slots (DRIVER_REV 51) held at the lag limit or a limiter without a hall tick
     LONG    blockedPos                  ' front-written: pos at the previous pass, for the blocked test
     LONG    blockedLimiterSum           ' front-written: PL-167 D-5b, duty_capped + foldback_frames (mod 2^32) at the previous
                                         '  pass, for the blocked test. Spin2 only: outside both PASM-addressed runs, inside
@@ -7596,11 +7812,11 @@ VAR { front cog request slots -- Spin2 only, never addressed by the PASM driver 
     LONG    bHoldArmed                  ' T/F where T means this rest has a hold position
     LONG    holdPos                     ' pos where this rest began
     LONG    holdDisp                    ' pos - holdPos, this pass
-    LONG    holdCeilPasses              ' consecutive passes with hold_duty at the ceiling
+    LONG    holdCeilPasses              ' consecutive slots (DRIVER_REV 51: front slots, 1 ms) with hold_duty at the ceiling
     LONG    holdCeilDuty                ' the ceiling, in duty counts (HOLD_CEILING_PCT of duty_max)
-    LONG    holdRisePasses              ' displaced passes from duty_min to the ceiling (riseMs; PL-130)
-    LONG    holdDispPasses              ' displaced passes this rest, at most holdRisePasses
-    LONG    holdLimitPasses             ' passes at the ceiling before the hand-off to the short
+    LONG    holdRisePasses              ' displaced slots from duty_min to the ceiling (riseMs; PL-130)
+    LONG    holdDispPasses              ' displaced slots this rest, at most holdRisePasses
+    LONG    holdLimitPasses             ' slots at the ceiling before the hand-off to the short
     LONG    holdSlipEvents              ' holds ended by a slip since start, unbounded
     LONG    holdLimitEvents             ' holds ended by the time limit since start, unbounded
     LONG    cmdTimeoutSeen[COG_SLOT_COUNT]  ' per calling cog, written only by that cog's getError(): timeouts it has been told of

@@ -1552,6 +1552,19 @@ platform on a slope) and either confirm the defaults or retune them with Stephen
 The method is kept so existing programs compile. **To close:** Stephen decides whether it gains a body (the offset sweep
 generalised, PL-176, is the natural one) or is retired in a major release.
 
+### PL-197 -- a two-stage request's acknowledgement bound reads 21 passes against a 20 ms timeout
+
+> **Status (2026-10-03): OPEN, a finding (DERIVED from the source comment, not reproduced).** Filed during task 3671
+> (front-cog clock independence), which did not change it.
+
+`bFrontServiceRequests()`'s doc (`src/isp_bldc_motor.spin2`, *THE ACKNOWLEDGEMENT BOUND*) derives a posted request's
+answer within 18 passes (19 ms with the caller's poll) under `REQ_ACK_TIMEOUT_MS` (20), then says a two-stage request
+(a synchronized drive of a FAULTED motor) adds 3 passes when both its bounds go: 18 + 3 = 21 passes, over the 20 ms the
+caller waits. The case needs five other application cogs' requests queued ahead AND a driver that never acts, so a caller
+could see a timeout where the derivation promises an answer. **To close:** re-derive the bound with the two-stage case
+in it, and either show it cannot reach 21 or raise the timeout (or the derivation) so it covers it; no bench run is
+needed to decide it.
+
 ---
 
 ## Removed from this list

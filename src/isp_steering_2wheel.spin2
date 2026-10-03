@@ -234,7 +234,7 @@ PUB null()
 '' This is not a top-level object
 ''
 
-PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog, frontCogId, startMs, idx, bLeftReady, bRightReady, nLeftStill, nRightStill
+PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMode) : ok | ltcog, rtcog, frontCogId, startMs, idx, nextTicks, sampleTicks, bLeftReady, bRightReady, nLeftStill, nRightStill
 '' Start our drive cogs connected to our left and right motor control pin-sets, and the front cog that owns them (3 cogs)
 ''
 '' PL-45: once both drivers start, this blocks for about 1 s while it samples both wheels' current-sense
@@ -259,6 +259,8 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
 ' @local frontCogId - the value cogspin() returned
 ' @local startMs - getms() when the front cog handshake wait began
 ' @local idx - the rest-zero sample loop counter
+' @local nextTicks - getct() at which the next rest-zero sample is due (DRIVER_REV 51)
+' @local sampleTicks - REST_ZERO_SAMPLE_MS in system ticks
 ' @local bLeftReady - T/F where T means the left wheel's restZeroBegin() confirmed a real reading
 ' @local bRightReady - T/F where T means the right wheel's restZeroBegin() confirmed a real reading
 ' @local nLeftStill - the left wheel's refusing HLT_* bits still failing after its retries, 0 when none
@@ -305,8 +307,13 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
         '  sampling both wheels every tick.
         bLeftReady := (ltWheel.restZeroBegin() == NO_ERROR)
         bRightReady := (rtWheel.restZeroBegin() == NO_ERROR)
+        ' DRIVER_REV 51: the samples on a getct() grid REST_ZERO_SAMPLE_MS apart (the motor object's captureRestZero()),
+        '  so the window is REST_ZERO_SAMPLE_COUNT x REST_ZERO_SAMPLE_MS at any clock
+        sampleTicks := muldiv64(CLKFREQ, ltWheel.REST_ZERO_SAMPLE_MS, ltWheel.MS_PER_SEC)
+        nextTicks := getct()
         repeat idx from 1 to ltWheel.REST_ZERO_SAMPLE_COUNT
-            waitms(ltWheel.REST_ZERO_SAMPLE_MS)
+            nextTicks += sampleTicks
+            ltWheel.waitUntilTicks(nextTicks)
             if bLeftReady == TRUE
                 ltWheel.restZeroAddSample()
             if bRightReady == TRUE
@@ -347,6 +354,7 @@ PUB start(leftBasePin, rightBasePin, driveVoltage, leftDetectMode, rightDetectMo
             notUsed := 0
             frontPasses := 0
             frontLatePasses := 0
+            frontSlotsMax := 1                                          ' DRIVER_REV 51: one slot a pass until a pass runs late
             frontMaxPassTicks := 0
             evLastLate := 0                                             ' R20.1: EV_LATE_PASS reports frontLatePasses from 0;
             evLateMs := getms() - ltWheel.EV_RATE_GAP_MS                '  the first may go at once
@@ -1874,13 +1882,13 @@ PUB testRightSetMotorReversed(bEnable) : eError
     '  test measures both wheels on the same commutation offset.
     eError := rtWheel.testSetMotorReversed(bEnable)
 
-PUB testLeftResetFault() : eError | pollIdx
+PUB testLeftResetFault() : eError | startMs
 '' TESTING USE: reset the LEFT motor's fault indicator tripped during test
 ''
 '' @returns eError - NO_ERROR, or ERR_FAULT_NOT_CLEARED (recorded in the left wheel's slot for getError()) when the driver had not stopped by the end of the wait
 
 ' Local Variables:
-' @local pollIdx - polls of the driver state taken so far
+' @local startMs - getms() when the polling began (DRIVER_REV 51: the wait is FAULT_CLEAR_TIMEOUT_MS at any clock)
 
     ' PL-28(a): the driver leaves DCS_FAULTED only through a stop request. The stop is the securing
     '  path (posted to the front cog, never written here while it runs); the fault latch and the wait
@@ -1891,23 +1899,25 @@ PUB testLeftResetFault() : eError | pollIdx
         secureWheels(LEFT_MOTOR_BIT, FALSE)
         ltWheel.clearFaultSignal()
         waitms(FAULT_CLEAR_SETTLE_MS)
-        repeat pollIdx from 1 to FAULT_CLEAR_POLLS
+        startMs := getms()
+        repeat
             if ltWheel.isStopped() == TRUE
                 quit
             waitms(FAULT_CLEAR_POLL_MS)
+        while getms() - startMs < FAULT_CLEAR_TIMEOUT_MS
         if ltWheel.isStopped() == FALSE
             eError := ltWheel.recordCallerError(ERR_FAULT_NOT_CLEARED)
             debug[user.DBGCH_TEST]("STEER: left fault reset wait ended still not stopped")
     else
         debug[user.DBGCH_TEST]("STEER: testLeftResetFault() NOT faulted!?")
 
-PUB testRightResetFault() : eError | pollIdx
+PUB testRightResetFault() : eError | startMs
 '' TESTING USE: reset the RIGHT motor's fault indicator tripped during test
 ''
 '' @returns eError - NO_ERROR, or ERR_FAULT_NOT_CLEARED (recorded in the right wheel's slot for getError()) when the driver had not stopped by the end of the wait
 
 ' Local Variables:
-' @local pollIdx - polls of the driver state taken so far
+' @local startMs - getms() when the polling began (DRIVER_REV 51: the wait is FAULT_CLEAR_TIMEOUT_MS at any clock)
 
     ' see testLeftResetFault()
     eError := NO_ERROR
@@ -1916,10 +1926,12 @@ PUB testRightResetFault() : eError | pollIdx
         secureWheels(RIGHT_MOTOR_BIT, FALSE)
         rtWheel.clearFaultSignal()
         waitms(FAULT_CLEAR_SETTLE_MS)
-        repeat pollIdx from 1 to FAULT_CLEAR_POLLS
+        startMs := getms()
+        repeat
             if rtWheel.isStopped() == TRUE
                 quit
             waitms(FAULT_CLEAR_POLL_MS)
+        while getms() - startMs < FAULT_CLEAR_TIMEOUT_MS
         if rtWheel.isStopped() == FALSE
             eError := rtWheel.recordCallerError(ERR_FAULT_NOT_CLEARED)
             debug[user.DBGCH_TEST]("STEER: right fault reset wait ended still not stopped")
@@ -1961,7 +1973,7 @@ PUB testGetFrontStats() : nPasses, nLatePasses, nMaxPassTicks, nStackHighWater |
 '' everywhere, so "used all of it" and "used more than all of it" cannot be told apart.
 ''
 '' @returns nPasses - passes the front cog has started since it was launched
-'' @returns nLatePasses - passes that ended within LATE_MARGIN_US of their slot's end (or past it) and were re-anchored, never caught up
+'' @returns nLatePasses - passes that ended within LATE_MARGIN_US of their slot's end (or past it); the slots each skipped are counted as time by the next pass, never lost (DRIVER_REV 51)
 '' @returns nMaxPassTicks - the longest pass body seen, in system ticks
 '' @returns nStackHighWater - stack longs ever used, of this object's STEER_STACK_LONGS
 
@@ -2339,7 +2351,8 @@ CON { front cog requests -- the protocol and REQ_* codes are the motor object's 
     ' testLeft/RightResetFault(): the wait for a faulted driver to reach DCS_STOPPED after its stop
     FAULT_CLEAR_SETTLE_MS = 30          ' values clear in 20 ms; extra time before the first check
     FAULT_CLEAR_POLL_MS   = 2           ' between checks
-    FAULT_CLEAR_POLLS     = 1_000       ' checks before giving up (about 2 s)
+    FAULT_CLEAR_TIMEOUT_MS = 2_000      ' DRIVER_REV 51: give up this long after the settle, by getms() (was FAULT_CLEAR_POLLS,
+                                        '  1_000 checks: 2 s plus every check's own cost)
 
 VAR { front cog request slots -- one per calling cog, indexed by COGID(); every long has exactly one writer }
     LONG    reqCmd[ltWheel.COG_SLOT_COUNT]      ' caller-written: REQ_* code
@@ -2354,6 +2367,7 @@ VAR { front cog request slots -- one per calling cog, indexed by COGID(); every 
     LONG    ackSeq[ltWheel.COG_SLOT_COUNT]      ' front-written LAST: the sequence it answered
     LONG    frontPasses                         ' front-written heartbeat (zeroed by start before the launch)
     LONG    frontLatePasses                     ' front-written: passes that ended within LATE_MARGIN_US of their slot's end
+    LONG    frontSlotsMax                       ' front-written (DRIVER_REV 51): the most slots a pass has stood for; scales REQ_ACK_TIMEOUT_MS
     LONG    frontMaxPassTicks                   ' front-written: longest pass body, in ticks
     LONG    cmdTimeoutMs                        ' front-written (start() before launch): S-8 command timeout, ms; CMD_TIMEOUT_OFF when off
     LONG    lastDriveMs                         ' front-written: getms() when the last drive command was applied, or the timeout set
@@ -2452,18 +2466,19 @@ CON { -- TASK: the steering front cog -- }
   STACK_SENTINEL   = ltWheel.STACK_SENTINEL   ' the fill pattern stays shared: it is a protocol value, not a size
 
   ' R18.4 D-6 path-preserving speed limiting (frontLimitPath()): down at once, up slowly
-  PATH_RELEASE_SLOTS = 4                ' clean slots (32 ms) before the scale starts to release
-  PATH_RELEASE_STEP  = 20               ' thousandths released per slot after that: 2 %, ~0.4 s from half to full
+  PATH_RELEASE_SLOTS = 4                ' clean window slots (32 ms; DRIVER_REV 51: 8 ms each at any clock) before the scale starts to release
+  PATH_RELEASE_STEP  = 20               ' thousandths released per window slot after that: 2 %, ~0.4 s from half to full
   PATH_BEHIND_PERMILLE = 100            ' PL-141, PROVISIONAL (the bench sizes it): a held wheel is BEHIND, and narrows the
                                         '  platform, only when its commanded partner's achieved fraction leads its own by more
                                         '  than this. Twice A-8's 50-thousandths agreement band, and five release steps
 
-  ' PL-161: the pass phases (passCount +// WINDOW_PASSES) that carry slot work, one job per pass. 0 is both wheels' rpm
+  ' PL-161: the slot phases (slotClock +// WINDOW_PASSES) that carry slot work, one job per on-time pass. 0 is both wheels' rpm
   '  window and the path limiter, WINDOW_PASSES / 2 the event and late checks, the motor object's PACK_PHASE the pack
   '  samples' fold, and STATE_PHASE the state report. No pass waits on a driver (DRIVER_REV 37), so none is barred.
   '  All four are even; the odd phases carry one wheel's ramp apply each (DRIVER_REV 40, the motor object's
   '  RAMP_PHASE_BIT and RAMP_WHEEL_BIT), so STATE_PHASE must stay even.
   STATE_PHASE      = ltWheel.WINDOW_PASSES * 3 / 4      ' 6: showDriveStatesOnChange()
+  STATE_JOB        = 1 << STATE_PHASE                   ' DRIVER_REV 51: its bit in a pass's slot jobs (the motor object's SLOT_JOB_*)
   STATE_DBG_BITS   = user.STEER_DBG_MASK & (DECOD user.DBGCH_SENSE | DECOD user.DBGCH_FAULT)  ' the state report's debug
                                         '  channels; 0 (the bench's quiet mask) means it prints nothing, so it is not gathered
 
@@ -2569,7 +2584,7 @@ PRI LALOOPEND()
   Nothing reachable from frontLoop() calls recordError() or recordCallerError().
 }
 
-PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, passCount, bLeftBlocked, bRightBlocked, nowMs, slotPhase, bPackRead, packRawSum, packSamples
+PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBodyTicks, slotClock, nSlots, slotJobs, bLeftBlocked, bRightBlocked, nowMs, bPackRead, packRawSum, packSamples
 ' FRONT COG: the platform's loop -- apply posted requests, track both wheels, enforce the platform stop limits and the current protection, once per ms.
 '
 ' PL-161 (Visit 10 pass 7: a worst pass of 1_015 us, 3 late). The budget is one pass, 1 ms less LATE_MARGIN_US. A request
@@ -2580,18 +2595,24 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
 ' that needs no pass rate is not done a pass: the pack's conversion (was every pass, two method calls and two muldiv64;
 ' now one inline read and add a pass, folded once a slot), and the state report (was every pass, about 20 method
 ' calls, printing nothing unless its debug channels compile).
+'
+' DRIVER_REV 51 (task 3671): the schedule is a grid of the motor object's FRONT_LOOP_HZ slots, and every time this cog
+' and the wheels' front*() routines count is counted in slots: a late pass is accounted, not re-anchored (the motor
+' object's frontLateSlots()), each wheel told the slots a pass stands for (frontSetPassSlots()) only when it changes,
+' and the slot jobs run on the pass that crosses their phase, so a slow clock lengthens the pass, not the times.
 
 ' Local Variables:
-' @local ticksPerPass - system ticks in one FRONT_LOOP_HZ pass
+' @local ticksPerPass - system ticks in one FRONT_LOOP_HZ slot
 ' @local lateMarginTicks - LATE_MARGIN_US in system ticks
-' @local nextDue - getct() value at which the next pass is due
+' @local nextDue - getct() value at which the next pass is due, a slot boundary
 ' @local passStartTicks - getct() when this pass began
 ' @local passBodyTicks - ticks this pass's body took
-' @local passCount - passes run so far, the wheels' rpm window cadence counter
+' @local slotClock - slots since the loop began, as of this pass: the slot phases' clock (was the pass count)
+' @local nSlots - the slots this pass stands for, 1 .. WINDOW_PASSES: 1 unless the pass before it was late
+' @local slotJobs - this pass's slot jobs, a bit per slot phase it crossed (the motor object's SLOT_JOB_*; PL-161)
 ' @local bLeftBlocked - T/F where T means the left wheel has been blocked long enough to latch a protective stop
 ' @local bRightBlocked - T/F where T means the right wheel has been blocked long enough to latch a protective stop
 ' @local nowMs - getms() once for this pass's limit and timeout checks
-' @local slotPhase - this pass's phase in the slot, passCount +// WINDOW_PASSES (PL-161)
 ' @local bPackRead - T/F where T means the left wheel reads the pack pin, so this cog sums it (read once, at entry)
 ' @local packRawSum - the pack pin's raw samples summed since the last fold (PL-161)
 ' @local packSamples - how many samples packRawSum holds
@@ -2599,8 +2620,9 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     ' The entry writes no wheel command, e-stop or limit: it adopts them, so a stop written directly
     '  inside start()'s window survives the launch. The drivers were released before this cog existed.
     ticksPerPass := CLKFREQ / ltWheel.FRONT_LOOP_HZ
-    lateMarginTicks := (CLKFREQ / ltWheel.US_PER_SEC) * ltWheel.LATE_MARGIN_US
-    passCount := 0
+    lateMarginTicks := muldiv64(CLKFREQ, ltWheel.LATE_MARGIN_US, ltWheel.US_PER_SEC)    ' DRIVER_REV 51: exact at any clock (27_000 at 270 MHz, as before)
+    slotClock := 0
+    nSlots := 1
     bPackRead := ltWheel.isPackRead()                                           ' PL-161: start() took the pin (or not) before this cog
     packRawSum := packSamples := 0
     pendStage := ltWheel.PST_NONE                                               ' PL-161: no request in flight
@@ -2623,20 +2645,22 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
     repeat
         passStartTicks := getct()
         frontPasses++                                                           ' heartbeat: start() waits for the first one
-        passCount++
-        slotPhase := passCount +// ltWheel.WINDOW_PASSES
+        slotClock += nSlots                                                     ' DRIVER_REV 51: the slots this pass stands for
+        slotJobs := 1 << (slotClock +// ltWheel.WINDOW_PASSES)                  ' on time: this slot's phase alone
+        if nSlots > 1
+            slotJobs := ltWheel.frontSlotJobsCrossed(slotClock, nSlots)         ' late before: every phase crossed since
 
         ' 0. a stop written in an earlier pass is confirmed, or written again
         ltWheel.frontConfirmStop()
         rtWheel.frontConfirmStop()
         ' DRIVER_REV 40: each wheel's ramp has one writer, this cog, before any request (a flag test unless one is asked);
-        '  PL-161, by construction: ONE wheel's apply a pass, and only on an odd phase, which no slot job uses -- the
-        '  left on 1 and 5, the right on 3 and 7 (the motor object's RAMP_PHASE_BIT, RAMP_WHEEL_BIT). No request applies one
-        if (slotPhase & ltWheel.RAMP_PHASE_BIT) <> 0
-            if (slotPhase & ltWheel.RAMP_WHEEL_BIT) == 0
-                ltWheel.frontApplyRamps()
-            else
-                rtWheel.frontApplyRamps()
+        '  PL-161, by construction: ONE wheel's apply an on-time pass, and only on an odd phase, which no slot job uses --
+        '  the left on 1 and 5, the right on 3 and 7 (the motor object's RAMP_PHASE_BIT, RAMP_WHEEL_BIT). No request applies
+        '  one. DRIVER_REV 51: a late pass applies each wheel whose phase it crossed
+        if (slotJobs & ltWheel.SLOT_JOBS_RAMP_LEFT) <> 0
+            ltWheel.frontApplyRamps()
+        if (slotJobs & ltWheel.SLOT_JOBS_RAMP_RIGHT) <> 0
+            rtWheel.frontApplyRamps()
 
         ' 1. requests: the one in flight polled first (PL-161: never waited on, so no slot phase is barred), then
         '  securing, the rest in slot order, then EXIT
@@ -2645,14 +2669,14 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
 
         LALOOPSTART()
         ' 2. tracking, then 3. limits, so a crossing seen in this pass is stopped in this pass
-        ltWheel.frontTrack(passCount)
-        rtWheel.frontTrack(passCount)
+        ltWheel.frontTrack(slotJobs)
+        rtWheel.frontTrack(slotJobs)
         ltWheel.frontWalkGuard()                                                ' PL-122: a walk leg's current, checked every pass
         rtWheel.frontWalkGuard()
         frontPlatformFaultStop()                                                ' R19.2: one wheel faulted stops the other, ramped
         ' PL-137: never during a wiring walk -- it judges each wheel on its own, and a scale shared with the partner
         '  would stop a healthy wheel (at leg start, while its field is held) or fail it for its partner's stall
-        if (slotPhase == 0) and (ltWheel.isWalkWatched() == FALSE) and (rtWheel.isWalkWatched() == FALSE)
+        if ((slotJobs & ltWheel.SLOT_JOB_WINDOW) <> 0) and (ltWheel.isWalkWatched() == FALSE) and (rtWheel.isWalkWatched() == FALSE)
             frontLimitPath()                                                    ' R18.4 D-6: once per slot, after the wheels' own slot work
         nowMs := getms()
         ' R20.1: each stop's record follows its command writes, both wheels', so no record delays a stop (D6)
@@ -2691,16 +2715,16 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         if bPackRead == TRUE                                                    ' R19.5, PL-161: the pack pin, one read a pass, summed
             packRawSum += rdpin(user.PACK_SENSE_PIN)                            '  inline -- no call, no conversion
             packSamples++
-        if slotPhase == ltWheel.PACK_PHASE                                      ' PL-161: folded once a slot, on a pass with no other
+        if (slotJobs & ltWheel.SLOT_JOB_PACK) <> 0                              ' PL-161: folded once a slot, on a pass with no other
             ltWheel.frontSamplePack(packRawSum, packSamples)                    '  slot work
             packRawSum := packSamples := 0
         ' R20.1: the logs' per-pass checks, on the phase opposite the rpm window's slot pass (its likely worst pass, D6)
-        if slotPhase == ltWheel.WINDOW_PASSES / 2
+        if (slotJobs & ltWheel.SLOT_JOB_EVENTS) <> 0
             ltWheel.frontEventChecks(nowMs)
             rtWheel.frontEventChecks(nowMs)
             frontLateCheck(nowMs)
         if STATE_DBG_BITS <> 0                                                  ' PL-161: gathered only when it can print,
-            if slotPhase == STATE_PHASE                                         '  and once a slot, on its own pass
+            if (slotJobs & STATE_JOB) <> 0                                      '  and once a slot, on its own pass
                 showDriveStatesOnChange()
         LALOOPEND()
 
@@ -2709,14 +2733,21 @@ PRI frontLoop() | ticksPerPass, lateMarginTicks, nextDue, passStartTicks, passBo
         deltaTicks := passBodyTicks
         frontMaxPassTicks := frontMaxPassTicks #> passBodyTicks
         if (nextDue - getct()) < lateMarginTicks
-            ' Late. WAITCT waits until the counter MATCHES its target, so a target already past would
-            '  wait for the 32-bit counter to wrap. The wait is skipped and the schedule re-anchored:
-            '  missed slots are counted, never replayed.
+            ' Late. WAITCT waits until the counter MATCHES its target, so a target already past would wait for the
+            '  32-bit counter to wrap. DRIVER_REV 51: the schedule is kept: the next pass starts on the first slot
+            '  boundary at least LATE_MARGIN_US ahead and stands for every slot since this pass's (nSlots), which both
+            '  wheels count as time (the motor object's frontLateSlots(), frontSetPassSlots())
             frontLatePasses++
-            nextDue := getct() + ticksPerPass
-        else
-            waitct(nextDue)
-            nextDue += ticksPerPass
+            nextDue, nSlots := ltWheel.frontLateSlots(nextDue, ticksPerPass, lateMarginTicks)
+            ltWheel.frontSetPassSlots(nSlots)
+            rtWheel.frontSetPassSlots(nSlots)
+            frontSlotsMax #>= nSlots                                            ' this object's request bound (postRequest())
+        elseif nSlots <> 1                                                      ' on time again: one slot a pass
+            nSlots := 1
+            ltWheel.frontSetPassSlots(1)
+            rtWheel.frontSetPassSlots(1)
+        waitct(nextDue)
+        nextDue += ticksPerPass
 
     ' EXIT: parked with no output until stop() cogstops this cog; it never returns, so its cog id
     '  cannot be released and reused before that cogstop
@@ -2861,7 +2892,9 @@ PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken
 ' at most 5 application cogs (8 less two drivers and this cog), so at most 4 requests are ahead of any one. Each holds
 ' the slot order for at most 3 passes (one stage, its bound gone: the bound is 2.09 ms and passes are at least 0.9 ms
 ' apart), so one posted behind them is taken by the 12th pass after it and answered by the 15th: 15 ms at the nominal
-' 1 ms pass, and seen within the caller's 1 ms poll, under REQ_ACK_TIMEOUT_MS (20). A
+' 1 ms pass, and seen within the caller's 1 ms poll, under REQ_ACK_TIMEOUT_MS (20). DRIVER_REV 51: passes start on slot
+' boundaries, at least 1 ms apart at any clock; a pass standing for n slots is n ms long, and postRequest() waits
+' REQ_ACK_TIMEOUT_MS x the most n seen (15 n + 1 <= 20 n). A
 ' request needing two stages (a drive of a FAULTED wheel) adds 3 passes when both bounds go, as the two in-pass waits it
 ' replaces added 2 x 2.09 ms; with live drivers it is answered on the second pass.
 '
@@ -3658,7 +3691,7 @@ PRI postRequest(eCmd, motorMask, nArg1, nArg2, nArg3) : eStatus, eLeftStatus, eR
             if ackSeq[slotIdx] == mySeq
                 bAnswered := TRUE
                 quit
-            if getms() - startMs > ltWheel.REQ_ACK_TIMEOUT_MS
+            if getms() - startMs > ltWheel.REQ_ACK_TIMEOUT_MS * frontSlotsMax  ' DRIVER_REV 51: x the most slots a pass stood for (15 n + 1 <= 20 n)
                 quit
         if bAnswered == FALSE
             reqSeq[slotIdx] := ltWheel.SEQ_IDLE                                 ' withdraw: the front cog can no longer take it
