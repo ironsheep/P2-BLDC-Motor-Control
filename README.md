@@ -48,6 +48,8 @@ What changed in each release, and the known issues of the current one, are in th
 
 Why v6.0.0 reworked the drive, what changed, and how each change was checked: [The 6.0 driver — what changed, and how we know](DRIVER-6.0-REWORK.md).
 
+**New in v6.1.0:** the drive holds its commanded speed under load. It answers a load with torque, up to its current limit, and gives up speed only where the limit acts: a 7.7 kg platform spinning in place runs at its commanded speed, ramps arrive when the rate says, and a hand pushing on the platform does not slow it below the limit. A wheel at its current limit cannot lag-fault when it is pushed, a blocked wheel stops itself after about a second, and the wheel keeps up smoothly past the speed the pack's voltage can drive. When one wheel is at its limit the steering slows both wheels together to keep the platform's path. The drive is validated on Rev B driver boards. How it works is in [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md); the 6.5" motor's figures are in [its technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md). The FlySky demos hold the stopped wheel in a full turn, so the platform pivots about it, and their ramp knobs send a new rate only when moved.
+
 **New in v6.0.0:** a program selects its configuration in `isp_bldc_motor_userconfig.spin2` with a few lines at the top of its file, or, with PNut, in the configuration file itself — see [DEVELOP.md](DEVELOP.md#building-with-pnut).
 
 ## Table of Contents
@@ -162,10 +164,10 @@ The R/C demo uses the following controls:
 | SwC            | Stop Demo - Up - running, Middle - print the drive states, Down - exit demo                                               |
 | SwD            | Emergency Cutoff: Up - disabled, Down - Immediately stop motors! Moving it back Up releases the emergency stop and any protective stop (a blocked wheel) |
 |                | **KNOBS**                                                                                                                 |
-| VrA            | Acceleration: the knob's travel sets `setAcceleration()` from 200 to 3000 mm/s^2                                          |
-| VrB            | Deceleration: the knob's travel sets `setDeceleration()` from 1000 to 3000 mm/s^2 (from full speed, about 2 m to stop at the gentle end) |
+| VrA            | Acceleration: the knob's travel sets `setAcceleration()` from 200 to 3000 mm/s^2; a new rate is sent only when the knob moves more than 10 mm/s^2, and always at either end |
+| VrB            | Deceleration: the knob's travel sets `setDeceleration()` from 1000 to 3000 mm/s^2 (from full speed, about 2 m to stop at the gentle end); sent as VrA's is |
 |                | **JOYSTICKS**                                                                                                             |
-| Left Joystick  | Steering: Left - turn to left (slow left motor), Right - turn to right (slow down right motor)                            |
+| Left Joystick  | Steering: Left - turn to left (slow left motor), Right - turn to right (slow down right motor). Fully left or right stops that wheel and holds it, so the platform pivots about it |
 | Right Joystick | Speed: Up - go forward, Down - go backward (speed controlled by joystick center is stopped, at extremes is fastest)       |
 
 ## References

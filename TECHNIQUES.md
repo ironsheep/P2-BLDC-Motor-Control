@@ -145,7 +145,7 @@ a basin where 30° of error costs 12.7× the current.
 ### 1.6 Choose the speed ceiling by duty reserve, not by where the motor gives up
 
 **The idea.** Driven faster and faster, a motor keeps following well past the point where the drive runs
-out of voltage. It does so by field weakening, at a steep cost in current, and it can slip. Put `power`
+out of voltage. It does so by letting its lag grow, at a steep cost in current. Put `power`
 100 where the drive still has output in hand.
 
 **How.** Step the commanded speed up on a lifted wheel, recording duty against its ceiling and current.
@@ -153,12 +153,13 @@ Find the **knee**, where duty first reaches its ceiling. Set the ceiling at the 
 your chosen reserve. Step down to find the floor: the slowest speed that still turns steadily at its
 commanded rate.
 
-**Worked example.** At 18.5 V duty first capped between 175 and 185 × 10⁶ (the speed increment per drive
-pass). Above that, the wheel still followed up to 245 × 10⁶, drawing 2.3–2.6 A unloaded against 0.3–0.4 A
-at the knee, and one motor lost synchronism with a 23–25 A peak. The ceiling is 165 × 10⁶, where duty sits
+**Worked example.** On the 18.5 V setting (measured on a pack of about 20.5–20.7 V) duty first capped between
+175 and 185 × 10⁶ (the speed increment per drive pass). Above that, every wheel still followed smoothly up to
+245 × 10⁶, drawing about 0.5 A of pack current at 175 × 10⁶ and 3.6 A at 245. The ceiling is 165 × 10⁶, where duty sits
 at 92–93 % of its maximum: 294 RPM, 2.54 m/s. Every speed down to 100,000 (about 0.2 RPM) turned steadily.
 The other voltages' ceilings are that one number scaled by voltage, and measurements at other
-voltages followed that line to within 2.5 %.
+voltages followed that line to within 2.5 %. On a pack at the nominal 18.5 V the same ceiling needs about
+102–104 % of the duty ceiling (calculated), so it is run past the knee.
 
 **Where it lives.** The `dual-limits` and `dual-limits-top` tiers of `src/test_bench_dual.spin2`;
 `confgurePowerLimits()` in the driver.

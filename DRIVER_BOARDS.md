@@ -5,7 +5,8 @@ objects drive both. This page gives the facts for each revision, so you know wha
 the driver does with it, and when to be careful. It is not a buying guide.
 
 The board facts come from the two Parallax manuals for the board and the datasheet of its MOSFETs; the driver
-behaviour is the driver's own, verified on our hardware.
+behaviour is the driver's own, verified on our hardware. The driver's behaviour, including how it holds speed up
+to its current limit, is validated on **Rev B** boards.
 
 ## Contents
 
@@ -78,9 +79,10 @@ resolves about 7 mA.
 - **Against too much current while driving.** The driver folds a motor's output back above **40 A**, and derates it
   to **27 A** when the average stays high, on either revision. These limits protect the board's transistors, not
   the motor, and they are not user settings. Each logs an event when it acts (`EV_FOLDBACK`, `EV_CURRENT_LIMIT`;
-  see [Drive Objects](DRIVE-OBJECTS.md)).
-- **Against a blocked wheel.** A motor commanded to move that does not turn for about a second is stopped and
-  latched (the protective stop; see [Drive Objects](DRIVE-OBJECTS.md)).
+  see [Drive Objects](DRIVE-OBJECTS.md)). A wheel at its limit keeps its torque and gives up speed only there.
+- **Against a blocked wheel.** A motor commanded to move that does not turn for about a second, with its rotor
+  held far behind the field or the current limit acting on it, is stopped and latched (the protective stop; see
+  [Drive Objects](DRIVE-OBJECTS.md)).
 
 **It does not:**
 
@@ -97,7 +99,8 @@ resolves about 7 mA.
   because of it. Rev A does not have the gate drivers' own negative-spike protection, which the Rev B manual ties to
   driving large hub motors; its only spike protection is the diode at each switching node.
 - **Rev A and small currents.** A Rev A reading resolves about 0.2 A. Anything that depends on telling small
-  currents apart, such as a low current limit or a reading at rest, is coarse on Rev A.
+  currents apart, such as a low current limit or a reading at rest, is coarse on Rev A. That coarseness affects
+  when the current limit acts on Rev A, and the driver's behaviour at its limit is validated on Rev B.
 - **Forcing the revision.** `BRD_REV_A` or `BRD_REV_B` that does not match the board gives the driver a current scale
   30 times wrong, and its current limit with it. Leave detection on `BRD_AUTO_DET` unless you have a reason.
 - **Either board, braking by shorted phases.** It is not current-limited (above). From speed, prefer a ramped stop.

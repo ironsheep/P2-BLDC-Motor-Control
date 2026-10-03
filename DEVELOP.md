@@ -91,7 +91,7 @@ A motor board uses its base pin and the 15 pins above it, so the two motors of a
 isp_bldc_motor_userconfig.spin2:190:error:Divide by zero (m145)
 ```
 
-The line it names is a `CHECK_` line below your settings, and the comment on that line says what to change.
+The line it names is a `CHECK_` line below your settings, and the comment on that line says what to change. `start()` refuses such a group at run time too, for a program built another way.
 
 Use `BRD_AUTO_DET` unless you have a reason not to. With it, `start()` refuses a pin group where it cannot detect a board, because without the board's revision the driver has no current limit for it. `BRD_REV_A` or `BRD_REV_B` forces a revision; forcing one that does not match your hardware will cause the driver to not work.
 
@@ -284,7 +284,7 @@ These are **two calls, not one atomic move**: the platform is already reversing 
 
 ### Tuning the ramp for your robot's mass
 
-The built-in ramp suits a light platform: it speeds up at 1,000 mm/s² (about 0.1 g) and slows and stops at 1,470 mm/s² (roughly 0.15 g). Every ramp is jerk-limited: its acceleration eases in from zero over 250 ms (`RAMP_TAU_MS`) and back out as the new speed arrives, so no start, speed change, reversal or stop begins or ends with a jolt, and a reversal passes through zero in one continuous ramp. The easing is fixed; the rates are yours. A heavier or taller robot usually wants gentler rates, and you set the two ends apart, in mm/s² at the wheel rim: `setAcceleration(rate)` for speeding up and `setDeceleration(rate)` for slowing down and every stop. Both may be set before `start()` and are kept across it, and `getAcceleration()` and `getDeceleration()` read them back.
+The built-in ramp suits a light platform: it speeds up at 1,000 mm/s² (about 0.1 g) and slows and stops at 1,470 mm/s² (roughly 0.15 g). Every ramp is jerk-limited: its acceleration eases in from zero over 250 ms (`RAMP_TAU_MS`) and back out as the new speed arrives, so no start, speed change, reversal or stop begins or ends with a jolt, and a reversal passes through zero in one continuous ramp. The easing is fixed; the rates are yours. A speed raised while a wheel is still slowing dips briefly (about 0.3 s) before it climbs, because the ramp unwinds the slow-down first. A heavier or taller robot usually wants gentler rates, and you set the two ends apart, in mm/s² at the wheel rim: `setAcceleration(rate)` for speeding up and `setDeceleration(rate)` for slowing down and every stop. Both may be set before `start()` and are kept across it, and `getAcceleration()` and `getDeceleration()` read them back.
 
 ```script
     wheels.setAcceleration(600)                         ' ease a heavy robot into motion

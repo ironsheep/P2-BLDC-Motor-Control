@@ -215,13 +215,15 @@ whole driver.
 | Error representation | 8-bit signed, **256 counts per electrical cycle** (1 count = 1.4°) | driver |
 | Duty servo setpoint | `SERVO_SETPOINT` **48 counts = 67.5°** | driver |
 | Duty feedforward | the magnitude of `drv_incr` × `duty_max` ÷ `ff_ceiling`, where `ff_ceiling` is the motor's back-EMF line (duty 167–174 per 10⁶ of increment at 18.5 V) | driver; the line measured |
-| Duty trim | each frame adds (the magnitude of `err_` − 48) × (duty ÷ 16) to an accumulator, applied shifted right 14: symmetric, untruncated, and with a gain that scales with duty | driver |
+| Duty trim | each frame adds (the magnitude of `err_` − 48) × (duty ÷ 16) to an accumulator, applied shifted right 16 (`SERVO_ACC_SHIFT`, a gain sized for a 7.7 kg platform): symmetric, untruncated, and with a gain that scales with duty | driver |
+| Duty trim, fast slope | while the rotor trails the field by more than `LAG_SOFT`, each frame also adds (lag − 80) × (duty ÷ 16) at 64 times the calm trim's gain per count, so a load is answered with torque at once; below `LAG_SOFT` it adds nothing | driver |
 | What the servo actually holds | a **point**: mean `err` **47–48 counts** at every speed step tried, both motors, both directions | measured |
 | Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **27,648**, the largest amplitude the PWM carries without clipping after the drive re-centres the three levels each frame | calculated; measured clip-free |
 | Dead gap applied | 260 ns (meets the 250 ns minimum) | driver |
-| Lag: the ramp eases its acceleration off | `LAG_SOFT` 80 counts = **112.5°** | driver |
+| Lag: the ramp eases its acceleration off, and the trim's fast slope begins | `LAG_SOFT` 80 counts = **112.5°** | driver |
 | Ramp shape | jerk-limited: acceleration eases in and out over **250 ms**; built-in limits **1,000 mm/s²** up and **1,470 mm/s²** down, both provisional until measured under load | driver |
 | Lag: the field stops advancing | `LAG_HOLD` 100 counts = **140.6°** | driver |
+| Lag: the field's hold at the current limit | `LAG_LIM` 64 counts = **90°**, the motor's strongest angle (§7.2) | driver |
 | Lag: fault | 125 counts = **175.8°** | driver |
 
 ### 3.3 The two knobs that place the field — and they add
@@ -468,7 +470,7 @@ ceiling increment and `power` 1 the floor.
 | | Value | Basis |
 |---|---|---|
 | Drive passes per second | 1,913 | calculated |
-| Ceiling increment at 18.5 V | **165,000,000** | measured, and held through the public API |
+| Ceiling increment, 18.5 V setting | **165,000,000** | measured on a bench pack of about 20.5–20.7 V, and held through the public API |
 | → electrical frequency | **73.5 Hz** | calculated |
 | → hall ticks per second | **441** | calculated |
 | → wheel speed | **294 RPM** | calculated |
@@ -480,6 +482,11 @@ ceiling increment and `power` 1 the floor.
 reserve: at 165 × 10⁶ duty runs at 92–93 % of its ceiling, on both motors and in both directions.
 It is not the speed at which the wheel stops following, which is far higher (§6.3). How much of that
 reserve survives a load is not yet measured (§9).
+
+**The figures labelled 18.5 V were measured on a pack of about 20.5–20.7 V**, the bench pack. On a pack at
+the nominal 18.5 V the same speed needs more voltage than the pack gives: full power needs about
+102–104 % of the duty ceiling (calculated from the 92–93 % measured). The drive then keeps up the way it does
+above the knee (§6.3). The other voltages' ceilings are scaled from the same measured figure.
 
 Every speed figure here is wheels-up.
 
@@ -509,15 +516,15 @@ further. That knee is a **voltage / back-EMF limit**, not a commutation defect.
 **Where the knee sits.** With the clip-free duty ceiling (27,648, §3.2), duty first caps between 175
 and 185 × 10⁶ on all four wheel-directions.
 
-**Above the knee the wheel still follows, by field weakening.** With duty pinned, the only way to
-advance the rotor further is more lead. `err` grows from 48 to 65 counts, about 24° more field
-advance, and the wheel keeps its commanded rate up to 245 × 10⁶, the highest command tried. It pays
-in current: 2.3–2.6 A at 245 × 10⁶ unloaded, against 0.3–0.4 A at the knee.
+**Above the knee the wheel still follows, by letting its lag grow.** With duty pinned, the only way to
+advance the rotor further is more lead. Mean `err` grows from 49 counts at 175 × 10⁶ to 61 at 245, about
+17° more field advance, and every wheel-direction keeps its commanded rate smoothly up to 245 × 10⁶,
+the highest command tried. It pays in current: about 0.5 A of pack current at 175 × 10⁶ and
+3.6 A at 245 × 10⁶, wheels up.
 
-⚠ **Field-weakened running can slip.** One motor, driven forward, lost synchronism between 235 and
-245 × 10⁶ on three consecutive runs, with a current peak of about 23–25 A and no fault. The other three
-wheel-directions held 245 × 10⁶. That is why the ceiling (§6.1) sits below the knee, with reserve,
-rather than at the speed where following ends.
+**The duty ceiling is not a current limit.** The drive's hold on the field (§7.2) acts only at the
+current limit. Running into the voltage ceiling does not trigger it, so top speed runs smoothly. That the current rises this steeply is why the ceiling (§6.1)
+sits below the knee, with reserve, rather than at the speed where following ends.
 
 **Alignment moves the knee as well.** The lead table unpinned 147 and 155 × 10⁶, which a flat 18° lead
 had held at the ceiling. So alignment buys headroom as well as current.
@@ -538,7 +545,7 @@ hunts at low speed. So the servo gets the duty a speed needs in advance (the fee
 whose gain scales with duty (§3.2), and the loop stays stable across the range.
 
 **At the lowest speeds.** At the two slowest speeds tested, 10 and 20 × 10⁶ (27 and 53 ticks/s), duty
-swings by 178–399 counts, and `err` peaks at 76–86 counts around its mean of 48. It is a small residual,
+swings by about 30–100 counts, and `err` peaks at 70–77 counts around its mean of 48. It is a small residual,
 not a surge.
 
 **Faster ramps.** Starts at two and four times the default acceleration also follow cleanly, without the
@@ -615,25 +622,27 @@ limit time at the ceiling it hands off to the phase short. That was measured whe
 sizes nothing for a slope (§9).
 
 **A wheel commanded but not turning** is caught by the blocked-rotor stop about 1 s in, in the user's
-stop mode. The second is counted from the moment the wheel stops ticking with the field pressed against it, so a
-wheel that keeps rocking against a yielding obstacle restarts the count with every tick (below).
+stop mode. The second is counted from the moment the wheel stops ticking while the field is pressed against it
+(held past `LAG_SOFT`) or the current limit has acted on it since its last tick, so a wheel that keeps rocking
+against an obstacle restarts the count with every tick (below).
 
 **On the floor** (a 7.7 kg two-wheel platform, two units, Rev B boards):
 
 - **Distance stops land with the platform's mass behind them**: spins in place and 1 m straight runs came to rest
-  within 3 hall ticks of their limits, at every speed tried.
+  within 3 hall ticks of their limits at every speed tried, and one spin of twenty within 4.
 - **A fault on one wheel stops the other with it**: 2 s after a forced fault the partner wheel was at 0 % of its
   speed, both ramped down together, and the platform's heading changed by under 2°.
-- **After a fault and its recovery the next drive draws normal current**: 0.72–0.95 times its current before the
-  fault.
-- **Against a solid obstacle the blocked-rotor stop latched** after the wheel had stood still for 1.0–1.1 s, refused
-  drives until cleared, and left the phases shorted in brake mode. **Against a yielding obstacle** the platform
-  rocks and pushes repeatedly: one run pushed for about 6 s without latching, another ended in a fault response
-  (a controlled stop of both wheels) after about 4 s. Either way the push is current-limited.
-- **Under a steady one-sided load** the two wheels slowed together (49 % and 47 % of their command, the line kept
-  within 3 %), and the held wheel kept turning without a fault.
-- **Spinning in place on the lead table's timing** both wheels ran at 57–94 % of their commanded speed, slowing
-  together, with the drive well inside its duty and current range. That is a known issue of v6.0.0 (§9).
+- **After a fault and its recovery the next drive draws normal current**: 0.79 and 1.41 times its current before the
+  fault (left and right wheel).
+- **Against a solid obstacle the blocked-rotor stop latched** about 1.0 s after the wheel stopped, in both coast and
+  brake modes (measured at a 2 A test limit), with no fault while blocked. It refused drives until cleared, and
+  left the phases shorted in brake mode. Against an obstacle that gives way: not measured (§9).
+- **Under a one-sided load** a hand slowing the left wheel to 31 % of its command slowed the right wheel to
+  70 %, so the platform kept its line; the held wheel kept turning without a fault.
+- **Spinning in place** both wheels ran at 100–107 % of their commanded speed on every spin, slow to quarter
+  speed. Speed changes arrive when the ramp says: legs at 200, 1,000 and 3,000 mm/s² arrived within 1 % of the
+  set rate. A hand pushing on the platform does not slow it below the current limit: the drive answers with
+  torque, duty rising and current rising with it.
 - **A stop from speed:** from about 2.3 m/s at a deceleration of 2,087 mm/s² the platform stopped in 1.2 s and
   1.38 m, as the ramp predicts (1.23 s, 1.41 m). At full speed (about 2.45 m/s on the floor) the duty reached
   96 % of its ceiling, and the pack sagged about 0.3 V (1.5 %) at the 3.5 A peaks.
@@ -688,11 +697,21 @@ healthy one.
 | Peak restored below | 80 % of continuous | driver |
 | Averaging window | ~1 s | driver |
 | Fault (field outruns rotor) | 175.8° electrical | driver |
-| Blocked-rotor detection | ~1 s at the lag limit with no hall tick; stops in the user's stop mode | driver; measured firing at about 1 s |
+| Blocked-rotor detection | ~1 s with no hall tick while the field is held past `LAG_SOFT`, or after the current limit has acted on the wheel since its last tick; stops in the user's stop mode | driver; measured firing at about 1 s |
 
 These protect the board, not the motor, and they are not user settings. None of them can limit the
 current of a phase short, which the shunt cannot see (§3.1). A short is limited only by the winding
 resistance, or by the graded short's duty (§6.5).
+
+**What the drive does at the current limit.** The drive answers a load with torque, up to the current limit,
+and gives up speed only where the limit actually acts. From the limit's first action the field is held no more
+than `LAG_LIM` (64 counts, 90°, the motor's strongest angle) ahead of the rotor, and it stays held until the
+rotor has crossed a whole hall sector forward with no further limit action. A wheel at its limit that is
+pushed back a tick therefore cannot lag-fault (the largest lag read at a held wheel pushed back one tick was
+107 counts, against the fault at 125). When the hold releases, the field's speed is capped at four sectors
+over the time since the limit last acted, so the wheel picks up from about its own speed and there is no
+current surge at the end of a long limit: after a 1 A over-command the field ends the limit at 9–20 % of the
+command, and a full-power step then completes cleanly.
 
 ### 7.3 Current in normal running
 
@@ -734,16 +753,18 @@ windings.
 ### 7.5 Transitions
 
 Changing speed draws current above the settled value while the wheel accelerates. Beyond that, the
-excess at a speed change is small: at worst **10 mV left and 12 mV right** over the settled current,
-across every speed change measured (below). Misalignment makes it much larger, which is one more reason
-to use the lead table.
+excess at a speed change is small: at worst **24 mV left and 30 mV right** over the settled current,
+and that at the sharpest slow-down measured (80 → 20 × 10⁶, wheels up); speed-ups stay under 10 mV. A sharp slow-down draws
+no more than that because the ramp-down's duty ceiling lifts as soon as the wheel trails its running point.
+Misalignment makes it much larger, which is one more reason to use the lead table.
 
 **The ramp is jerk-limited.** One trajectory generator runs every drive pass the motor is not at rest.
 Its acceleration moves toward its limit by at most one jerk step a pass, rising from 0 to the limit over
 250 ms and ramping back out to land exactly on the target speed. A reversal passes through zero without
 a restart, and the rotor-lag gate eases the acceleration off rather than freezing it. The built-in
 limits are 1,000 mm/s² up and 1,470 mm/s² down, both provisional and open to retuning once they are
-measured under load; `setAcceleration()` and `setDeceleration()` change them.
+measured under load; `setAcceleration()` and `setDeceleration()` change them. A speed raised while a wheel
+is still slowing dips briefly (about 0.3 s) before it climbs, because the ramp unwinds the slow-down first.
 
 What that costs is calculated from the driver's own per-pass arithmetic: a stop from speed v at
 deceleration a takes about v ÷ a + 0.25 s and runs about v² ÷ 2a + v × 0.125 s, so every stop is about
@@ -781,8 +802,9 @@ Everything here follows from §§4–7 and cites the section it comes from.
 4. **No fixed offset pair suits the whole speed range.** The lowest-current lead falls about 15°
    between 49 and 98 ticks/s (§5.2). A fixed pair is a one-speed tune.
 5. **Stay below the duty knee** where you care about efficiency or about current readings meaning
-   anything. `power` 100 keeps about 7 % unloaded duty reserve. Above the knee the wheel follows
-   only by field weakening, draws amps unloaded, and can slip with a 23–25 A peak (§6.3).
+   anything. `power` 100 keeps about 7 % unloaded duty reserve on the bench pack, and none on a pack at the nominal 18.5 V
+   (§6.1). Above the knee the wheel keeps up by letting its lag grow, and the current it draws unloaded
+   rises steeply (§6.3).
 6. **Every speed figure is wheels-up.** On the floor, driving a 7.7 kg platform at full stick, the duty reached 96 %
    of its ceiling (§6.5); the reserve left under a heavier load is not yet measured.
 
@@ -848,7 +870,8 @@ Each question says why it matters and what would settle it.
 
 | Question | Why it matters | What would settle it |
 |---|---|---|
-| **Whether the lead table holds speed under a heavy load.** Spinning a 7.7 kg platform in place (both tyres scrubbing, the heaviest load it meets), the lead table's timing ran at 57–94 % of its commanded speed with the drive using well under its duty range, where two fixed timings held 100 % at about twice the current. On straight runs at low speed it held. | The lead table's unloaded saving (§5) is not a win if it costs speed under load. | A driver change, designed and planned for the release after v6.0.0, that holds speed with torque up to the current limit; then the same spins on the floor. |
+| **Full power on a pack at the nominal 18.5 V.** The speed figures were measured on a pack of about 20.5–20.7 V (§6.1); full power on an 18.5 V pack needs about 102–104 % of the duty ceiling, which is calculated, not run. | It decides how much of full power survives a pack at its nominal voltage. | The top-speed and full-power runs repeated on a pack at 18.5 V. |
+| **How the blocked-rotor stop behaves against an obstacle that gives way.** Measured only against a solid object (§6.5). | A platform that rocks against a soft obstacle restarts the stop's count with every hall tick. | A floor run against a yielding obstacle. |
 | **How a start behaves under load at higher speeds.** Measured only at low and medium speed on the floor. | A start's current spike is what a heavy robot feels. | A longer loaded run at speed. |
 | **Whether the hold keeps a platform from creeping on an incline.** Not yet measured on a slope. | It decides the hold's ceiling for a robot that parks on one. | A run on an incline. |
 | **Why L falls with speed.** Is the speed dependence a property of the motor (its electrical time constant) or of the commutation scheme (loop lag)? The textbook predicts the opposite sign (§5.2). | It decides whether a speed law can be written down or must be measured per motor. | The motor's time constant does not care about the drive-pass rate and loop lag does, so the lead measurement repeated on a build with a different pass rate would tell them apart. |
@@ -864,8 +887,8 @@ Each question says why it matters and what would settle it.
 ## 10 · About the measurements
 
 Every measurement here was taken on two units of this motor, on a Rev B 64010 board, with the P2 at
-270 MHz, during the 6.0 driver work in September 2026: with the wheels lifted, except the floor results in §6.5
-and §9, which were taken with the two units driving a 7.7 kg two-wheel platform. The measurements were made
+270 MHz, during the driver work of September and October 2026: with the wheels lifted, except the floor results in §6.5,
+which were taken with the two units driving a 7.7 kg two-wheel platform. The speed figures were measured on a pack of about 20.5–20.7 V (§6.1). The measurements were made
 with the driver's own sense channels, read through the programs in `src/test_*.spin2`;
 [TECHNIQUES.md](TECHNIQUES.md) explains the methods. The analyses behind each number are kept in this
 repository's `DOCs/analyses/` folder.

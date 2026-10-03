@@ -47,7 +47,7 @@ Enjoy!
 
 `power` 100 is the motor's top speed at your drive voltage, and `power` 1 is its slowest. The driver scales every `power` you command between the two, so "100" means the same thing, full speed, whatever battery you use. The table gives that top speed, the same in both directions.
 
-**How the top speed is chosen.** The drive keeps some voltage in reserve at full speed, so it can still correct the motor when something pushes back. Top speed is the fastest speed that keeps that reserve, not the fastest the motor can be made to spin. Unloaded, the motor meets every `power` across the range. Under load it has less in hand near the top, and a heavily loaded motor may run slower than commanded rather than fault.
+**How the top speed is chosen.** The drive keeps some voltage in reserve at full speed, so it can still correct the motor when something pushes back. Top speed is the fastest speed that keeps that reserve, not the fastest the motor can be made to spin. Unloaded, the motor meets every `power` across the range. Under load it has less in hand near the top. The drive answers a load with torque, up to its current limit, and a motor held at that limit runs slower than commanded rather than faulting.
 
 All figures are **unloaded**: wheels off the ground, no payload.
 
@@ -74,7 +74,7 @@ All figures are **unloaded**: wheels off the ground, no payload.
 | `PWR_24p0V` 24.0V | 2615 | 1046 | | |
 | `PWR_25p9V` 25.9V | (*not supported: the motor is rated for 24V*) | | | |
 
-**NOTE**(1): *Verified on our hardware* means we ran that row on our own motors with this release of the driver and it did what the table says. The other 6.5" rows are the 18.5V measurement scaled by voltage, which is how the motor behaves, but we have not run them. The DocoEng rows come from characterizing that motor with an earlier release of the driver and have not been re-checked with this one. If you rely on an unchecked row, check it on your own platform.
+**NOTE**(1): *Verified on our hardware* means we ran that row on our own motors with this release of the driver and it did what the table says. We ran the 18.5V row on a pack of about 20.5-20.7 V; on a pack at the nominal 18.5 V full power needs about 102-104 % of the drive's duty ceiling, and the motor keeps up by letting its lag grow (calculated, not run). The other 6.5" rows are the 18.5V measurement scaled by voltage, which is how the motor behaves, but we have not run them. The DocoEng rows come from characterizing that motor with an earlier release of the driver and have not been re-checked with this one. If you rely on an unchecked row, check it on your own platform.
 
 **NOTE**(2): *The slowest speed, `power` 1, is a crawl: on the 6.5" motor it is well under 1 RPM at any voltage.*
 

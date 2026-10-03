@@ -6,7 +6,8 @@
 
 Version 6.0 is a rework of the drive, not a feature release. This page says why it was needed, what
 changed, and how each change was checked. The full list of changes, and what still needs attention,
-is the v6.0.0 entry in the [CHANGELOG](CHANGELOG.md).
+is the v6.0.0 entry in the [CHANGELOG](CHANGELOG.md). This page describes 6.0 as released; what 6.1.0 changed is in the
+[CHANGELOG](CHANGELOG.md)'s v6.1.0 entry and in [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md).
 
 ## Where it started
 

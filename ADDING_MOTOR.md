@@ -272,14 +272,14 @@ steadily (the **floor**) ([TECHNIQUES §1.6](TECHNIQUES.md#16-choose-the-speed-c
 
 **How.** At your supply voltage, step the commanded speed up on the unloaded motor, recording duty against
 its ceiling and current. Duty reaches its ceiling at a **knee**. Above it, the motor may keep following by
-field weakening, drawing much more current and able to slip. Set the ceiling below the knee, where duty
+letting its lag grow, drawing much more current. Set the ceiling below the knee, where duty
 still has about 7 % in hand. Step down to find the floor.
 
 `power` 100 commands the ceiling. A motor asked to go faster than it can sustain holds the fastest speed it
 can, drawing more current as it tries.
 
-**Worked example.** The 6.5″ motor at 18.5 V: knee at 175–185 × 10⁶, ceiling 165 × 10⁶ (294 RPM), with every
-speed down to 100,000 turning steadily. Its other voltages' ceilings are that one number scaled by voltage,
+**Worked example.** The 6.5″ motor on the 18.5 V setting (measured on a pack of about 20.5–20.7 V): knee at
+175–185 × 10⁶, ceiling 165 × 10⁶ (294 RPM), with every speed down to 100,000 turning steadily. Its other voltages' ceilings are that one number scaled by voltage,
 which measurements at other voltages follow to within 2.5 %.
 
 **Where it goes.**

@@ -11,7 +11,7 @@ current envelope — is in
 [the 6.5″ motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md). How its numbers were measured,
 and how the driver's engineering was verified, is in [TECHNIQUES.md](TECHNIQUES.md).
 
-It describes `src/isp_bldc_motor.spin2` and `src/isp_steering_2wheel.spin2` as of v6.0.0.
+It describes `src/isp_bldc_motor.spin2` and `src/isp_steering_2wheel.spin2` as of v6.1.0 (`DRIVER_REV` 49).
 
 ---
 
@@ -283,9 +283,11 @@ The driver runs two nested loops.
    drv_incr by the acceleration, landing exactly on the target; if the field is
    ahead of the rotor by LAG_SOFT (112.5°) the way the acceleration pushes, the
    acceleration eases toward 0 by one jerk step instead
-6. advance angle_ by drv_incr, unless the rotor trails by LAG_HOLD (140.6°):
-   then the field is held, lag_held counts it, and drv_incr decays toward the
-   rate the rotor achieves (1/64 per held pass)
+6. advance angle_ by drv_incr, unless the field is held: the rotor trails by LAG_HOLD
+   (140.6°), or the current limit is holding it (below). A held pass is counted
+   in lag_held. drv_incr decays toward the rate the rotor achieves (1/64 per
+   held pass) only on a pass where a limiter acted (the duty ceiling or the
+   current fold-back); any other hold is a pause while the trim raises the duty
 7. compute the duty feedforward for this pass's speed
 ```
 
@@ -326,9 +328,9 @@ give the budget:
 
 | Memory | Holds | Used |
 |---|---|---|
-| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `planFp` and `planCorner`, the constants and tables, and every register | **441 of 496** |
-| LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $290: the start sequence and `driveinit` | 144 (hidden under the run image) |
-| LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3C9: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **457 of 512** |
+| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `holdRelease`, `planFp` and `planCorner`, the constants and tables, and every register | **463 of 496** |
+| LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $291: the start sequence and `driveinit` | 145 (hidden under the run image) |
+| LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3F9: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `holdGate`, `servoBoost`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **505 of 512** |
 
 The LUT holds **two images at the same addresses, one after the other**. The entry code
 block-loads the start image from `lutCodePtr` and runs it. Its last act is
@@ -338,7 +340,7 @@ RAM and its own `driveinit`, and nothing in cog RAM or the run image calls into 
 image, so no run-image address is reached before the load and no start-image address after
 it. `countIllegal`, which both phases call, lives in cog RAM for that reason. So LUT use is the
 larger of the two images, and the start image costs none. The load happens once, after the ATN
-release: both wheels load the same 457 longs, so their lockstep is unchanged.
+release: both wheels load the same 505 longs, so their lockstep is unchanged.
 
 **Cog longs do double duty.** The entry code, `loadOverlay`, eight start-only constants,
 `adc_modes` and `calibPeriod` are dead once the start sequence has run, and each of those 21
@@ -367,7 +369,8 @@ and adds the take pass only when the plan has one.
 Every one of these savings was proved to leave the driver's behaviour unchanged — every hub
 write, pin operation and live register, frame by frame — by `tools/pasm_equiv`
 ([TECHNIQUES.md §3.3](TECHNIQUES.md#33-prove-a-pasm-rewrite-identical-before-you-trust-it)).
-Together they took cog RAM from 492 to 441 longs and the LUT from 507 to 457.
+Together they took cog RAM from 492 to 441 longs and the LUT from 507 to 457; the speed-holding logic
+(the trim's fast slope, the limit hold and its release) then used part of that room, to the 463 and 505 above.
 
 ### The frame loop — commutation
 
@@ -405,12 +408,20 @@ The applied duty is a **feedforward** from the field's speed plus an integral **
   back-EMF line (for the 6.5″ motor, measured at 18.5 V and scaled by voltage). It gives the
   duty a speed needs before the error has to ask for it.
 - **Trim**: each frame adds `(|err_| − SERVO_SETPOINT) × (duty >> 4)` to an accumulator,
-  applied shifted right by `servo_shift`. The setpoint is 48 counts (67.5°). It is symmetric
+  applied shifted right by `servo_shift` (`SERVO_ACC_SHIFT`, 16: a gain sized so the loop
+  stays calm at a 7.7 kg platform's inertia). The setpoint is 48 counts (67.5°). It is symmetric
   and untruncated, so it holds a point; its gain scales with duty, so it follows the rotor's
   stiffness and does not hunt at low speed.
+- **The fast slope**: while the rotor trails the field, in the direction of motion, by more
+  than `LAG_SOFT` (80 counts, 112.5°), each frame also adds `(lag − LAG_SOFT) × (duty >> 4)` at
+  64 times the calm trim's gain per count (`SERVO_BOOST_SHIFT`). A real load is answered with
+  torque at once; below `LAG_SOFT` it adds nothing, so the calm loop is untouched. This is what
+  holds a spinning platform at 100 % of its command: the drive answers a load with current, up
+  to its limit, and gives up speed only where the limit acts.
 - **Limits**: duty is clamped to `duty_min`..`duty_max`, with an extra ceiling during a ramp
-  down that scales with speed, lifted whenever the rotor trails by `LAG_SOFT`. Every clamp
-  re-derives the accumulator from what was applied, so the trim never winds up.
+  down that scales with speed, lifted as soon as the rotor trails by `SERVO_SETPOINT` (so a
+  sharp slow-down draws no current kick). Every clamp re-derives the accumulator from what
+  was applied, so the trim never winds up.
 
 **The setpoint is never the knob for the lead.** The offset and the setpoint add; the lead is
 carried by the offset.
@@ -423,6 +434,17 @@ limit by the modulation depth (`duty × i_limit_k >> 16`, with duty floored at
 `duty_floor`). At or above it, duty folds back about 1.6 % that frame and the trim is
 skipped. `i_limit_k` holds the 40 A peak limit, or the 27 A continuous limit while the front
 cog has derated it (§5).
+
+**The limit hold.** A wheel at its current limit keeps its torque and must not lag-fault when it is
+pushed back. From the fold-back's first action, the drive pass holds the field no more than
+`LAG_LIM` (64 counts, 90°, the motor's strongest angle) ahead of the rotor's sector (`holdGate`):
+a field past it is set back to it, and one tick pushed against it reads at most 64 + 42.7, well
+clear of the 125 fault test. The hold stays armed until the rotor has crossed a whole hall sector
+forward (`LIM_SPAN`) with no further fold-back, or the state leaves speed-up / at-speed. When it
+releases, `holdRelease` caps the field's speed at four sectors over the drive passes since the
+last fold, so the wheel picks up from about its own speed and a long limit does not end in a
+current surge. The hold acts on the current fold-back alone. The duty ceiling is not a limit
+hold: past the voltage the pack can give, a wheel keeps up by letting its lag grow.
 
 ### PWM, the phase levels and the dead gap
 
@@ -497,14 +519,17 @@ driver acts on it internally; no public method reports it.
 - **Derate.** The front cog estimates the phase current from the DC-link reading and the
   modulation depth, averages it over about a second, and switches `i_limit_k` to the 27 A
   continuous limit when the average exceeds it, back to 40 A once it falls below 80 % of 27 A.
-- **Blocked motor.** A motor commanded to move whose rotor is held `LAG_SOFT` or more from the
-  field with no hall transition for 1,000 passes (about a second) is secured, and a protective stop
-  (`ERR_PLATFORM_BLOCKED`) latches until `clearProtectiveStop()`.
+- **Blocked motor.** A motor commanded to move that stands with no hall transition for
+  `BLOCKED_PASSES` (1,000 front passes, about a second) is secured, and a protective stop
+  (`ERR_PLATFORM_BLOCKED`) latches until `clearProtectiveStop()`. A pass counts when the
+  rotor is held `LAG_SOFT` or more from the field, or when the current limit has acted on the
+  wheel since its last hall tick (a wheel at its limit is held at `LAG_LIM`, below `LAG_SOFT`,
+  so the lag alone would never count it). A hall tick restarts the count.
 
 **The steering front cog** runs the same pass for both wheels, plus one thing of its own:
-**path-preserving speed limiting.** When either wheel reads short of its command, both wheels'
-commands are scaled by the slower wheel's achieved fraction — at once going down, slowly coming
-back up — so the platform keeps its path and loses speed.
+**path-preserving speed limiting.** When one wheel is held (at its limit) and trails its commanded
+partner, both wheels' commands are scaled by the held wheel's achieved fraction — at once going
+down, slowly coming back up — so the platform keeps its path and loses speed (`EV_PATH_LIMIT`).
 
 ---
 
@@ -518,8 +543,10 @@ back up — so the platform keeps its path and loses speed.
   with the sync bit set and released with one `cogatn`, so both take them in the same drive
   pass.
 - **Steering mix.** `driveDirection()` slows the wheel on the side of the turn in proportion to
-  `|direction|`, stopping it at 100. It never reverses a wheel, so it cannot pivot in place;
-  use `driveAtPower(+n, −n)` for that.
+  `|direction|`, stopping it at 100. It never reverses a wheel, so it cannot spin in place;
+  use `driveAtPower(+n, −n)` for that. The stopped wheel holds or coasts as `holdAtStop()`
+  selects; to pivot about it, select hold (a coasting inner wheel is pushed backward by a fast
+  full turn, and the robot spins about its centre instead).
 - **Distance moves.** `driveForDistance(left, right)` runs each wheel at a power in proportion
   to its distance, so both finish at about the same time, and arms each wheel's own limit.
 - **One protective stop for both.** A cause on either wheel secures both.
@@ -536,8 +563,8 @@ back up — so the platform keeps its path and loses speed.
 | `setMaxSpeed()` never refuses | It caps what you command. A motor that cannot reach its command runs slower instead of faulting. |
 | Reverse power on a `MOTR_DOCO_4KRPM` uses *negative* increments as "forward" | The DocoEng motor's increment convention is inverted relative to the 6.5″ motor. |
 | Distance methods need a non-zero wheel diameter | With `WHEEL_DIA_IN_INCH = 0.0` they return `ERR_NO_WHEEL_DIA`. Single-motor bench setups usually have it at 0. |
-| `power` 100 is not the fastest the motor can turn | It is the fastest speed that keeps a duty reserve. Above it the motor follows only by field weakening, at a steep cost in current, and can slip. |
-| Every stop takes about 0.25 s longer, and runs about speed × 0.125 s further, than its deceleration alone predicts | The ramp eases the deceleration in and out over 250 ms. The stop limits allow for it and land on their limit; a plain `stopMotor()` does not, so leave the room. |
+| `power` 100 is not the fastest the motor can turn | It is the fastest speed that keeps a duty reserve. Above it the duty is at its ceiling and the motor keeps up by letting its lag grow, smoothly, at a steep cost in current (about 0.5 A of pack current at 175 × 10⁶, 3.6 A at 245 × 10⁶, wheels up). On a pack at the nominal 18.5 V, full power is already past that ceiling (about 102–104 % of it). |
+| A speed raised while a wheel is still slowing dips for about 0.3 s before it climbs | The jerk-limited ramp unwinds the slow-down's acceleration first, so the field's speed keeps falling until the acceleration has come back through zero. || Every stop takes about 0.25 s longer, and runs about speed × 0.125 s further, than its deceleration alone predicts | The ramp eases the deceleration in and out over 250 ms. The stop limits allow for it and land on their limit; a plain `stopMotor()` does not, so leave the room. |
 | An e-stop, or a hold that has handed off to the short, is not current-limited | Shorting the phases circulates current through the low-side FETs, and the current shunt never sees it. About 35–42 A from top speed on the 6.5″ motor. Ramp down first where you can. |
 | The dead-time is the same on both board revisions | Both Parallax manuals give a 250 ns minimum, set by the MOSFETs, even though Rev B's gate drivers are faster. It is not a per-revision setting. |
 | On the 6.5″ motor, the best commutation lead *falls* as speed rises | The textbook current-lag model says it should grow. Measured, it falls about 15° between a crawl and a quarter of top speed, then holds at 3–8°. That is why the lead comes from a measured table, not a formula. |
