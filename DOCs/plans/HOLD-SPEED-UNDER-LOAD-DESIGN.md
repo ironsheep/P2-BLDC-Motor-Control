@@ -1755,6 +1755,471 @@ python3 $S/spin2_model.py legs                                                  
 - `block ob_n=16 ob_k=1000 $R48 $CAL` reproduces §4.10.8's 15 / 1 / 0, 1,080-1,738 ms.
 - `release $R48 $CAL` reproduces §4.10.8's 99.9 / 100.0 %.
 
+### 4.12 — the limit hold's three gaps (PL-189), with T-1
+
+**Status: DESIGN, Part C of «#3668». No driver code is changed by this section.**
+- **What it answers.** The second 6.1.0 visit's G-2, G-3 and G-4 (`DOCs/analyses/bench/2026-10-02b/VISIT-6.1.0B-EVALUATION.md`
+  §3.2, §3.3, §2.2, §4a), designed together with T-1, which is ruled (§4.11.7).
+- **Why it goes to Stephen first.** Each correction is a new driver behaviour, so it goes to him with its benefit before
+  anything is built (P5).
+
+- **Evidence**, all DRIVER_REV 48, cited by seq or by trace `k`:
+  - `debug_261002-143413.log` (floor-obstacle);
+  - `debug_261002-143538.log` (floor-grab);
+  - `debug_261002-142002.log` (dual-limits);
+  - the comparison `2026-10-02/debug_261002-101625.log` (DRIVER_REV 47).
+- **Driver:** `src/isp_bldc_motor.spin2` at DRIVER_REV 48 (`7fc6a77`):
+  - `holdGate` `:8858-8908`, `.justIncr` `:7806-7817`, `holdDecay` `:8833-8856`;
+  - `gettgtincr` `:8794-8814`, `passEnd` `:8816-8822`;
+  - `driveFromRest` `:9104-9110`, `.clearRun` `:8131-8136`;
+  - `bFrontProtect()` `:2864-2922`.
+- **Harness:** `src/test_bench_dual.spin2` `blockWatch()` `:21276-21368`, read only.
+
+Command shorthand (`S=DOCs/plans/servo-model`; every run is `python3 $S/spin2_model.py <mode> ...`):
+- `CAL`, `R47`, `R48` and `T1` as in §4.11.
+- `B` = `$T1 c4_state=1`, the baseline of this section: REV 48 + T-1, with the as-built disarm in any state but SPIN_UP /
+  AT_SPEED, which the model lacked (§4.12.3).
+- `FIX` = `$B u_arm=1 u_span=2 u_cap=1 u_cap_sec=4`: T-1 + U-1 + U-2 + U-5, the recommended set.
+- `HOLD` = `grab_B=5 grab_v=0.45 grab_a=0.8 grab_f=5 grab_rnd=2 grab_n=16`: a hand that holds steadily, as the run sheet
+  asks.
+- `RAND` = `grab_B=5 grab_v=0.15 grab_a=1.0 grab_f=5 grab_rnd=1 grab_n=16`: a rougher hand that also pushes the wheel on.
+
+#### 4.12.1 Summary for Stephen
+
+**What went wrong.** All three gaps are in the hold 6.1.0 added for a wheel at its current limit. That hold keeps the
+rotating field (the magnetic pull that drags the rotor round) no more than 90° of the electrical cycle ahead of the
+rotor. Then a wheel pushed back one step cannot trip the "lost its place" fault.
+1. **It switched on one step late.**
+   - It armed when it first pulled the field back, not when the current limit first acted.
+   - In between, the field drifted into the band where a single push back faults the motor.
+   - The obstacle test caught it once per trial (readings 85 and 83).
+2. **It switched off too early.**
+   - Every forward step of the wheel turned it off.
+   - So a wheel your hand slowed but did not stop was unprotected for part of every step, and your grab faulted it.
+3. **While on, it let the field's speed run away from the wheel's.**
+   - In the 1 A over-command test the field kept going at about half speed while the wheel crawled at 4 %.
+   - When the full current limit came back, the drive pushed that field speed into an almost stopped wheel.
+   - Result: about 10 A from the battery, the test's own safety abort, and a right-hand board that went quiet.
+
+**The fix: three small changes, built with T-1.**
+- **Arm at the first current-limit action**, not at the first pull-back.
+- **Stay armed until the wheel has turned one whole step forward with no current-limit action**, not at every forward
+  step.
+- **When the hold switches off, cap the field's speed** at four steps divided by the time since the limit last acted.
+  - That is never slower than the wheel itself and at most four times its recent speed.
+  - So the field restarts from about the wheel's own speed, not from wherever it had run away to.
+
+**Benefit (modelled, 16 trials per row):**
+- **At an obstacle:** the drift into the fault band at contact is gone. The test's window hits go 6 → 0, and a solid
+  obstacle now stops the platform 16 times out of 16 (was 15, and 1 fault).
+- **A hand holding a wheel steadily:** faults 1 → 0 of 16, and the time in the fault band 468 → 386 ms. A rougher hand:
+  6 → 4 of 16.
+- **The end of a long current limit:** the battery-current peak falls 34 A → 3 A in the model, which is below the 4.5 A
+  of the driver the first 6.1.0 visit ran cleanly.
+- **Everything else is identical, digit for digit, or 0.1 point better:** spins, ramps, slow-downs, reversals, top speed
+  and the load tests. Two things move the wrong way:
+  - one load test loses 0.1 point (2 N·m released: 99.8 → 99.7 %);
+  - on 3 of 16 solid-obstacle contacts the protective stop comes about 270 ms later (up to 1.36 s after contact).
+
+**What it does not fix: the line on a grab.**
+- When one wheel is held at its limit, the steering does not slow the other wheel to keep the platform's line. The held
+  wheel's field speed still reads near full.
+- The change that would fix it, letting the field's speed fall while the wheel is held, made the grab and obstacle faults
+  worse in the model. It is not proposed.
+- The grab's line check (LDPATH) will therefore fail. It is recorded, not hidden.
+
+**Cost.** No change to the shared-memory layout.
+- About 6 of the 13 free LUT longs (7 left) and about 16 of the 50 free cog longs.
+- About 0-4 clocks per drive pass, and about 95 on the rare pass where the hold switches off.
+
+**Decision for you (§4.12.9): build T-1 with these three changes for the third visit.** Recommendation: yes.
+
+#### 4.12.2 The three gaps, reproduced, and their causes
+
+**G-2: the hold arms at the first set-back, not the first limiter action.**
+- **The mechanism (DERIVED, `:8876-8908`).**
+  - The arming lines (`:8906-8907`) are inside the set-back. That runs only on a limited pass with `lag_s` ≥ 64.
+  - A first fold with `lag_s` < 64 takes `.limHold` and returns without setting back, so the hold does not arm.
+  - The following passes see no limiter and take `.today` (`LAG_HOLD` 100). The field walks up through 82..88 until the
+    next fold sets it back and arms.
+- **The bench.**
+  - `BM-BLKWIN` seq 386 (COAST): `r_hit,1,r_emax,85`.
+  - `BM-BLKWIN` seq 760 (BRAKE): `r_hit,1,r_emax,83`, and `l_emax,106`. That is one back tick from an armed 64:
+    64 + 42.7 = 106.7, outside the window.
+- **The model** (`block ob_n=16 ob_k=50000 $B $CAL blkwin=1`):
+  - At the harness's own 5 ms poll: 6 hits on 3 of 16 contacts, emax 92.
+  - At every frame: |err| 82..88 for 39.5 ms on 7 contacts, **every one with the hold not armed**.
+- **The separating reading.** The hits fall only in the unarmed interval between a wheel's first limiter action and its
+  first set-back.
+- **Under `FIX`:** 0 poll hits. At frame level, 0.8 ms on 3 contacts.
+  - That residue is the gap between the fold's frame and the drive pass that arms, at most 22 frames (0.5 ms).
+  - The field does not move between passes, so it is the contact transit's own reading (§4.9.4). The 5 ms poll cannot
+    see it.
+
+**G-3: the hold disarms at the first forward tick.**
+- **The mechanism (DERIVED, `:8883-8889`).**
+  - Disarm at the first tick past `lim_pos`, the sector of the last set-back. Then `.today` applies until the next fold.
+  - After a forward tick the reading is 64 − 42.7 ≈ 21. The field walks up past 64 into 82..88 before the next fold.
+  - A back tick there reads 125 or more.
+- **The bench** (`debug_261002-143538.log`, `BM-TS` tid 1; LEFT `e`, `st`, `pos`):
+  - **After each forward tick** (`k` 1,093, 1,139, 1,168, 1,208): 22-25.
+  - **Unarmed between folds:** 72-83 in AT_SPEED (`k` 1,200: 72; `k` 1,245: 73; `k` 1,375: 83).
+  - **The fault:** at `k` 1,923 `e` 81 in AT_SPEED at `pos` 108, then at `k` 1,924 `pos` 107 (a back tick) with `flt`
+    TRUE. That is the re-sync (`EV_FAULT_RESYNC` seq 16, 19,234 ms), and the fault follows (seq 19, 19,360 ms).
+- **The model** (`grab $B $CAL HOLD diag=1`, and `RAND`). The hand is a damper to a moving hand. `HOLD` slows LEFT to
+  9-21 % (bench: 19 %).
+  - `HOLD`: 1 lag fault in 16; `RAND`: 6.
+  - Every fault has "hold not armed" with 100-450 fold frames before it.
+  - The fault contexts replay the bench's sequence: 64, a forward tick to 21-25, a walk to 82-88, a back tick, then
+    125-127.
+- **The separating reading.** Every `B` fault is in the unarmed walk after a forward tick. Under `FIX`, `HOLD` faults 0
+  of 16.
+
+**G-4: while armed, the field's speed runs away from the rotor's.**
+- **The mechanism (DERIVED; §4.11.11 S-b).**
+  - While armed, every pass ends set back at 64, so `jerkStep`'s `LAG_SOFT` gate (`:8999-9010`) never sees 80. The
+    generator keeps accelerating `drv_incr` toward the command.
+  - D-3 decays it only on fold passes. So `drv_incr` stays at 47-75 % of 245×10⁶ while the rotor crawls at 3-4 %.
+  - When the limits return (40 A) and full power (165×10⁶) is commanded, the command is below `drv_incr`, so the state is
+    SPIN_DN. As built (`:8881`), that disarms.
+  - The field then leaves at `drv_incr`. The lag reaches `LAG_HOLD` within a few passes, and D-2's boost lifts the duty
+    into the 40 A fold.
+- **The bench.**
+  - `BM-FOLLOW` OVER `drv_incr` −116.5 / 113.9 / −128.1×10⁶, permille 475 / 464 / 522 (seq 159, 269, 378). DRIVER_REV
+    47 read −31×10⁶ (12.6-13.1 %).
+  - `BM-ABORT` seq 161, `ABS_CURRENT` 1,445 mV, 65 ms after `BM-OCLIM` seq 160 by the host's timestamps.
+  - `BM-POWER` seq 162: `drv_incr` −120.7×10⁶, 0 ticks, `ABORTED`.
+  - LEFT forward completed (seq 271, follow 99 %). RIGHT fell silent after seq 379.
+- **The model** (`overend`; LEFT / RIGHT). T-1 changes nothing here: this is the fold, not the ceiling.
+
+| Drive | Field over the last 1 s at 1 A, rotor (% of 245×10⁶) | DC-link peak after the restore | Over 10 A |
+|---|---|---|---|
+| `R47 $CAL` | 12.6-12.7 % (§4.11.4; bench 12.6-13.1 %), 3.6-3.7 % | 4.69 / 4.50 A | 0 ms |
+| `B` | 73.1 / 74.0 %, 3.0 % | **34.0 / 33.9 A** | 320 / 374 ms |
+
+- **The separating reading: the field's speed at the release.**
+  - REV 47's 13 % gives no surge, and `B`'s 74 % does.
+  - Holding the hold through SPIN_DN without a cap (U-4, `u_dn=1`) still surges (33.8 / 31.3 A). So the carrier is a
+    release at a runaway field speed, not the state change.
+- **The model's currents run high** (§4.11.9: 3.3-4× the bench's at speed). Compare within the table: B's surge is 7×
+  REV 47's.
+
+#### 4.12.3 Model changes (`spin2_model.py`, additive)
+
+New modes:
+- **`grab`** (floor-grab).
+  - A straight drive at power 7 under the 2 A limit. From 1.0 s, a hand on the LEFT tyre: a damper (`grab_B`, N m s/rad)
+    to a hand moving at `grab_v` of the commanded speed.
+  - The hand's speed changes by up to `grab_a` of it every 1 / `grab_f` s: a sine, or (`grab_rnd` 1) random −1..1, or
+    (2) random −1..0.
+  - Prints each wheel's rate, the LEFT field's speed, the |err| 82..88 time, ticks against the field from it, the
+    longest tick gap (LDHOLD's reading), and each fault: armed or not, lag or lead.
+- **`overend`** (dual-limits).
+  - Wheels up at `top_v` (21.3), from 175×10⁶: 245×10⁶ at 1 A for `ov_hold` (4) s, then 40 A and 165×10⁶ together. That
+    is `overCommandStep()` then `limPowerCheck()`.
+  - Prints the field's and rotor's speeds before the restore, then the DC-link peak, the time over 10 A, AT_SPEED and
+    the full-power rate.
+
+New switches, all off by default:
+- **`u_arm`, `u_span`, `u_cap`, `u_cap_sec`**: U-1, U-2, U-5 (§4.12.4).
+- **`u_give`, `u_jgate`, `u_dn`**: the rejected U-3, U-3b, U-4 (§4.12.5). `u_dn` also moves the blocked count's limiter
+  half into SPIN_DN and onto the fold-back only.
+- **`c4_state`**: the as-built disarm in any state but SPIN_UP / AT_SPEED (`:8881`), which the model lacked.
+  - It matters on the floor. The steering object's scaling puts a held wheel into SPIN_DN, where the hold disarms.
+  - `RAND` faults 3 of 16 without it and 6 with it. `HOLD` faults 0 without it and 1 with it.
+  - The obstacle and every §5 row are identical, or within 0.2 ms of window time.
+  - It is part of `B` and `FIX`.
+- **`blkwin`**: the BLKWIN mirror in `block` mode, at every frame and at the harness's 5 ms poll. It also prints the
+  window time split by armed and unarmed.
+- **`lim_prog`** (an argument to `run()`): a limit change mid-run.
+
+**The hands are harsher than the bench.**
+- REV 46 passed its bench grab (2026-09-30 floor2, §3), but the model faults it 4 of 16 under `HOLD` and 14 of 16 under
+  `RAND`.
+- So grab faults are compared within a row, and the window time (|err| 82..88, the exposure) is the steadier reading.
+- `HOLD` is the hand the run sheet asks for ("hold steadily"). `RAND` is a bound.
+
+**Identity checks** (the commands in §4.12.11):
+- `legs`, `block ob_n=16 ob_k=1000 $R48 $CAL` and `topspd $T1 $CAL top_v=21.3 top_over=1` printed the same lines before
+  the edit and after it.
+- `block` reproduces §4.10.8's 15 / 1 / 0, 1,080-1,738 ms, 87 back ticks.
+- `topspd` reproduces §4.11.4's 245 at 1 A: field 64.8 %, rotor 3.4-3.5 %.
+
+#### 4.12.4 The corrections
+
+**U-1 · arm at the first fold-back (closes G-2).**
+- **Mechanism.** On any pass in SPIN_UP / AT_SPEED where the fold-back acted since the previous pass (T-1's limiter):
+  `lim_arm := 1` and `lim_pos := pos_`, whatever `lag_s` reads. If `lag_s` ≥ 64 the pass also sets back, as today.
+- Every later fold re-arms at its own sector. The set-back no longer arms.
+
+**U-2 · disarm only after a whole sector forward with no fold-back (closes G-3).**
+- **Mechanism.** The disarm test becomes `pos_ − lim_pos ≥ LIM_SPAN` (2) in the field's direction, instead of ≥ 1.
+- `lim_pos` is the sector of the most recent fold. So the hold disarms only once the rotor has crossed one whole sector
+  forward without a fold-back.
+- A wheel crawling at its limit folds within every sector, so it stays armed. That holds on the bench, where the gaps
+  between folds were 6-10 ms against 60-120 ms per tick. It holds in the model too (23 ms against more than 100 ms).
+- Any state but SPIN_UP / AT_SPEED still disarms, as built.
+
+**U-5 · at the release, cap the field's speed (closes G-4).**
+- **Mechanism.** When the hold disarms, by U-2 or by the state test:
+  `|drv_incr| := min(|drv_incr|, 4 sectors / n)`, where n is the drive passes since the last fold.
+- If the cap acts, `accel_now := 0`: the generator restarts its ramp from the capped speed toward the command.
+- A sector is 2³²/6 of `angle_`, so the numerator is 2,863,311,531, and n is forced to at least 2.
+- **The cap never binds a running wheel** (§4.12.6): the design, step, ramp and stepdn rows are identical.
+
+**Invariants, by construction.**
+- **(I-9′, U-1 + U-2)** The hold's reach.
+  - It runs from the pass after a wheel's first fold-back action in SPIN_UP / AT_SPEED until the rotor has crossed a whole
+    sector forward with no fold-back action, or the state leaves.
+  - Throughout, the field is at most `LAG_LIM` ahead of the rotor's sector at the end of every drive pass.
+  - So one back tick reads at most 64 + 42.7 = 106.7 < 125, and the next pass sets it back.
+  - A fault would need two back ticks within one pass (0.52 ms). That is over 3,800 sectors a second, eight times the
+    top speed's 494.
+  - So **no tick against the field can fault while the wheel is limited.** It does not cover the contact transit before
+    the first fold-back (§4.9.4).
+- **(I-12, U-5)** Where the field restarts.
+  - The rotor moved less than 2 sectors in those n passes (it had not reached `lim_pos` + 2 before the release). So the
+    cap is at least twice its mean speed since the fold.
+  - That is at least its present speed for any rotor whose present speed is at most twice its mean, such as uniform
+    acceleration from rest. **The field never restarts behind such a rotor.**
+  - On a U-2 release the rotor moved more than 1 sector, so the cap is at most 4× its mean speed. **The field restarts
+    within 4× of the rotor's own speed**, not from a speed the hold had hidden.
+- **I-2, I-11 (T-1) and D-3 stand.** `holdDecay` and its Z are as built.
+- **I-1 stands.** Calm running never folds, so it never arms; every `design` leg is identical.
+
+**The PASM sketch.** The build counts and checks it.
+- **Flags:**
+  - CMP / CMPS / TESTB with WC write C only (`p2kbPasm2Cmps`, `p2kbPasm2Testb`).
+  - SUB, MOV, ADD and NEG without WC/WZ write none (`p2kbPasm2Sub`).
+  - TJZ / TJNZ write none (`p2kbPasm2Tjz`, `p2kbPasm2Tjnz`).
+  - QDIV writes none, and its result is ready 55 clocks after issue (`p2kbPasm2Qdiv`).
+  - GETQX writes none without WC/WZ (`p2kbPasm2Getqx`).
+  - FLES / FGES / FGE write none without WC/WZ (`p2kbPasm2Fles`, `p2kbPasm2Fges`, `p2kbPasm2Fge`).
+- **So Z** (D-3's fact for `holdDecay`) is written once, by the head's `CMP WZ`, and by nothing after it on any path.
+
+```
+' passEnd (:8821-8822), after lim_seen:                              (T-1, §4.11.7)
+                mov     fold_seen, foldback_cnt_
+' gettgtincr's re-take (:8804-8805), beside lim_seen:
+    if_nz       mov     fold_seen, foldback_cnt_
+
+holdGate        mov     tmpX, duty_capped_              ' D-3's fact, as built
+                add     tmpX, foldback_cnt_
+                cmp     tmpX, lim_seen              wz  ' Z: no limiter acted. Written here only
+                cmp     drv_state_, #DCS_SPIN_DN    wc  ' C: SPIN_UP or AT_SPEED
+    if_nc       jmp     #.offState                      ' any other state: release (if armed), today's gate
+                mov     tmpX, foldback_cnt_             ' T-1: did the FOLD-BACK act since the previous pass?
+                sub     tmpX, fold_seen
+                tjnz    tmpX, #.fold                    ' U-1: yes -- arm (or re-arm) here, whatever lag_s reads
+                tjz     lim_arm, #.today                ' no fold, not armed: LAG_HOLD (T-1: a ceiling clamp alone)
+                add     lim_n, #1                       ' U-5: passes since the arming fold
+                mov     tmpX, pos_                      ' U-2: sectors forward since that fold
+                sub     tmpX, lim_pos
+                testb   drv_incr, #31               wc
+    if_c        neg     tmpX
+                cmps    tmpX, #LIM_SPAN             wc  ' LIM_SPAN = 2. C: a whole sector not yet crossed
+    if_c        jmp     #.limHold                       '  still armed
+.offState       tjz     lim_arm, #.today                ' (from the line above lim_arm is set: falls through)
+                jmp     #holdRelease                    ' U-2's release with U-5's cap (cog RAM); returns from there
+.today  _ret_   cmps    lag_s, #LAG_HOLD            wc
+.fold           mov     lim_pos, pos_                   ' U-1: armed at the fold's sector
+                mov     lim_n, #0
+                mov     lim_arm, #1
+.limHold        cmps    lag_s, #LAG_LIM             wc  ' as built (:8893-8905), less the two arming lines (:8906-8907)
+    if_c        ret
+                mov     tmpX, lag_s
+                sub     tmpX, #LAG_LIM
+                shl     tmpX, #24
+                testb   err_, #31                   wc
+    if_c        neg     tmpX
+                sub     angle_, tmpX
+                sub     prior_angle, tmpX
+    _ret_       modc    _clr                        wc
+
+' cog RAM (the LUT cannot take it, below)
+holdRelease     mov     lim_arm, #0                     ' U-2: released
+                fge     lim_n, #2                       ' n >= 2: the quotient stays under 2^31 (a positive signed cap)
+                qdiv    ##LIM_CAP_K, lim_n              ' U-5: 4 sectors, 4 x 2^32 / 6 = 2_863_311_531, / n passes
+                getqx   tmpX                            '  the cap (waits out the CORDIC's 55 clocks)
+                testb   drv_incr, #31               wc  ' C: the field runs backward
+    if_c        neg     tmpX                            ' the cap, signed as the field
+                mov     tmpY, drv_incr
+    if_nc       fles    drv_incr, tmpX                  ' forward: drv_incr := min(drv_incr, cap)
+    if_c        fges    drv_incr, tmpX                  ' backward: drv_incr := max(drv_incr, -cap)
+                sub     tmpY, drv_incr                  ' 0 when the cap did not act
+                tjz     tmpY, #.rel
+                mov     accel_now_, #0                  ' capped: the generator's ramp restarts from here
+.rel    _ret_   cmps    lag_s, #LAG_HOLD            wc  ' then today's gate
+```
+
+- **What stays as it is.**
+  - `driveFromRest` and `.clearRun` still zero `lim_arm`. `lim_n` needs no clearing: it is set at every arming and forced
+    to at least 2 at use.
+  - `lim_n` wraps only after 2³² passes (26 days) armed with no fold and no release.
+- **UNVERIFIED, for the build:**
+  - that `tmpY` is dead across `holdGate` (`holdDecay` and `passEnd` write it before reading);
+  - the assembler's acceptance of `##` on QDIV's D (`p2kbPasm2Qdiv` documents `{#}D`; its example uses `##` with MOV).
+
+**Cost (ESTIMATE from the sketch; the build counts from the listing).**
+
+| Part | LUT longs | Cog longs | Time |
+|---|---|---|---|
+| `holdGate` (28 → 32) | +4 | — | about 0-4 clocks per running pass; +6 on a fold pass |
+| T-1's `fold_seen` snapshots (`passEnd`, `gettgtincr`) | +2 | +1 register | 2 clocks per pass each |
+| `holdRelease` | — | +14 | about 95 clocks on a release pass (QDIV 55 + 9 to issue + 14 instructions) |
+| `lim_n` | — | +1 register | — |
+| **Total** | **+6: 13 → 7 free** | **+16: 50 → 34 free** | worst window 2,221 + 95 ≈ 2,316 clocks, about 64 % of the frame (budget 75 %) |
+
+- **Why `holdRelease` is in cog RAM.** The whole of U-5 in the LUT would need about 19 longs, which is 6 more than are
+  free. A release is rare, and the CALL / JMP across the boundary is already the driver's pattern (`drvMotor`).
+- **ABI: none.** No params or status long is added. DRIVER_REV 49.
+- **Text to change:**
+  - the comments at `:7048-7070`, `:7082-7087`, `:7807-7811`, `:8384-8387` and `:8858-8875`;
+  - the `fit` notes at `:8503` and `:8516`.
+
+#### 4.12.5 Candidates considered
+
+All runs below are `$CAL`, 16 trials per cell. "Grab" cells read `HOLD` / `RAND`: faults of 16, then the |err| 82..88
+time.
+
+| Candidate | Modelled | Verdict |
+|---|---|---|
+| **U-1 + U-2 + U-5 (4 sectors)** = `FIX` | §4.12.6 | **Recommended** |
+| U-1 + U-2, no cap | G-2 / G-3 as `FIX` (grab 0 / 318 ms; 2 / 862 ms). G-4: 33.8 / 31.3 A, over 10 A for 20-62 ms | Not enough: the release still carries the runaway speed |
+| U-3: an armed pass that holds also gives way (`holdDecay` on every armed held pass; the evaluation's candidate) | G-4 closed: 0.45 / 0.87 A. With `FIX`, grab `HOLD` 0 → 2 faults and 386 → 952 ms; `RAND` 4 → 11; solid obstacle 16 / 0 / 0 → 15 / 0 / 1; rocking median latch 1,131 → 1,679 ms (max 2,396) | **Rejected.** See the note below the table |
+| U-3b: while armed, `jerkStep`'s lag gate reads `LAG_SOFT` (no acceleration behind the set-back) | field 36-37 %, G-4 32.5 / 20.6 A | Rejected: not enough. D-3 decays only on fold passes, about 50 a second |
+| U-4: the hold acts and stays armed in SPIN_DN (and the blocked count's limiter half follows it there, on the fold only) | G-4 with no cap: 33.8 / 31.3 A; with the cap: identical to the cap alone. With U-3 it was part of the 13-of-16 `RAND` row | Not needed: the release, not the state, carries G-4 |
+| U-5 at 2 sectors (the bound itself) | G-4 0.42 / 0.56 A; but the 8 N·m step falls 99.8 → 98.2 % (path limiter engaged at 865 ‰) and 2 N·m −0.1 | Rejected: a cap equal to the rotor's mean speed can sit below a rotor still accelerating |
+| U-5 at 3 sectors | G-4 2.04 / 2.09 A; step rows identical | Viable. 4 is chosen for I-12's lower bound (at least the present speed of a rotor accelerating uniformly from rest) |
+| Disarm after N passes with no fold (a time window, as F-b) | not run | Rejected, DERIVED: the gap between folds is set by noise and is unbounded in principle, the reason F-b was not taken (§4.10.7) |
+
+**Why U-3 is rejected.** The decaying field engages the steering path limiter: RIGHT slows to 19-29 %, so the line is
+kept better. But the scaling unloads the held wheel, which then drops out of the hold more often. And a hand that pushes
+the wheel on overtakes the decayed field. That is lead faults, the way REV 46 behaves: `RAND` 14 of 16.
+
+#### 4.12.6 The measure of benefit (for Stephen; P5)
+
+MODELLED unless marked: central parameters under `CAL`, 16 trials per cell. The model's currents run high (§4.11.9), so
+currents are compared within a row.
+
+| What a user sees | DRIVER_REV 48 + T-1 (`B`) | **+ U-1, U-2, U-5 (`FIX`)** | Standing |
+|---|---|---|---|
+| Driving into a solid obstacle (2 A): stopped by itself / pushed on / lag fault | 15 / 0 / 1; stopped 1,009-1,169 ms after contact | **16 / 0 / 0**; 1,009-1,359 ms (3 contacts about 270 ms later; the stop after the last tick is 1,002-1,282 ms) | MODELLED; bench REV 48: both trials stopped, 1,002 / 1,022 ms |
+| The same: the field read in the fault band after the current limit acted (BLKWIN, 5 ms poll) | 6 hits on 3 contacts, up to 92 | **0** | MODELLED; bench REV 48: 1 hit per trial (85, 83) |
+| A yielding obstacle (1,000 N/m) | 15 / 1 / 0; 1,080-1,738 ms | 15 / 1 / 0; 1,080-1,773 ms | MODELLED |
+| A yielding obstacle (3,000 N/m) | 15 / 1 / 0; 1,031-1,325 ms (without `c4_state`) | 15 / 1 / 0; 1,032-1,323 ms | MODELLED |
+| A hand holding a wheel steadily at the 2 A limit: lag faults of 16; time in the fault band | 1; 468 ms | **0; 386 ms** | MODELLED; bench REV 48: 1 fault in 1 grab |
+| A rougher hand: lag faults of 16; time in the band | 6; 895 ms | **4; 791 ms** (one is at the grab's onset, before any limit acted) | MODELLED |
+| The grabbed wheel's longest pause between ticks (LDHOLD) | up to 1,142 ms | up to 1,127 ms | MODELLED (the hand decides it) |
+| The other wheel during the grab (does the platform keep its line?) | 91-100 % while the held one runs 9-21 % | 79-98 % | MODELLED: **neither keeps the line** (S-b) |
+| End of a long current limit (1 A over-command, then full power): battery-current peak; time over 10 A | **34.0 / 33.9 A; 320 / 374 ms** | **2.96 / 2.56 A; 0 ms** (REV 47: 4.69 / 4.50 A) | MODELLED; bench REV 48: ~9.6 A abort, REV 47: clean |
+| The same: the field's speed during the over-command (FOLLOW reads it) | 73-74 % of 245×10⁶, rotor 3.0 % | 42-45 %, rotor 4.4-4.5 % (`topspd`: 55-58 %, against 64.8 %) | MODELLED (S-b stands) |
+| The same: full power reached after the restore | in 0.7-1.0 s (after the surge) | in 2.5 s (REV 47: 2.2 s) | MODELLED |
+| Top speed, wheels up, 165-245×10⁶ at both supplies (T-1's rows) | §4.11.4 | **identical, every rung** | MODELLED |
+| Spin legs (all nine): speed, err_pk, swing | 99.6-100.5 %, 68-76, 39-295 | identical, digit for digit | MODELLED |
+| One-sided load, power 13: 1 / 2 / 4 / 8 N·m | 99.1 / 99.2 / 99.4 / 99.8 % (RIGHT 100 / 100 / 100 / 99.9) | identical; 8 N·m **99.9** / 99.9 | MODELLED |
+| 1 / 2 / 4 N·m on 1.0-2.0 s, released: speed after | 99.7 / 99.8 / 99.9 % | 99.7 / **99.7** / 99.9 % | MODELLED |
+| Ramps 200 / 1,000 / 3,000 mm/s² | 1,800 / 1,800, 560 / 559, 322 / 321 ms | identical | MODELLED |
+| Wheels up, unloaded, and the slow-down kicks (80 → 20, 40 → 20, the stop from 147×10⁶) | +52 / +52 mV, +30 / +27 mV, 2.34 / 2.38 A | identical | MODELLED |
+| FlySky slow-downs and reversals: lag faults of 15; band time | 0; 626 ms | identical | MODELLED |
+
+**Rows that move the wrong way.**
+- **2 N·m released:** 99.8 → 99.7 %, a tenth of a point, about 0.16 of a hall tick over the 1.5 s window. U-1 and U-2
+  alone show the same.
+- **The solid obstacle's slowest stop:** 1,169 → 1,359 ms after contact, on 3 of 16 contacts.
+  - These contacts rebound one tick. The armed hold keeps the field at 64, where the trim lifts the duty more slowly than
+    D-2's boost did at 80+. So the first fold after the last tick comes about 270 ms later.
+  - The count after it is unchanged (F-a: exactly 1,000 passes). BLKSTOP's bounds hold: stand ≥ 988 ms, count
+    988-1,012 ms.
+- Every other row is identical, or better.
+
+#### 4.12.7 Recorded, not acted on
+
+- **S-b stands (§4.11.11).** While armed, `drv_incr` is not the field's speed. Two readers take it as the field's speed:
+  - the steering object's shortfall (`shortfallNow()`), so the path limiter does not engage for a wheel held at its
+    limit;
+  - the harness's FOLLOW / FOLFALL.
+- **Its fix is the rejected U-3**, or a measured rotor speed for those readers. A punch-list candidate, with LDPATH's
+  premise (§4.12.8).
+- **The model's REV 48 rows before this section lacked the as-built state disarm.** On the floor that understates the
+  grab's exposure (`RAND` 3 → 6 faults with it). The obstacle and §5 rows are unaffected.
+
+#### 4.12.8 Certification: each cell can fail on the second visit's logs
+
+| Cell | Criterion | Its negative (the second visit, unless marked) | Premise |
+|---|---|---|---|
+| **BLKWIN** (floor-obstacle; I-9′) | as SRC_REV 77: no poll reads \|e\| or \|o_e\| 82..88 from the pass after a wheel's first limiter action until its next tick | `BM-BLKWIN` seq 386 `r_hit,1,r_emax,85`; seq 760 `r_hit,1,r_emax,83` | **Should change** (not required for this run): the flag should read `foldback_frames` alone, as T-1 arms on it. With `duty_capped` in the flag, a stall that met the duty ceiling first would open a window no hold guards (T-1's boundary, §4.11.7). No obstacle trial reaches the ceiling |
+| **BLKSTOP / BLKLIMIT** | as defined, with the mirror fixed (G-1, SRC_REV 80) | `l_count,0,r_count,0` (seq 383, 757); first visit COAST `TIMEOUT` | Unchanged. `FIX` stand 1,000-1,282 ms, count 1,000 passes |
+| **BLKFLT** | the trials latch with no `EV_FAULT` / `EV_FAULT_RESYNC` | first visit BRAKE (seq 338). It passed on the second visit, so it guards against regression; it does not certify U-1..U-5 | Unchanged |
+| **LDFLT** (new, floor-grab; I-9′) | no `EV_FAULT` and no `EV_FAULT_RESYNC` from the grab's start to the leg's end, the gripped wheel slowed but moving (`BM-LOADW` `l_pct` 5-60, else NOMEAS) | `EV_FAULT_RESYNC` seq 16, `EV_FAULT` seq 19 | New |
+| **OVRSTEP** (new, dual-limits; I-12) | after each over-command, the full-power step completes: `BM-POWER` why `NONE`, no `BM-ABORT` | `BM-ABORT` seq 161 `ABS_CURRENT`, `BM-POWER` seq 162 `ABORTED`; RIGHT never reached it (NOMEAS there) | New |
+| **TOPSPD** (T-1; §4.11.10) | 185 and 195 rungs: AT_SPEED within 6 s; no `lag_held` while `duty_capped` advances and `foldback_frames` does not | rids 14 / 35 / 56 `STEADY_TIMEOUT` | As proposed in §4.11.10; its trace half needs SRC_REV 79 |
+| LDHOLD (gripped wheel's tick gap ≤ 1,000 ms) | as defined | 99,999 ms (the fault) | **Must change, or it can fail a correct drive.** A steady hold near a stop gives 1,127-1,142 ms in the model under both drives. Judge it only when `l_pct` ≥ 15, or drop it |
+| LDPATH (line mismatch ≤ 100 ‰) | as defined | 666 ‰ | **Will fail under `FIX`** (S-b): re-premise to NOMEAS while a wheel is held at its limit, or carry as a known failure |
+| FOLLOW / FOLFALL (the over-command's field) | as defined | NOMEAS (the run stopped) | **Will fail** (S-b: field 42-58 %); same disposition as LDPATH |
+| Regression guards: `dual-a` (SRVKEEP, LAGBND, TRKICK-A), `floor-auto` (SPINRATE, RAMPARR, SPINHOLD) | as defined | — (they passed; a drop is the regression) | Unchanged |
+
+#### 4.12.9 Recommendation
+
+**RULED (STEPHEN 2026-10-03, *"yes A"*): build U-1, U-2 and U-5 with T-1** (DRIVER_REV 49).
+
+**RULING NEEDED (P5): build T-1 + U-1 + U-2 + U-5 (DRIVER_REV 49) for the third visit?**
+- **Recommendation: yes.**
+- **Why:**
+  - Each closes one gap by construction (I-9′, I-12), and each gap is reproduced in the model with the bench's own
+    readings.
+  - Nothing else moves: one row loses 0.1 point, and one obstacle row is slower on 3 of 16 contacts.
+  - The cost is about 6 LUT and 16 cog longs, with no ABI change.
+- **What not to build:** U-3, the evaluation's third candidate. It closes G-4 but brings back REV 46's grab and obstacle
+  exposure (§4.12.5).
+- **Before the run sheet** (the arbiter's, not this design's): the harness changes in §4.12.8.
+  - BLKWIN's flag on the fold-back;
+  - the new LDFLT and OVRSTEP;
+  - LDHOLD's and LDPATH's premises.
+
+#### 4.12.10 Not checked, and the model's limits
+
+- **The hand.**
+  - No modelled hand reproduces the bench's grab exactly. Both are harsher than the bench (REV 46 faults 4 of 16 under
+    `HOLD`), so fault counts are compared within a row. The band time is the steadier reading.
+  - The grab's fault at the onset, before any limit acts, is the contact transit (§4.9.4). Nothing here changes it.
+- **Not modelled:**
+  - the default 27 A limit on an obstacle or grab;
+  - Rev A;
+  - unequal hall sectors (U-2 counts sectors);
+  - a lead write moving `err_` (I-9′'s margin is 18 counts, §4.9.4);
+  - the right board's silence (whether it reset is UNKNOWN; U-5 removes the modelled surge).
+- **U-5's lower bound (I-12)** covers a rotor whose present speed is at most twice its mean since the fold. A sharper
+  acceleration can restart the field behind the rotor. It is DERIVED as harmless, because the generator ramps up and
+  the gap is a fraction of a sector, but it is not modelled beyond the step and release rows.
+- **T-1's boundary** (a stall that meets the duty ceiling first, the 12 V DocoEng build) is still not run (§4.11.7).
+- **The PASM sketch is not assembled.** Its costs are ESTIMATE.
+
+#### 4.12.11 Reproduce
+
+```
+S=DOCs/plans/servo-model; CAL="pasm=1 v_dt=0.18 i_noise=3"; R47="acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1"
+R48="$R47 cap_lift=48 d5_sticky=1 blk_fix=1"; T1="$R48 d5_fold_only=1"; B="$T1 c4_state=1"
+FIX="$B u_arm=1 u_span=2 u_cap=1 u_cap_sec=4"
+HOLD="grab_B=5 grab_v=0.45 grab_a=0.8 grab_f=5 grab_rnd=2 grab_n=16"
+RAND="grab_B=5 grab_v=0.15 grab_a=1.0 grab_f=5 grab_rnd=1 grab_n=16"
+python3 $S/spin2_model.py block ob_n=16 ob_k=50000 $B $CAL blkwin=1      # G-2 reproduced; and $FIX; ob_k=1000, 3000 ($T1 at 3000)
+python3 $S/spin2_model.py grab $B $CAL $HOLD diag=1                      # G-3 reproduced; and $RAND; and $FIX
+python3 $S/spin2_model.py grab $CAL $HOLD                                # the hands against REV 46; and $R47; and $RAND
+python3 $S/spin2_model.py overend $R47 $CAL                              # G-4: REV 47; $B; $FIX
+python3 $S/spin2_model.py overend $B $CAL u_arm=1 u_span=2 u_dn=1        # U-4 without the cap; u_cap=1 u_cap_sec=2 / 3 / 4
+python3 $S/spin2_model.py overend $T1 $CAL u_give=1                      # U-3; and $B $CAL u_arm=1 u_span=2 u_jgate=1 (U-3b)
+python3 $S/spin2_model.py grab $FIX $CAL $HOLD u_give=1                  # U-3 with FIX; $RAND; block ob_k=1000 / 50000
+python3 $S/spin2_model.py step $FIX $CAL                                 # and u_cap_sec=2, 3; and $B
+python3 $S/spin2_model.py release|design|ramp|wheelsup|stepdn|reversal $FIX $CAL   # 4.12.6; each against $B
+python3 $S/spin2_model.py topspd $FIX $CAL top_v=21.3 top_over=1          # and top_v=19.2 top_lo=145 top_hi=185 against $T1
+python3 $S/spin2_model.py legs                                           # identity: as before the edit
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 $R48 $CAL               # identity: 4.10.8's 15 / 1 / 0, 1,080-1,738 ms
+python3 $S/spin2_model.py topspd $T1 $CAL top_v=21.3 top_over=1           # identity: 4.11.4, 245 at 1 A field 64.8 %
+```
+
+`$T1`, `$B` and `$FIX` do not include `$CAL`: pass it with each, as shown.
+
 ---
 
 ## 5. The measure of benefit (for Stephen's decision; P5)

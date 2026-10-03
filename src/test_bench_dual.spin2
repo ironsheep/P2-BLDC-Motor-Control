@@ -766,6 +766,51 @@
 ''               ratio_x100 still prints (the record's shape is the same). PL-185: LOAD_LIMIT_A 4 -> 2 (and
 ''               gen_dual_assets.py's: its panel bitmap reads 4 until regenerated). Spin leg 2 (SLOW, SCHED, LEFT) drains its capture as a
 ''               trace (bSpLegTraced(), BM-SPIN traced), with no START cell; FLOOR_EST_KB 450 -> 575, FLOOR_EST_S 182, the cap 550.
+''               02 Oct 2026 -- SRC_REV=79 (no format change; INSTRUMENTATION, no new verdict cell -- the cells come once the study says what
+''               the trace must show): PL-187 (task 3668), the rough running above 175 x 10^6. Part LIMITS' LIMTOP traces, per wheel and
+''               direction, the climb's EDGE rung (its first not-clean rung: 185 x 10^6, STEADY_TIMEOUT, on 2026-10-02) and the
+''               OVER-COMMAND step (LIMTOP_MAX_INCRE at OVERCMD_LIMIT_A): each a BM-TRACE, BM-TS lines and a BM-TRACE-END, seg LIMTOP, cause
+''               EDGE or OVERCMD (two new values of BM-TRACE's cause token; the table walk of R21-DUAL-TOKTAB reads them). BM-TS already
+''               carries what the study needs per sample -- e (err), d (duty), i, ph, u, v, w, pos, hw, st -- and is unchanged (308 bytes
+''               worst case); the PWM levels are not per sample (the ring's sample is full), BM-CLIP's room stays the capture's least.
+''               limTrace() drains the capture rungMeasure() took (decimation 1, 2 ms) just after the edge is found, before the recovery
+''               re-arms the ring, and the over-command step now arms the instrument before its command and freezes it as its window
+''               closes (before, it ran unarmed): 3_010 samples for a rung that times out, about 2_030 for the step, against a ring of
+''               4_096 (8.19 s). The log carries up to TRACE_EMIT_MAX = 400 lines a trace, so the first 100 samples and the last
+''               LIMTRACE_TAIL_SAMPLES (100) are every 2 ms and the middle is strided (16 samples, 32 ms, at these lengths). bTraceDrain() takes
+''               four one-shot shapes, all zero for every other trace: bTrWhole (the ring's event mark is ignored, so a rung's window
+''               marks cannot trim its approach; BM-TRACE-END's mark_k reads NA and why NOT_REACHED), trTail, trStrideCap (the fit may
+''               grow the stride to 32) and trWatch (the wheel is still driven while the drain runs, so traceWatchPoll() reads its
+''               safety every SAMPLE_MS inside the walks; an absolute-current abort stops it as in any watched wait). The over-command
+''               trace drains BEFORE the current limits are put back, so the wheel is held at OVERCMD_LIMIT_A throughout. The study traces
+''               are not counted into R14-DUAL-TRACES-M. LIMTOP's plan row: 360 s and 90 KB -> 380 s and 1_080 KB (BM-TRACE 233 and
+''               BM-TRACE-END 277 bytes, both unchanged; no record grows). No debug() statement is added: the footprint is unchanged.
+''               03 Oct 2026 -- SRC_REV=80 (no format change): from the second 6.1.0 visit (VISIT-6.1.0B-EVALUATION.md). PL-188: the
+''               obstacle mirror kept its count on the pass that first sees a wheel in DCS_ESTOP -- that is the latch, which this pass
+''               sees before its latch check; the SRC_REV 77 state test zeroed it there, so BLKSTOP and BLKLIMIT read a count of 0 on
+''               two correct latches (stands 1_022 and 1_002 ms). PL-182: the slow spin leg's trace emits every sample (trEmitMax, a
+''               fifth one-shot shape of bTraceDrain(); 1_711 lines on 2026-10-02, where 394 could not place its held passes);
+''               floor-auto's plan grows to about 980 KB and 185 s, its cap to 560 s.
+''               03 Oct 2026 -- SRC_REV=81, FMT 53: PL-189, PL-187 (task 3668, HOLD-SPEED-UNDER-LOAD-DESIGN.md sec 4.12.8): THE CERTIFICATION
+''               OF DRIVER_REV 49's HOLD (T-1 + U-1 + U-2 + U-5), each cell able to fail on the second visit's logs (DOCs/analyses/bench/
+''               2026-10-02b/). TWO NEW CELLS. R22-DUAL-LDFLT-P (floor-grab; I-9'): no EV_FAULT and no EV_FAULT_RESYNC on either wheel from the
+''               grab point to the leg's end, judged only when the gripped wheel was slowed but moving (BM-LOADW l_pct LDFLT_PCT_LO 5 ..
+''               LDFLT_PCT_HI 60), else NOMEAS with a why on the new record BM-LDFLT; its negative is debug_261002-143538.log (EV_FAULT_RESYNC
+''               seq 16, EV_FAULT seq 19, l_pct 19). R22-DUAL-OVRSTEP-M (dual-limits; I-12): after each over-command the full-power step
+''               completes -- its BM-POWER why NONE and no BM-ABORT in it (limPowerCheck()'s full-power window ends on no safety event); its
+''               negative is debug_261002-142002.log (BM-ABORT seq 161 ABS_CURRENT, BM-POWER seq 162 ABORTED); a step not reached is NOMEAS,
+''               and each step prints the new record BM-OVRSTEP. THREE CORRECTIONS. BLKWIN's flag reads foldback_frames alone (blkWinFold,
+''               blkFoldPrev), as T-1 arms on the fold-back only; the blocked-count mirror keeps duty_capped + foldback_frames, which
+''               bFrontProtect() still reads at DRIVER_REV 49. LDHOLD is judged only when the gripped wheel ran LDHOLD_PCT_LO (15) % or more
+''               of its command (a steady hold near a stop gives 1_127-1_142 ms gaps on a correct drive: sec 4.12.8), else NOMEAS NEAR_STOP.
+''               TWO PREMISE CHANGES (S-b, sec 4.12.7: while a wheel is held at its current limit drv_incr is not the field's speed): LDPATH is
+''               NOMEAS LIMIT_HELD when the gripped wheel's fold-back engaged during the judged window (it still judges a hold that slowed the
+''               wheel with no limit acting), and the over-command's BM-FOLLOW readings (kind OVER) print why FIELD_NOT_SPEED (their
+''               drv_incr is not the field's speed) but still fold into FOLLOW / FOLFALL, which compare measured rpm windows. BM-LOAD's tokens, LDPATH's and LDHUNT's
+''               criteria are otherwise unchanged. New records BM-LDFLT (GRAB, 192 bytes worst) and BM-OVRSTEP (LIMITS, 84); BM-FOLLOW appends
+''               why (201); four why tokens (NEAR_STOP, NOT_SLOWED, LIMIT_HELD, FIELD_NOT_SPEED; WHY_COUNT 59). evDrain() also stamps each
+''               log's EV_FAULT / EV_FAULT_RESYNC after evdFltSinceMs and the EV_FOLDBACK reading against the judged window. No debug()
+''               statement is added: the footprint is unchanged.
 ''
 '' =================================================================================================
 
@@ -883,8 +928,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 78                               ' hand-bumped whenever this file changes
-    FMT_VERSION = 52                                   ' BM- record-format version
+    SRC_REV     = 81                               ' hand-bumped whenever this file changes
+    FMT_VERSION = 53                                   ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -1034,7 +1079,7 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
 #ifdef DUAL_PART_LIMITS
 #define DBP_LIMITS
     PART_ID        = PART_LIMITS
-    ' about 17 minutes planned (emitPlan()): LIMTOP ~6, LIMRAMP ~5, LIMLOW ~6
+    ' about 17.3 minutes planned (emitPlan()): LIMTOP ~6.3, LIMRAMP ~5, LIMLOW ~6
     RUN_TIME_CAP_S = 1_800
 #else
 #ifdef DUAL_PART_FAULTRESP
@@ -1084,16 +1129,18 @@ CON { build variant -- the part, from one #ifdef chain, never a runtime test }
     '  About 575 KB (SRC_REV 78: was 450): the two traced quarter legs (about 110 KB each), the slow LEFT leg's trace (spin leg 2: it
     '  runs to the end of its 2_000 ms window, 0.4 s of spin-up + 1 s settle + 2 s + the pre-roll, about 3.7 s at the 110 KB / 3.1 s
     '  the quarter's traces cost, so about 125 KB), the fault run's trace (about 120 KB) and the records. The ring holds 8.19 s, so
-    '  the slow leg's start is not overwritten. Its drain adds about 2 s. The cap is three times the plan, to whole tens of seconds
-    FLOOR_EST_S    = 182
-    FLOOR_EST_KB   = 575
-    AUTO_EST_SPIN_S  = 92
-    AUTO_EST_SPIN_KB = 405
+    '  the slow leg's start is not overwritten. Its drain adds about 2 s. The cap is three times the plan, to whole tens of seconds.
+    '  SRC_REV 80 (PL-182): the slow leg emits every sample (trEmitMax), not 400 lines: its 2026-10-02 trace stored 1_711 at 308
+    '  bytes worst, about 530 KB in place of about 125, and about 3 s more to send at 2 Mbaud: about 980 KB, 185 s, the cap 560
+    FLOOR_EST_S    = 185
+    FLOOR_EST_KB   = 980
+    AUTO_EST_SPIN_S  = 95
+    AUTO_EST_SPIN_KB = 810
     AUTO_EST_FR_S    = 50
     AUTO_EST_FR_KB   = 130
     AUTO_EST_RAMP_S  = 30
     AUTO_EST_RAMP_KB = 10
-    RUN_TIME_CAP_S = 550
+    RUN_TIME_CAP_S = 560
 #else
 #ifdef FLOOR_ACT_OBSTACLE
 #define DBF_OBST
@@ -2226,8 +2273,9 @@ CON { record enums -- each value has a token in the DAT token tables }
         WHY_PACK_NOT_FITTED, WHY_NO_PACK, WHY_NOT_CALIBRATED, WHY_NO_METER_READING, WHY_SAME_PACK_VOLTAGE, ...
         WHY_STALLED, WHY_NOT_OVERLOADED, WHY_TOO_FEW_TICKS, WHY_NO_ROOM, WHY_LOW_CURRENT, WHY_JUDGED_ACROSS_RUNS, ...
         WHY_STOP_BEGAN, WHY_FENCE_REFUSED, WHY_NOT_CLEAR, WHY_STRAIGHTS_SKIPPED, WHY_NOT_AT_START, WHY_RATE_REFUSED, ...
-        WHY_NOT_AT_CMD_SPEED, WHY_NO_LIMITER, WHY_EVENTS_LOST
-    WHY_COUNT = WHY_EVENTS_LOST + 1
+        WHY_NOT_AT_CMD_SPEED, WHY_NO_LIMITER, WHY_EVENTS_LOST, WHY_NEAR_STOP, WHY_NOT_SLOWED, WHY_LIMIT_HELD, ...
+        WHY_FIELD_NOT_SPEED
+    WHY_COUNT = WHY_FIELD_NOT_SPEED + 1
 
   ' BM-INST event:
     #0, INST_EV_START, INST_EV_STOP, INST_EV_NOSTART, INST_EV_NOACK
@@ -2238,10 +2286,12 @@ CON { record enums -- each value has a token in the DAT token tables }
     RES_COUNT = RES_SKIPPED + 1
 
   ' trace cause (what was DONE; never what the wheel did afterwards, I7). SRC_REV 62: BLOCK is the drive into the
-  '  obstacle, DRAG the grabbed drive (SRC_REV 63: CLIMB, the incline's overloaded leg, removed with it):
+  '  obstacle, DRAG the grabbed drive (SRC_REV 63: CLIMB, the incline's overloaded leg, removed with it). SRC_REV 79 (PL-187),
+  '  LIMTOP's study traces: EDGE is a climb's first not-clean rung, OVERCMD the over-command step at the lowered current limits:
     #0, CAUSE_STOPCMD, CAUSE_STOPCOG, CAUSE_FAULT, CAUSE_ESTOP, CAUSE_RAMP, CAUSE_DISTANCE, ...
-        CAUSE_BRAKEHAND, CAUSE_FLOOR, CAUSE_START, CAUSE_SLOWER, CAUSE_SPIN, CAUSE_BLOCK, CAUSE_DRAG
-    CAUSE_COUNT = CAUSE_DRAG + 1
+        CAUSE_BRAKEHAND, CAUSE_FLOOR, CAUSE_START, CAUSE_SLOWER, CAUSE_SPIN, CAUSE_BLOCK, CAUSE_DRAG, ...
+        CAUSE_EDGE, CAUSE_OVERCMD
+    CAUSE_COUNT = CAUSE_OVERCMD + 1
 
   ' requested stop mode (what was REQUESTED, I7):
     #0, MODE_FLOAT, MODE_BRAKE
@@ -3079,16 +3129,24 @@ tokWhy     BYTE    "NONE", 0, "NO_COG", 0, "NOT_REACHED", 0, "FAULTED", 0, "STEA
                 ' SRC_REV 75 (task 3657): NOT_AT_CMD_SPEED -- a leg's wheel read under SPINRATE_FOL_LO % of its command, so a cell that
                 '  compares two pairs' currents (SPINCTL, SPINLEAD) would be comparing unequal speeds, and is not judged
                 BYTE    "NOT_AT_CMD_SPEED", 0
-                ' SRC_REV 77 (PL-179): NO_LIMITER_ACTION -- the OBSTACLE trial's wheels never had a limiter act with no hall tick since,
+                ' SRC_REV 77 (PL-179): NO_LIMITER_ACTION -- the OBSTACLE trial's wheels never had the fold-back act with no hall tick since,
                 '  so BLKWIN's window never opened; EVENTS_LOST -- the trial's event drain did not read whole, so BLKFLT cannot say no
                 '  fault was logged
-                BYTE    "NO_LIMITER_ACTION", 0, "EVENTS_LOST", 0, TOK_END
+                BYTE    "NO_LIMITER_ACTION", 0, "EVENTS_LOST", 0
+                ' SRC_REV 81 (task 3668, PL-189): NEAR_STOP -- the gripped wheel ran too little of its command for the cell to read the
+                '  hold (LDHOLD under LDHOLD_PCT_LO, LDFLT under LDFLT_PCT_LO: a wheel held near a stop); NOT_SLOWED -- it ran over
+                '  LDFLT_PCT_HI of it, so the grab did not slow it; LIMIT_HELD -- the gripped wheel's fold-back was engaged in the
+                '  judged window, so drv_incr is not the field's speed there (S-b) and LDPATH's line check reads a premise that no
+                '  longer holds; FIELD_NOT_SPEED -- BM-FOLLOW's over-command reading, whose printed drv_incr / permille are not the
+                '  field's speed (it still folds: the cells compare measured rpm windows)
+                BYTE    "NEAR_STOP", 0, "NOT_SLOWED", 0, "LIMIT_HELD", 0, "FIELD_NOT_SPEED", 0, TOK_END
 tokInstEv    BYTE    "START", 0, "STOP", 0, "NOSTART", 0, "NOACK", 0, TOK_END
 tokInstSt       BYTE    "IDLE", 0, "RUN", 0, "FREEZE", 0, "FROZEN", 0, "EXITED", 0, TOK_END
 tokRes          BYTE    "OK", 0, "FAULT", 0, "STEADY_TIMEOUT", 0, "WINDOW_TIMEOUT", 0, "NO_COG", 0
                 BYTE    "ABORT_I", 0, "SKIPPED", 0, TOK_END
 tokCause        BYTE    "STOPCMD", 0, "STOPCOG", 0, "FAULT", 0, "ESTOP", 0, "RAMP", 0, "DISTANCE", 0
-                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0, "SLOWER", 0, "SPIN", 0, "BLOCK", 0, "DRAG", 0, TOK_END
+                BYTE    "BRAKEHAND", 0, "FLOOR", 0, "START", 0, "SLOWER", 0, "SPIN", 0, "BLOCK", 0, "DRAG", 0
+                BYTE    "EDGE", 0, "OVERCMD", 0, TOK_END
 tokMode        BYTE    "FLOAT", 0, "BRAKE", 0, TOK_END
 tokTend         BYTE    "REST", 0, "TIMEOUT", 0, "FAULT", 0, "ABORT", 0, "FROZEN", 0, TOK_END
 tokRst          BYTE    "NONE", 0, "RESET", 0, "RESTART", 0, "FAILED", 0, TOK_END
@@ -3221,7 +3279,7 @@ estPlan         WORD    0, 0                                    ' SEG_NONE
                 WORD    240, 25                                 ' SEG_ALIGN
                 WORD    270, 135                                ' SEG_LEAD
                 WORD    20, 1                                   ' SEG_TAKE
-                WORD    360, 90                                 ' SEG_LIMTOP
+                WORD    380, 1_080                              ' SEG_LIMTOP (SRC_REV 79: was 360, 90; the eight study traces are 990 of it)
                 WORD    300, 1_950                              ' SEG_LIMRAMP
                 WORD    360, 45                                 ' SEG_LIMLOW
                 WORD    320, 2_330                              ' SEG_FLTRESP
@@ -3651,6 +3709,12 @@ sSfCellBlkWin   BYTE    "R22-DUAL-BLKWIN-P", 0
 sSfCritBlkWin   BYTE    "NO_FIELD_82_TO_88", 0
 sSfCellBlkFlt   BYTE    "R22-DUAL-BLKFLT-P", 0
 sSfCritBlkFlt   BYTE    "LATCH_NO_FAULT", 0
+' SRC_REV 81 (task 3668, PL-189): the hold's two new cells -- LDFLT on the GRAB trial (part SPIN, suffix P), OVRSTEP on the
+'  over-command's full-power step (part LIMITS, suffix M)
+sSfCellLdFlt    BYTE    "R22-DUAL-LDFLT-P", 0
+sSfCritLdFlt    BYTE    "GRAB_NO_FAULT", 0
+sSfCellOvrStep  BYTE    "R22-DUAL-OVRSTEP-M", 0
+sSfCritOvrStep  BYTE    "FULL_STEP_COMPLETE", 0
 sSfCritPkCal    BYTE    "CAL_POINT_MV", 0
 sSfCritPkSecond BYTE    "SECOND_POINT_MV", 0
 sSfCritPkAbsent BYTE    "UNPLUG_NOT_ABSENT", 0
@@ -3860,6 +3924,14 @@ VAR { drain and trace emission -- cog 0 only, legal while the instrument is IDLE
     LONG    trLastUp
     LONG    trIgRun
     LONG    bTrEmitted
+    ' a LIMTOP study trace (limTrace(), SRC_REV 79) sets these before bTraceDrain(), which clears the first three after it; zero is every other trace
+    LONG    trTail                                          ' trailing samples that are each a line, whatever the stride (0: none)
+    LONG    trStrideCap                                     ' the stride the fit may grow to (0: TRACE_STRIDE_MAX)
+    LONG    trEmitMax                                       ' SRC_REV 80 (PL-182): the lines the fit may emit (0: TRACE_EMIT_MAX); the slow spin leg sets it
+    LONG    bTrWhole                                        ' TRUE: k = 0 is the first stored sample and the ring's event mark is ignored
+    LONG    trWatch                                         ' SIDE_* whose safety traceWatchPoll() reads while the drain runs (SIDE_NONE: none)
+    LONG    trWatchEvent                                    ' the worst SAFE_* those reads returned
+    LONG    trWatchMs                                       ' getms() of the last of those reads
 
 VAR { window statistics from drained samples (I2) -- filled by windowStats() }
 
@@ -10188,7 +10260,7 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
   '  own limb would let a stuck reading choose the limb it passes. Both cells judge the gap |driver - harness| less
   '  the window's own tick quantisation (rateBandPct()) against FOLLOW_GAP_PTS:
   '   FOLLOW  - readings the harness says FOLLOWED (>= LIMTOP_FOLLOW_PCT): every clean LIMTOP rung;
-  '   FOLFALL - readings the harness says did NOT (< FOLLOW_SHORT_PCT): the over-command step after each climb.
+  '   FOLFALL - readings the harness says did NOT (< FOLLOW_SHORT_PCT): the over-command step after each climb
   '  A reading stuck at 100 fails FOLFALL by the whole shortfall; one stuck low fails FOLLOW. A reading between the
   '  two thresholds feeds neither, and a driver window that had not filled feeds neither (its number is a transient
   '  and would read as a fall for the wrong reason). NOMEAS, never PASS, when a population is empty.
@@ -10200,7 +10272,23 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
   '  to a speed it holds at that current -- about 185-195 x 10^6 on the Visit 9 figures, 76-80 % of the command --
   '  while targetIncre stays at the command. The driver's window fills at a real shortfall, bounded by the drive's
   '  own limiter, far from the scan's current wall where every scan droop was cut short. The limits are restored
-  '  and read back before anything else runs (BM-OCLIM, I11). The harness still decides the population.
+  '  and read back before anything else runs but the step's own study trace (BM-OCLIM, I11; the trace drains first, so the wheel
+  '  is still held at OVERCMD_LIMIT_A while it does). The harness still decides the population.
+  ' SRC_REV 81 (PL-189, HOLD-SPEED-UNDER-LOAD-DESIGN.md sec 4.12.7, S-b): at DRIVER_REV 49 a wheel held at its current limit is
+  '  held by the fold-back hold, and while it is, drv_incr (the printed drv_incr and the permille the path limiter reads) is not the
+  '  field's speed. The over-command step IS that situation, so its BM-FOLLOW reading (kind OVER) prints why FIELD_NOT_SPEED. It still
+  '  FOLDS into FOLLOW / FOLFALL: the cells compare the driver's rpm window (d_pct) with the harness's (h_pct), both measured rotor
+  '  rates that S-b does not touch (the second visit's three OVER readings: h_pct 3-4, d_pct 3-4, gap 0). What the over-command
+  '  newly certifies is R22-DUAL-OVRSTEP-M below.
+  ' R22-DUAL-OVRSTEP-M (new, SRC_REV 81; PL-189's I-12): the over-command is followed by limPowerCheck()'s full-power step, where the
+  '  restored limits meet whatever field the hold kept. After each over-command whose full-power step was reached, that step's window
+  '  (POWERCHK_HOLD_MS + WINDOW_MS) ends on NO safety event: BM-POWER's why NONE, and no BM-ABORT (the 10 A absolute-current abort),
+  '  fault, instrument stall or operator stop in it. BOOL per motor, ANDed over the signs reached; n is the steps reached. NEGATIVE, on
+  '  disk (DOCs/analyses/bench/2026-10-02b/debug_261002-142002.log): LEFT reverse -- BM-OCLIM seq 160, BM-ABORT seq 161 ABS_CURRENT 1_445
+  '  mV, BM-POWER seq 162 why ABORTED -- FAIL; LEFT forward BM-POWER seq 271 why NONE; RIGHT never reached its step (the log ends after
+  '  seq 379), so RIGHT reads NOMEAS with n 0. RIVAL EXPLANATION for a FAIL: the abort was the platform's, not the step's (a wheel
+  '  already running away before the limits came back): BM-FOLLOW kind OVER is printed only when the over-command's own window ended
+  '  with no safety event (seq 159 was), so a step that aborts after one is the restore's, which is the claim.
   FOLLOW_SHORT_PCT      = 90
   FOLLOW_GAP_PTS        = 5
   OVERCMD_HOLD_MS       = 3_000                             ' the field settles at the rotor's rate, and the 1 s window refills
@@ -10212,6 +10300,26 @@ CON { --- LIMITS: the limits reset's experiments E1-E4 (task 3604, DOCs/plans/LI
     #0, FOLK_RUNG, FOLK_OVER
     FOLK_COUNT = FOLK_OVER + 1
     TOKMAX_FOLK = 4
+
+  ' LIMTOP's STUDY TRACES (SRC_REV 79, PL-187: why the wheels labour above 175 x 10^6). Two per climb, each a BM-TRACE, its BM-TS
+  '  lines and a BM-TRACE-END (seg LIMTOP), drained by limTrace() from the capture the rung or step already took:
+  '   cause EDGE    - the climb's first not-clean rung (BM-TOPSPD's edge): the capture from just before its command, so the approach
+  '                   from the last clean rung, the whole AT_SPEED wait it fails (LADDER_STEADY_MS, 6 s) and, when it reached speed,
+  '                   its settle and window. It is the capture rungMeasure() took at decimation 1 (2 ms; 3_010 samples for a rung
+  '                   that times out), drained before the rung's recovery re-arms the ring
+  '   cause OVERCMD - the over-command step: armed before LIMTOP_MAX_INCRE is commanded at OVERCMD_LIMIT_A, frozen when the window
+  '                   closes, so the whole OVERCMD_HOLD_MS + WINDOW_MS (about 4 s, 2_030 samples) while the field falls back
+  '  The ring holds INST_RING_SAMPLES = 4_096 samples, 8.19 s at 2 ms; the longest rung capture (a window reached at the bound,
+  '  6 + 0.5 + 1 s) is about 3_780 samples, inside TRACE_MAX_SAMPLES. The log cannot carry 2 ms throughout (400 lines of up to
+  '  308 bytes is the cap): the first dense lines after k = 0 are every sample (100 once the fit shrinks the dense window from
+  '  TRACE_DENSE_SAMPLES), the last LIMTRACE_TAIL_SAMPLES are every sample, and between them the stride grows (bTraceDrain()) up to
+  '  LIMTRACE_STRIDE_MAX: 16 samples (32 ms) for either trace at its usual length. Each BM-TS carries i, ph, u, v, w, d (duty), e
+  '  (err) and the hall pos; the PWM levels are NOT per sample (the ring's sample is full): BM-CLIP's room is the capture's least.
+  '  k = 0 is the first stored sample, a few ms before the command (bTrWhole: the rung's window marks are not the event). The wheel
+  '  is still driven while a study trace drains, so its safety is read by traceWatchPoll(). The traces are not counted into
+  '  R14-DUAL-TRACES-M, whose population stays LIMRAMP's (limTrace() restores the counts bTraceDrain() folds).
+    LIMTRACE_TAIL_SAMPLES = 100                               ' 0.2 s at 2 ms
+    LIMTRACE_STRIDE_MAX   = 32
 
   ' LIMRAMP (E3). Per motor x sign, one lifetime: a START trace from rest to QTR at each speed-up limit, then a SLOWER
   '  trace from the ceiling to QTR at each slow-down limit, each followed by BM-RAMP; the defaults are restored and
@@ -10274,6 +10382,10 @@ VAR { LIMITS state -- cog 0 only; index = motor slot }
     LONG    sfFolN[INST_MOTORS]                             ' FOLLOW: readings judged
     LONG    sfFallGapWorst[INST_MOTORS]                     ' FOLFALL: worst unexplained gap among not-following readings, points
     LONG    sfFallN[INST_MOTORS]                            ' FOLFALL: readings judged
+    LONG    sfOvrN[INST_MOTORS]                             ' OVRSTEP (SRC_REV 81): over-command full-power steps reached
+    LONG    bSfOvrBad[INST_MOTORS]                          ' ...any of them ended on a safety event (BM-ABORT, a fault, a stalled instrument, a stop)
+    LONG    bOvrReached                                     ' the sign in progress: its over-command's full-power step was reached (limTopSign() clears it)
+    LONG    ovrSafeEvent                                    ' ...and the SAFE_* its full-power window ended on
 
 PRI segLimTop() | side, signMul
 ' LIMTOP (part LIMITS, E1 / E2): the judge's self-test, then per motor x sign one climb to the edge.
@@ -10291,9 +10403,9 @@ PRI segLimTop() | side, signMul
             limTopSign(side, signMul)
     segEnd(segWhy())
 
-PRI limTopSign(side, signMul) | slotIdx, rungIdx, motorIncre, rid, whyCode, safeEvent, topIncre, unsatIncre, edgeIncre, edgeCode, consecFaults
-' One motor x sign of LIMTOP: every rung a measured rung plus BM-CLIP, the edge found as the section's CON says,
-' then BM-TOPSPD.
+PRI limTopSign(side, signMul) | slotIdx, rungIdx, motorIncre, rid, whyCode, safeEvent, topIncre, unsatIncre, edgeIncre, edgeCode, consecFaults, traceEvent
+' One motor x sign of LIMTOP: every rung a measured rung plus BM-CLIP, the edge found as the section's CON says and its capture
+' drained as a study trace (SRC_REV 79), then BM-TOPSPD.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signMul - SIGN_NEG or SIGN_POS
@@ -10309,6 +10421,7 @@ PRI limTopSign(side, signMul) | slotIdx, rungIdx, motorIncre, rid, whyCode, safe
 ' @local edgeIncre - the first unclean rung, 0 while none
 ' @local edgeCode - EDGE_* naming why that rung was not clean
 ' @local consecFaults - consecutive faulted rungs, as the ladder counts them
+' @local traceEvent - SAFE_* the edge trace's drain read from the wheel, still driven
 
     slotIdx := side - SIDE_LEFT
     topIncre := 0
@@ -10343,6 +10456,9 @@ PRI limTopSign(side, signMul) | slotIdx, rungIdx, motorIncre, rid, whyCode, safe
                         unsatIncre := abs(motorIncre)
                 else
                     edgeIncre := abs(motorIncre)
+                    traceEvent := limTrace(side, CAUSE_EDGE, motorIncre, bRgCaptured, safeEvent)    ' the frozen capture, before the recovery re-arms the ring (I10)
+                    if safeEvent == SAFE_NONE
+                        safeEvent := traceEvent
             if bRungFaultRecover(SEG_LIMTOP, side, motorIncre, safeEvent)
                 consecFaults += 1
                 if consecFaults >= LADDER_FAULT_STOP
@@ -10353,9 +10469,12 @@ PRI limTopSign(side, signMul) | slotIdx, rungIdx, motorIncre, rid, whyCode, safe
                 whyCode := WHY_LADDER_STOPPED
             elseif (edgeIncre <> 0) and (abs(motorIncre) >= DRIVE_CEILING_INCRE)
                 whyCode := WHY_PAST_EDGE                    ' found above the ceiling: nothing past it is clean by definition
+    bOvrReached := FALSE
+    ovrSafeEvent := SAFE_NONE
     if (whyCode == WHY_NONE) or (whyCode == WHY_PAST_EDGE)
         overCommandStep(side, signMul)
         limPowerCheck(side, signMul)
+    emitOvrStep(side, signMul)
     bZeroAndWaitStopped(side)
     bInstIdle()
     wheelStop(side)
@@ -10486,6 +10605,58 @@ PRI emitTopSpd(side, signMul, topIncre, unsatIncre, edgeIncre, edgeCode)
     benchLog.numField(@"follow_pct", LIMTOP_FOLLOW_PCT, LIM_TINY)
     emitRecord()
 
+PRI limTrace(side, causeCode, motorIncre, bFrozen, endEvent) : safeEvent | slotIdx, tid, offNeg, offPos, endCode, whyCode, tracesWas, lostWas
+' One LIMTOP study trace (the section's CON): the frozen ring as BM-TRACE, BM-TS and BM-TRACE-END, drained while the wheel is still
+' driven, so its safety is read throughout (traceWatchPoll(), safeEvent) and the wheel is neither stopped nor re-commanded here. The
+' header names what was done (I7), never the outcome, and its why is NONE unless no capture exists. An unfrozen capture is never
+' drained (I10): its end is empty, why INST_NOACK. At most TRACE_EMIT_MAX BM-TS lines, the last sample always one; should the stride
+' cap be reached with more lines wanted, the cap cuts the middle and the tail short of the last sample. The drain's counts are
+' put back: R14-DUAL-TRACES-M stays LIMRAMP's.
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param causeCode - CAUSE_EDGE or CAUSE_OVERCMD
+' @param motorIncre - the command standing, signed
+' @param bFrozen - T/F where T means the capture was frozen and may be drained
+' @param endEvent - SAFE_* that ended the capture, SAFE_NONE when the harness ended it
+' @returns safeEvent - SAFE_* the drain's reads of the wheel returned, SAFE_NONE when none
+'
+' @local slotIdx - motor slot
+' @local tid - trace id
+' @local offNeg - offset_fwd read back
+' @local offPos - offset_rev read back
+' @local endCode - TEND_* the end names: the safety event's, else FROZEN (the capture ends with the wheel running)
+' @local whyCode - NONE, or INST_NOACK when there is no capture
+' @local tracesWas - sfTraces before the drain
+' @local lostWas - sfTraceLost before the drain
+
+    slotIdx := side - SIDE_LEFT
+    safeEvent := SAFE_NONE
+    tid := nextTraceId()
+    offNeg, offPos := wheelGetOffsets(side)
+    endCode := TEND_FROZEN
+    if endEvent <> SAFE_NONE
+        endCode := safeEnd(endEvent)
+    whyCode := WHY_NONE
+    if bFrozen == FALSE
+        whyCode := WHY_INST_NOACK
+    emitTrace(tid, SEG_LIMTOP, side, causeCode, motorIncre, offNeg, offPos, MODE_FLOAT, wheelAccelUp(side), whyCode)
+    if bFrozen
+        tracesWas := sfTraces
+        lostWas := sfTraceLost
+        safetyReset()
+        trWatchEvent := SAFE_NONE
+        trWatch := side
+        bTrWhole := TRUE
+        trTail := LIMTRACE_TAIL_SAMPLES
+        trStrideCap := LIMTRACE_STRIDE_MAX
+        bTraceDrain(tid, slotIdx, SLOT_RIGHT - slotIdx, endCode)
+        trWatch := SIDE_NONE
+        safeEvent := trWatchEvent
+        sfTraces := tracesWas
+        sfTraceLost := lostWas
+    else
+        traceEmptyEnd(tid, endCode, whyCode)
+
 PRI holdThenWindow(side, holdMs) : safeEvent, nTicks, nMs | startTicks, startMs
 ' Hold the command standing for holdMs, then count the wheel's hall ticks over a WINDOW_MS window, watched for
 ' safety throughout, and take the driver's following reading at the window's end (followRead()). A safety event
@@ -10519,29 +10690,42 @@ PRI followRead(side)
 
     folCmdIncr, folDrvIncr, bFolShort, folPermille, folPct, bFolOk := wheelDriveFollow(side)
 
-PRI overCommandStep(side, signMul) | motorIncre, safeEvent, nTicks, nMs, peakWas, contWas
+PRI overCommandStep(side, signMul) | motorIncre, safeEvent, nTicks, nMs, peakWas, contWas, bArmed, bFrozen, traceEvent
 ' The FOLFALL population's step (task 3597): lower the current limits to OVERCMD_LIMIT_A, command
 ' LIMTOP_MAX_INCRE, hold while the field falls back to what the rotor holds at that current and the driver's window
 ' refills, then a WINDOW_MS tick count and the driver's reading at its end, the command still standing. The limits
-' are put back and read back on every path; a fault is recovered, and the step is then not judged.
+' are put back and read back on every path; a fault is recovered, and the step is then not judged. SRC_REV 79 (PL-187): the
+' instrument is armed just before the command and frozen as the window closes, and that capture is drained as a study trace
+' (cause OVERCMD, the section's CON) while the current limits are still lowered -- the wheel is driven throughout the drain --
+' and before they are put back.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signMul - SIGN_NEG or SIGN_POS
 '
 ' @local motorIncre - the over-command, signed
-' @local safeEvent - SAFE_* from the watched waits
+' @local safeEvent - SAFE_* from the watched waits, else the trace drain's
 ' @local nTicks - ticks moved across the window
 ' @local nMs - the window's length, ms
 ' @local peakWas - the peak limit before the step, amps
 ' @local contWas - the continuous limit before the step, amps
+' @local bArmed - T/F where T means the instrument armed for the step's capture
+' @local bFrozen - T/F where T means that capture was frozen and may be drained
+' @local traceEvent - SAFE_* the trace's drain read from the wheel
 
     motorIncre := LIMTOP_MAX_INCRE * signMul
     peakWas, contWas := wheelLimits(side)
     wheelSetLimits(side, OVERCMD_LIMIT_A, OVERCMD_LIMIT_A)
+    bArmed := bInstArm(INST_SRC_WHEELS, 1)
     wheelCommand(side, motorIncre)
     safeEvent, nTicks, nMs := holdThenWindow(side, OVERCMD_HOLD_MS)
+    bFrozen := FALSE
+    if bArmed
+        bFrozen := bInstFreeze(0)
     if (safeEvent == SAFE_NONE) and (nMs > 0) and (nTicks <> 0)
         followFold(nextRungId(), side, motorIncre, FOLK_OVER, nTicks, (nTicks * RATE_X10_SCALE) / nMs)
+    traceEvent := limTrace(side, CAUSE_OVERCMD, motorIncre, bFrozen, safeEvent)
+    if safeEvent == SAFE_NONE
+        safeEvent := traceEvent
     wheelSetLimits(side, peakWas, contWas)
     emitOverCmdLimits(side, peakWas, contWas)
     bRungFaultRecover(SEG_LIMTOP, side, motorIncre, safeEvent)
@@ -10565,9 +10749,12 @@ PRI emitOverCmdLimits(side, peakWant, contWant) | nPeakA, nContA
     benchLog.boolField(@"restored", (nPeakA == peakWant) and (nContA == contWant))
     emitRecord()
 
-PRI followFold(rid, side, motorIncre, eKind, nTicks, rateX10) | slotIdx, predX10, harnessPct, nBand, nGap
+PRI followFold(rid, side, motorIncre, eKind, nTicks, rateX10) | slotIdx, predX10, harnessPct, nBand, nGap, whyCode
 ' BM-FOLLOW for one reading, and its fold into R18-DUAL-FOLLOW-M or R18-DUAL-FOLFALL-M by the HARNESS's own verdict
-' (the section's CON). The driver's side is followRead()'s staging, taken as the harness's window closed.
+' (the section's CON). The driver's side is followRead()'s staging, taken as the harness's window closed. SRC_REV 81 (PL-189,
+' S-b): a FOLK_OVER reading's why says FIELD_NOT_SPEED -- the wheel is held at OVERCMD_LIMIT_A there, so the printed drv_incr
+' and permille are not the field's speed. It still FOLDS: the cells compare the driver's rpm window (d_pct) with the harness's
+' (h_pct), both measured rotor rates that S-b does not touch (the second visit's three OVER readings: gap 0).
 '
 ' @param rid - rung id
 ' @param side - SIDE_LEFT or SIDE_RIGHT
@@ -10581,6 +10768,7 @@ PRI followFold(rid, side, motorIncre, eKind, nTicks, rateX10) | slotIdx, predX10
 ' @local harnessPct - the harness's rate as a percentage of it
 ' @local nBand - the harness window's tick quantisation, percent
 ' @local nGap - |driver - harness| less nBand, floored at 0
+' @local whyCode - WHY_NONE when the reading was folded where it qualified, FIELD_NOT_SPEED for an over-command reading
 
     slotIdx := side - SIDE_LEFT
     predX10 := abs(predictX10(motorIncre))
@@ -10589,6 +10777,9 @@ PRI followFold(rid, side, motorIncre, eKind, nTicks, rateX10) | slotIdx, predX10
         harnessPct := (abs(rateX10) * 100) / predX10
     nBand := rateBandPct(nTicks)
     nGap := (abs(folPct - harnessPct) - nBand) #> 0
+    whyCode := WHY_NONE
+    if eKind == FOLK_OVER
+        whyCode := WHY_FIELD_NOT_SPEED                  ' the printed drv_incr / permille only: the rpm windows still compare
     if (bFolOk == TRUE) and (predX10 > 0)
         if harnessPct >= LIMTOP_FOLLOW_PCT
             sfFolGapWorst[slotIdx] #>= nGap
@@ -10608,6 +10799,27 @@ PRI followFold(rid, side, motorIncre, eKind, nTicks, rateX10) | slotIdx, predX10
     benchLog.naNumField(@"gap", nGap, LIM_SMALL, bFolOk == TRUE)
     benchLog.numField(@"permille", folPermille, LIM_SMALL)
     benchLog.boolField(@"short", bFolShort)
+    benchLog.tokenField(@"why", tokenAt(@tokWhy, WHY_COUNT, whyCode), TOKMAX_WHY)
+    emitRecord()
+
+PRI emitOvrStep(side, signMul)
+' BM-OVRSTEP (SRC_REV 81, PL-189): one sign's over-command and the full-power step that follows it -- whether the step was reached
+' (limPowerCheck() ran it) and its why: NONE when its window ran to its end with no safety event, ABORTED for the absolute-current
+' abort (the BM-ABORT it follows), FAULTED, INST_STALLED or OPERATOR_STOP for the others, NOT_REACHED when the climb ended before
+' the over-command. R18-DUAL-OVRSTEP-M's n is the steps reached. Worst case 84 bytes: tag 10 + seq 15 + motor 12 + sign 10 +
+' reached 14 + why 23 (each field is 2 + its name + its width).
+'
+' @param side - SIDE_LEFT or SIDE_RIGHT
+' @param signMul - SIGN_NEG or SIGN_POS
+
+    recBegin(@"BM-OVRSTEP")
+    benchLog.tokenField(@"motor", sideToken(side), TOKMAX_MOTOR)
+    benchLog.numField(@"sign", signMul, LIM_TINY)
+    benchLog.boolField(@"reached", bOvrReached)
+    if bOvrReached
+        benchLog.tokenField(@"why", tokenAt(@tokWhy, WHY_COUNT, safeWhy(ovrSafeEvent)), TOKMAX_WHY)
+    else
+        benchLog.tokenField(@"why", tokenAt(@tokWhy, WHY_COUNT, WHY_NOT_REACHED), TOKMAX_WHY)
     emitRecord()
 
 PRI limPowerCheck(side, signMul) | speedWas, checkIdx, nPower, nExpect, safeEvent, nTicks, nMs, bHeld
@@ -10615,6 +10827,9 @@ PRI limPowerCheck(side, signMul) | speedWas, checkIdx, nPower, nExpect, safeEven
 ' table, with BM-POWER per command; maxSpeed is restored to what it was. The driver holds the mapped increment
 ' the moment driveAtPower() returns, so the verdict needs no wait: full power is held and windowed only so BM-POWER
 ' can say whether the wheel follows at the new top, and least power (under one hall edge a second) is read at once.
+' SRC_REV 81 (PL-189): the full-power command is also OVRSTEP's step -- it follows the over-command, so the restored current
+' limits meet a field the hold left behind -- and its window ending on any safety event stages bOvrReached / ovrSafeEvent and folds
+' sfOvrN / bSfOvrBad.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
 ' @param signMul - SIGN_NEG or SIGN_POS
@@ -10644,6 +10859,11 @@ PRI limPowerCheck(side, signMul) | speedWas, checkIdx, nPower, nExpect, safeEven
         bHeld := (folCmdIncr == nExpect)
         sfPowerN[side - SIDE_LEFT] := (sfPowerN[side - SIDE_LEFT] + 1) <# LIM_SMALL
         bSfPowerBad[side - SIDE_LEFT] |= (bHeld == FALSE)
+        if checkIdx == 0                                    ' SRC_REV 81 (PL-189), OVRSTEP: the full-power step after the over-command
+            bOvrReached := TRUE
+            ovrSafeEvent := safeEvent
+            sfOvrN[side - SIDE_LEFT] := (sfOvrN[side - SIDE_LEFT] + 1) <# LIM_SMALL
+            bSfOvrBad[side - SIDE_LEFT] |= (safeEvent <> SAFE_NONE)
         emitPower(side, nPower, nExpect, bHeld, nTicks, nMs, safeEvent)
         bRungFaultRecover(SEG_LIMTOP, side, nExpect, safeEvent)
     wheelSetMaxSpeed(side, speedWas)
@@ -10869,8 +11089,9 @@ PRI wheelSetDutyMin(side, dutyWant) | dutyBack
     emitRecord()
 
 PRI emitLimitsCells() | slotIdx
-' The LIMITS part's judged cells: TRACES over LIMRAMP's traces, and per motor TOPSPD and PWMCLIP. Each prints
-' NOMEAS when nothing measured it -- the top-only build takes no trace, and PWMCLIP needs its judge's self-test.
+' The LIMITS part's judged cells: TRACES over LIMRAMP's traces, and per motor TOPSPD, PWMCLIP, POWERMAP, FOLLOW, FOLFALL and
+' (SRC_REV 81) OVRSTEP. Each prints NOMEAS when nothing measured it -- the top-only build takes no trace, PWMCLIP needs its judge's
+' self-test, and OVRSTEP needs an over-command whose full-power step was reached.
 '
 ' @local slotIdx - motor slot
 
@@ -10881,6 +11102,8 @@ PRI emitLimitsCells() | slotIdx
         emitSignoffBool(@sSfCellPowerMap, SIDE_LEFT + slotIdx, @sSfCritPowerMap, sfPowerN[slotIdx] > 0, bSfPowerBad[slotIdx] == FALSE, sfPowerN[slotIdx])
         emitSignoff(@sSfCellFollowM, SIDE_LEFT + slotIdx, @sSfCritFolGap, sfFolN[slotIdx] > 0, sfFolGapWorst[slotIdx], 0, FOLLOW_GAP_PTS, sfFolN[slotIdx], @sSfUnitsPct)
         emitSignoff(@sSfCellFolFall, SIDE_LEFT + slotIdx, @sSfCritFolGap, sfFallN[slotIdx] > 0, sfFallGapWorst[slotIdx], 0, FOLLOW_GAP_PTS, sfFallN[slotIdx], @sSfUnitsPct)
+        ' SRC_REV 81 (PL-189): OVRSTEP -- every over-command's full-power step that was reached ran to its window with no safety event
+        emitSignoffBool(@sSfCellOvrStep, SIDE_LEFT + slotIdx, @sSfCritOvrStep, sfOvrN[slotIdx] > 0, bSfOvrBad[slotIdx] == FALSE, sfOvrN[slotIdx])
 
 
 PRI wheelMaxSpeed(side) : nSpeed
@@ -16150,8 +16373,9 @@ CON { --- SPIN: the spin-in-place floor tier, loaded and attended (task 3591, R1
     '  has, so it is shown by mutation. RIVAL EXPLANATION: the fold-back engaged for another reason (a start-up surge) before a
     '  stall the driver would have latched without it; the lowered limit (BLK_LIMIT_A) makes the surge the stall's own, and the
     '  harness runs this trial at that limit only. The COAST trial (a yielding stand) is not judged here
-    ' BLKWIN (new, SRC_REV 77; PL-179 C4's invariant I-9): on each OBSTACLE trial, from the pass AFTER a wheel's first limiter action
-    '  with no hall tick since (the mirrored flag blkLimTick, which the driver's bLimSinceTick follows) until its next tick or
+    ' BLKWIN (new, SRC_REV 77; PL-179 C4's invariant I-9): on each OBSTACLE trial, from the pass AFTER a wheel's first fold-back action
+    '  with no hall tick since (SRC_REV 81, PL-189: the flag blkWinFold, kept by the rule of bFrontProtect()'s bLimSinceTick over
+    '  foldback_frames ALONE) until its next tick or
     '  the latch, no pass of blockWatch() reads that wheel's |err| in BLK_WIN_LO_ERR..BLK_WIN_HI_ERR (82..88): a wheel at its limit
     '  is held at LAG_LIM (64), so a rotor ticked one sector against the field reads 64 + 42.7 k, never 82..88, and no tick against
     '  the field can fault. BOOL, ANDed over the trials that opened a window. The pass that sets the flag is not read: the status
@@ -16163,6 +16387,17 @@ CON { --- SPIN: the spin-in-place floor tier, loaded and attended (task 3591, R1
     '  EXPLANATION: a wheel whose field the driver legitimately walked back up past 80 on its way to a tick: the window closes
     '  at that tick (the flag clears), so only a wheel that went on standing is read. PRECONDITION: some wheel's window opened;
     '  else NOMEAS with BM-BLKWIN's why NO_LIMITER_ACTION (or NOT_BLOCKED when the leg's own stop fired first)
+    '  SRC_REV 81 (PL-189), THE FLAG'S DERIVATION. DRIVER_REV 49's T-1 arms the limit hold on the current fold-back only
+    '   (foldback_frames); a pass on which only duty_capped moved arms nothing, so a window opened by it would be one no hold
+    '   guards (T-1's boundary, a stall that meets the duty ceiling first: HOLD-SPEED-UNDER-LOAD-DESIGN.md sec 4.11.7). BLKWIN reads
+    '   foldback_frames alone, so it judges exactly the passes the hold guards. THIS IS BLKWIN'S WINDOW ONLY: the blocked-count
+    '   mirror (blkLimTick, which BLKSTOP and BLKLIMIT's count bounds read) keeps duty_capped + foldback_frames, because the
+    '   driver's own count, bFrontProtect(), is unchanged at DRIVER_REV 49 and still reads the sum -- a mirror that dropped
+    '   duty_capped would miss a count the driver started. The two flags share the clears (a tick, or a state other than SPIN_UP /
+    '   AT_SPEED) and differ only in the counter that sets them. On the second visit's two OBSTACLE trials the fold-back engaged on the
+    '   RIGHT wheel before the latch (BM-EV FOLDBACK RIGHT 14_249 ms and 31_889 ms, value 0; the latches 15_506 and 33_401), the
+    '   limiter of those windows: BM-BLKWIN seq 386 r_hit 1 r_emax 85 and seq 760 r_hit 1 r_emax 83 are read from them (DERIVED; the
+    '   status run's duty_capped is not in those logs)
     BLK_WIN_LO_ERR        = 82                              ' I-9's band, as the design states it (integer readings of the -82 .. -88.3 side)
     BLK_WIN_HI_ERR        = 88
     ' BLKFLT (new, SRC_REV 77; PL-179 F-a, C4): the OBSTACLE trial met the obstacle (both wheels read AT_SPEED), LATCHED the
@@ -16513,6 +16748,35 @@ CON { --- the floor situations (SRC_REV 62; the load cells since SRC_REV 58): OB
   '   with no latch is a field that stopped without being held.
   '   NEGATIVE: a driver with no lag limiter faults FC_LAG when |err| reaches 125 (task 3558's reason); one whose hold
   '   decays the field to zero stands still, unheld and unlatched (the decay fix of DRIVER_REV 3): each fails the band.
+  '  SRC_REV 81 (PL-189), THREE CHANGES TO WHAT GRAB JUDGES (HOLD-SPEED-UNDER-LOAD-DESIGN.md sec 4.12.8). Each is a premise the
+  '   second visit's grab (debug_261002-143538.log: BM-LOADW l_pct 19, r_pct 57, l_gap 544, mis_pm 666; EV_FAULT_RESYNC seq 16 at
+  '   19_234 ms, EV_FAULT seq 19 at 19_360; BM-EV FOLDBACK LEFT 15_030 ms value 0, not released until 20_342) or the model showed:
+  '   1. LDHOLD is judged only when the gripped wheel ran LDHOLD_PCT_LO (15) % or more of its command (BM-LOADW l_pct), else NOMEAS
+  '      with BM-LDFLT's hold_why NEAR_STOP. A hold that leaves a wheel near a stop gives tick gaps of 1_127-1_142 ms on a CORRECT
+  '      drive (the model's steady hold under both drives, sec 4.12.8), so a gap over LOAD_GAP_HI_MS there is the hand, not the
+  '      drive, and a cell that read it could fail a correct drive. At 15 % of the SLOW walk's 26.9 ticks/s a tick comes about
+  '      every 250 ms, a quarter of the bound. On 2026-10-02 l_pct is 19: judged, and the fault scores LOAD_GAP_FAULT_MS (FAIL, as before).
+  '   2. LDPATH is NOMEAS with BM-LDFLT's path_why LIMIT_HELD when the gripped wheel's fold-back was engaged in the judged
+  '      window (loadEvents(): an EV_FOLDBACK engage before the window and not released, or any EV_FOLDBACK inside it). A PREMISE
+  '      CHANGE (S-b, sec 4.12.7): while a wheel is held at its current limit drv_incr is not the field's speed, and the steering
+  '      object's shortfall (shortfallNow()), which the path limiter reads, takes it as the field's speed, so the path limiter does not
+  '      engage for a wheel held at its limit and the other wheel is not slowed to keep the platform's line. LDPATH's criterion (the hall-tick mismatch, 100
+  '      thousandths) is unchanged and still judges a hold that slowed the wheel with no fold-back acting (a drag under the
+  '      limit), where the premise holds; at LOAD_LIMIT_A a grab that overloads the wheel always engages the fold-back, so on this
+  '      trial LDPATH reads NOMEAS and the line on a grab is recorded as the design's known limit (S-b, the rejected U-3), not
+  '      certified. On 2026-10-02 the LEFT fold-back engaged at 15_030 ms and held through the window: NOMEAS in place of FAIL 666.
+  '   3. R22-DUAL-LDFLT-P (new; I-9'): from the grab point to the leg's end no EV_FAULT and no EV_FAULT_RESYNC on either wheel
+  '      (evDrain()'s EV_FAULT / EV_FAULT_RESYNC counts stamped at or after the grab, ldGrabAtMs), BOOL. PRECONDITION, else NOMEAS
+  '      with BM-LDFLT's flt_why: the grip held the gripped wheel slowed but still moving -- BM-LOADW l_pct LDFLT_PCT_LO .. LDFLT_PCT_HI
+  '      (5-60; NEAR_STOP under it, NOT_SLOWED over it) -- the window read (NO_SAMPLES), the drain read whole (EVENTS_LOST) and the grab
+  '      reached (NOT_REACHED). NEGATIVE, on disk (debug_261002-143538.log): EV_FAULT_RESYNC LEFT seq 16 (19_234 ms) and EV_FAULT LEFT
+  '      seq 19 (19_360) after the grab (grab_ms 2_778 into the drive) with l_pct 19 -- FAIL. A fault under a wheel held near a stop
+  '      (l_pct under 5) is not this cell's: the RESULT line and BM-LOAD's outcome FAULT still say it. RIVAL EXPLANATION: the hand
+  '      stopped the wheel outright, so any drive would fault it; the l_pct band excludes the wheel that stopped, and a wheel at 5 % or
+  '      more was still driven by the field (a tick about every 750 ms at SLOW) and is the case the hold must keep from faulting.
+    LDHOLD_PCT_LO         = 15                              ' LDHOLD's least l_pct (above, 1.)
+    LDFLT_PCT_LO          = 5                               ' LDFLT: the gripped wheel ran at least this % of its command (slowed, but moving)...
+    LDFLT_PCT_HI          = 60                              ' ...and no more than this % (the grab did slow it)
     LOAD_POWER            = FL_SLOW_POWER                   ' 7 (was 13 over 2 m): the window fits the half metre (above)
     ' LOAD_LIMIT_A, SRC_REV 78 (PL-185), 4 -> 2: THE LIMIT A HAND CAN REACH. DERIVED from the 2026-10-02 obstacle trials, MEASURED: at
     '  2 A the platform drove to the obstacle at power 7 on both trials (debug_261002-103634.log, contact at about 373 mm), so 2 A
@@ -17116,7 +17380,9 @@ VAR { OBSTACLE state (SRC_REV 58's BLOCK; SRC_REV 62, PL-106 / PL-111 / PL-132) 
     LONG    blkCountRunMs[INST_MOTORS]                      ' ...and how long it had run at the latch (or the end), ms; 0 if never
     LONG    blkLimPrev[INST_MOTORS]                         ' ...duty_capped + foldback_frames at the last pass, to see a limiter act
     LONG    blkLimTick[INST_MOTORS]                         ' SRC_REV 77: the driver's bLimSinceTick (PL-179 F-a), mirrored: a limiter acted since this wheel's last tick (T/F)
-    LONG    blkWinN[INST_MOTORS]                            ' BLKWIN: passes read in the wheel's window (a limiter had acted, no tick since, still driving)
+    LONG    blkWinFold[INST_MOTORS]                         ' SRC_REV 81 (PL-189): BLKWIN's own flag -- the fold-back (foldback_frames ALONE) acted since this wheel's last tick (T/F)
+    LONG    blkFoldPrev[INST_MOTORS]                        ' ...foldback_frames at the last pass, to see it act
+    LONG    blkWinN[INST_MOTORS]                            ' BLKWIN: passes read in the wheel's window (the fold-back had acted, no tick since, still driving)
     LONG    blkWinHit[INST_MOTORS]                          ' ...of them, passes with |err| in BLK_WIN_LO_ERR..BLK_WIN_HI_ERR
     LONG    blkWinMax[INST_MOTORS]                          ' ...and the largest |err| any of them read
     LONG    blkFltN[INST_MOTORS]                            ' BLKFLT: this wheel's EV_FAULT events in the trial's drain
@@ -17201,6 +17467,19 @@ VAR { GRAB ONE SIDE (SRC_REV 58's LOAD; PL-150 / PL-144; SRC_REV 63: the overloa
     LONG    sfLdHunt                                        ' ...its path limiter's transitions inside the window
     LONG    sfLdHoldN                                       ' LDHOLD: judged windows, the gripped wheel's (SRC_REV 63: GRAB's only)
     LONG    sfLdHoldMs                                      ' ...the longest tick gap (LOAD_GAP_FAULT_MS after a fault)
+    ' SRC_REV 81 (PL-189): LDFLT, and the premises LDHOLD and LDPATH now carry (ldReset(), loadEvents(), loadFold())
+    LONG    ldGrabAtMs                                      ' getms() at the grab point: LDFLT counts faults from here
+    LONG    ldFltN[INST_MOTORS]                             ' EV_FAULT events each wheel's log held, stamped at or after the grab
+    LONG    ldRsyN[INST_MOTORS]                             ' ...and its EV_FAULT_RESYNC events
+    LONG    bLdEvRead                                       ' ...the drain that counted them read whole (bEvdClean()), and ran
+    LONG    bLdFoldHeld                                     ' the gripped wheel's fold-back was engaged in the judged window (LDPATH's premise)
+    LONG    ldFoldIn                                        ' ...EV_FOLDBACK events its log stamped inside the window
+    LONG    bLdFoldPre                                      ' ...its last EV_FOLDBACK before the window was an engage (not released)
+    LONG    ldFltWhy                                        ' WHY_NONE when LDFLT measured the trial, else why not (loadFold())
+    LONG    ldHoldWhy                                       ' ...LDHOLD's (NEAR_STOP), and
+    LONG    ldPathWhy                                       ' ...LDPATH's (TOO_FEW_TICKS, EVENTS_LOST or LIMIT_HELD)
+    LONG    bSfLdFltRan                                     ' LDFLT: the GRAB trial was judged for it
+    LONG    bSfLdFltOk                                      ' ...and no wheel logged an EV_FAULT or an EV_FAULT_RESYNC from the grab on
 
 #ifdef DBG_FENCE
 DAT ' ---- floor session tables ----
@@ -17663,6 +17942,8 @@ PRI spResetCells() | slotIdx, arrIdx
     bSfBlkWinOk := FALSE
     bSfBlkFltRan := FALSE
     bSfBlkFltOk := FALSE
+    bSfLdFltRan := FALSE                                    ' SRC_REV 81
+    bSfLdFltOk := FALSE
     repeat arrIdx from 0 to (SPIN_LEGS * INST_MOTORS) - 1
         spLegAmps[arrIdx] := 0
         bSpLegAmps[arrIdx] := FALSE
@@ -18429,6 +18710,8 @@ PRI spinRecords(tid, legIdx, pairIdx, dirIdx, speedIdx) | slotIdx, otherIdx
             if spWhy <> WHY_NONE
                 cpEnd := TEND_ABORT
             if bCpFrozen
+                if pairIdx <> SPIN_PAIR_BRISK                   ' SRC_REV 80 (PL-182): the slow leg emits every sample, so a
+                    trEmitMax := TRACE_MAX_SAMPLES              '  held pass at its start can be placed in time and state
                 bTraceDrain(tid, SLOT_LEFT, SLOT_RIGHT, cpEnd)
                 if pairIdx == SPIN_PAIR_BRISK               ' SRC_REV 78: the slow leg's trace has no START to judge
                     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
@@ -21099,6 +21382,8 @@ PRI blkReset(kind) | slotIdx
         blkCountRunMs[slotIdx] := 0
         blkLimPrev[slotIdx] := 0
         blkLimTick[slotIdx] := FALSE                        ' SRC_REV 77: no limiter has acted yet, and no window has opened
+        blkWinFold[slotIdx] := FALSE                        ' SRC_REV 81: nor has the fold-back
+        blkFoldPrev[slotIdx] := 0
         blkWinN[slotIdx] := 0
         blkWinHit[slotIdx] := 0
         blkWinMax[slotIdx] := 0
@@ -21151,7 +21436,7 @@ PRI blockDrive(tid) : whyCode | startMs
         fenceAdvance(FEN_OBST, blkKind + 1)                 ' ...and the fence's estimate of where that left the platform
 #endif
 
-PRI blockWatch(startMs) : whyCode | lastPollMs, nowMs, safeEvent, eLeftCode, eRightCode, leftPower, rightPower, slotIdx, countMax, pStatus, nLimiter, bLimited, bTick, bRunning, bWasLim, eAbsNow
+PRI blockWatch(startMs) : whyCode | lastPollMs, nowMs, safeEvent, eLeftCode, eRightCode, leftPower, rightPower, slotIdx, countMax, pStatus, nLimiter, bLimited, bTick, bRunning, eAbsNow, nFold, bFolded, bWasFold
 ' The drive into the obstacle, watched every SAMPLE_MS (the floor situations' CON, 1.): the safety read, the travel
 ' guard; each wheel's last hall tick, stamped the pass its driver's pos or its hwPos is
 ' seen to change (and whether that tick came after both wheels read AT_SPEED); each wheel's blocked count, mirrored from
@@ -21160,9 +21445,12 @@ PRI blockWatch(startMs) : whyCode | lastPollMs, nowMs, safeEvent, eLeftCode, eRi
 ' than SPIN_UP / AT_SPEED, else set by a pass on which duty_capped + foldback_frames moved; the count begins the first pass
 ' after the last tick whose |err| is at least LAG_SOFT or whose flag is set (the driver's SPIN_DN state counts the |err| half
 ' too), and a tick, or a pass showing neither, restarts it. The driver's zero-command clear has no mirror: the watch
-' ends at the latch, and the drive is commanded until then. BLKWIN: every pass after the one that set a wheel's flag, while it stays
-' set (no tick, still driving), that wheel's |err| is read against BLK_WIN_LO_ERR..BLK_WIN_HI_ERR (the pass that sets
-' the flag is not read); both protective codes, EVERY pass -- either set is the latch, and each wheel's stand still and
+' ends at the latch, and the drive is commanded until then. BLKWIN (SRC_REV 81, PL-189): its flag is its OWN (blkWinFold), kept
+' by the same rule over foldback_frames ALONE -- T-1 arms the limit hold on the fold-back only, so a pass on which only duty_capped
+' moved opens no window -- and the count's flag (blkLimTick) is unchanged, since bFrontProtect() still counts both; every pass after
+' the one that set a wheel's BLKWIN flag, while it stays set (no tick, still driving), that wheel's |err| is read against
+' BLK_WIN_LO_ERR..BLK_WIN_HI_ERR (the pass that sets the flag is not read); both protective codes, EVERY pass -- either set
+' is the latch, and each wheel's stand still and
 ' count run are taken there; getPower() every BLK_POLL_MS -- 0 unasked is the distance stop firing, the obstacle not met.
 ' A wheel whose count has run BLK_NOLATCH_MS after AT_SPEED with no latch ends it (NO_LATCH: the stop is overdue by the
 ' driver's own rule); FL_LEG_MS ends it too (TIMEOUT).
@@ -21184,8 +21472,10 @@ PRI blockWatch(startMs) : whyCode | lastPollMs, nowMs, safeEvent, eLeftCode, eRi
 ' @local bLimited - a limiter acted since the last pass
 ' @local bTick - the wheel's driver pos or hwPos changed since the last pass
 ' @local bRunning - the wheel's mirrored state is SPIN_UP or AT_SPEED, the states the driver's limiter half counts in
-' @local bWasLim - the wheel's blkLimTick as the previous pass left it
 ' @local eAbsNow - the wheel's |err| this pass
+' @local nFold - foldback_frames this pass
+' @local bFolded - the fold-back acted since the last pass
+' @local bWasFold - the wheel's blkWinFold as the previous pass left it
 
     whyCode := WHY_NONE
     safetyReset()
@@ -21200,9 +21490,11 @@ PRI blockWatch(startMs) : whyCode | lastPollMs, nowMs, safeEvent, eLeftCode, eRi
         blkTickMs[slotIdx] := startMs
         blkCountMs[slotIdx] := 0
         blkLimTick[slotIdx] := FALSE
+        blkWinFold[slotIdx] := FALSE
         pStatus := spStatusPtr[slotIdx]
         if pStatus <> 0
             blkLimPrev[slotIdx] := long[pStatus][LG_CAPPED_IDX] + long[pStatus][LG_FOLD_IDX]
+            blkFoldPrev[slotIdx] := long[pStatus][LG_FOLD_IDX]
     repeat
         beat(CP_LOOP_POLL)
         waitms(SAMPLE_MS)
@@ -21213,17 +21505,26 @@ PRI blockWatch(startMs) : whyCode | lastPollMs, nowMs, safeEvent, eLeftCode, eRi
             pStatus := spStatusPtr[slotIdx]
             bTick := (instLastPos[slotIdx] <> blkLastPos[slotIdx]) or (instLastHw[slotIdx] <> blkLastHw[slotIdx])
             bRunning := (instLastState[slotIdx] == wheelL.DCS_SPIN_UP) or (instLastState[slotIdx] == DCS_AT_SPEED)
-            bWasLim := blkLimTick[slotIdx]
+            bWasFold := blkWinFold[slotIdx]
             bLimited := FALSE
+            bFolded := FALSE
             if pStatus <> 0
                 nLimiter := long[pStatus][LG_CAPPED_IDX] + long[pStatus][LG_FOLD_IDX]
                 bLimited := (nLimiter <> blkLimPrev[slotIdx])       ' duty_capped + foldback_frames moved since the last pass
                 blkLimPrev[slotIdx] := nLimiter
-            ' bFrontProtect()'s order: a tick, or a state that is not SPIN_UP / AT_SPEED, clears the flag; else a limiter action sets it
+                nFold := long[pStatus][LG_FOLD_IDX]
+                bFolded := (nFold <> blkFoldPrev[slotIdx])          ' SRC_REV 81: foldback_frames alone moved (BLKWIN's flag)
+                blkFoldPrev[slotIdx] := nFold
+            ' bFrontProtect()'s order: a tick, or a state that is not SPIN_UP / AT_SPEED, clears the flag; else a limiter action sets it.
+            '  The count's flag takes either limiter; BLKWIN's (T-1's arming) takes the fold-back alone
             if bTick or (bRunning == FALSE)
                 blkLimTick[slotIdx] := FALSE
-            elseif bLimited
-                blkLimTick[slotIdx] := TRUE
+                blkWinFold[slotIdx] := FALSE
+            else
+                if bLimited
+                    blkLimTick[slotIdx] := TRUE
+                if bFolded
+                    blkWinFold[slotIdx] := TRUE
             if bTick
                 blkLastPos[slotIdx] := instLastPos[slotIdx]
                 blkLastHw[slotIdx] := instLastHw[slotIdx]
@@ -21232,11 +21533,13 @@ PRI blockWatch(startMs) : whyCode | lastPollMs, nowMs, safeEvent, eLeftCode, eRi
             elseif (pStatus <> 0) and ((abs(long[pStatus][LG_ERR_IDX]) >= wheelL.LAG_SOFT) or blkLimTick[slotIdx]) and (bRunning or (instLastState[slotIdx] == DCS_SPIN_DN))
                 if blkCountMs[slotIdx] == 0
                     blkCountMs[slotIdx] := nowMs            ' the count's first pass, as the driver would see it
-            else
+            elseif instLastState[slotIdx] <> DCS_ESTOP
                 blkCountMs[slotIdx] := 0                    ' neither condition: the driver's count restarts too
+            ' SRC_REV 80 (PL-188): a wheel reading DCS_ESTOP has just been latched, and this pass sees it before the latch
+            '  check below: its count is kept as it stood, so blkStandCounts() reads the count that latched (it read 0)
             if blkCountMs[slotIdx] <> 0
                 countMax #>= nowMs - blkCountMs[slotIdx]
-            if (pStatus <> 0) and bWasLim and blkLimTick[slotIdx]   ' BLKWIN: a limiter acted a pass ago, and since then no tick
+            if (pStatus <> 0) and bWasFold and blkWinFold[slotIdx]  ' BLKWIN: the fold-back acted a pass ago, and since then no tick
                 eAbsNow := abs(long[pStatus][LG_ERR_IDX])
                 blkWinN[slotIdx] += 1
                 blkWinMax[slotIdx] #>= eAbsNow
@@ -21419,7 +21722,8 @@ PRI blockFold() | bBad, slotIdx, eReason, nBlocked, bWinOpen, bFltJudged, bFltBa
 ' its phase window was read; HELDATSPD's two counts from its drive. SRC_REV 77: BLKWIN when a wheel's window opened (a
 ' limiter acted with no tick since, blockWatch()) and BLKFLT when the trial met the obstacle, each with the why it is
 ' not measured for (blkWinWhy, blkFltWhy: BM-BLKWIN prints them). A stand is judged against its upper bound only when
-' its wheel's last tick came after both read AT_SPEED (the bound assumes the commanded field rate). SRC_REV 75: and BLKLIMIT
+' its wheel's last tick came after both read AT_SPEED (the bound assumes the commanded field rate). SRC_REV 81: a BLKWIN window is
+' a fold-back's (blkWinFold), not any limiter's. SRC_REV 75: and BLKLIMIT
 ' (blockLimit() staged its events): bad unless the trial latched, the fold-back engaged first, and every SR_BLOCKED wheel's stand
 ' lay inside BLKSTOP's own band (BLK_STAND_LO_MS .. BLK_STAND_HI_MS, the upper end only when its last tick followed AT_SPEED), one at least.
 '
@@ -21587,8 +21891,10 @@ PRI loadTrial() : whyCode | tid
                 waitBeat(EV_SETTLE_MS, CP_LOOP_REST)
                 evdSinceMs := ldWinAtMs
                 evdUntilMs := ldWinEndMs
+                evdFltSinceMs := ldGrabAtMs                 ' SRC_REV 81: LDFLT's faults are counted from the grab point
                 evDrain(EVSRC_STEER, EVST_GRAB)
                 ldFlips, ldEngPre, bLdEngaged := loadEngages()
+                loadEvents()
             steerStop()
     if ldWhy == WHY_NONE
         ldWhy := whyCode
@@ -21602,6 +21908,7 @@ PRI loadTrial() : whyCode | tid
             traceEmptyEnd(tid, TEND_ABORT, ldWhy)
     emitLoad()
     emitLoadW()
+    emitLdFlt()                                             ' SRC_REV 81: after the fold, which settles the three cells' whys it prints
     if bLdDriven
         emitSr(EVST_GRAB, SIDE_LEFT, ldLeftSr, ldRightSr, bLdSrRead, bLdSrRead)
     bInstLagExempt := FALSE
@@ -21651,11 +21958,21 @@ PRI ldReset() | slotIdx
     ldMisPm := 0
     ldHeldN := 0
     ldHeldBad := 0
+    ldGrabAtMs := 0                                         ' SRC_REV 81 (PL-189)
+    bLdEvRead := FALSE
+    bLdFoldHeld := FALSE
+    ldFoldIn := 0
+    bLdFoldPre := FALSE
+    ldFltWhy := WHY_NOT_REACHED
+    ldHoldWhy := WHY_NOT_REACHED
+    ldPathWhy := WHY_NOT_REACHED
     repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
         ldShort[slotIdx] := 0
         ldTicks[slotIdx] := 0
         ldPct[slotIdx] := 0
         ldGapMs[slotIdx] := 0
+        ldFltN[slotIdx] := 0
+        ldRsyN[slotIdx] := 0
 
 PRI loadDrive(tid) : whyCode | startMs, winStartMs, safeEvent, bReached
 ' A GRAB trial's motion (the floor situations' CON, 2.; SRC_REV 63: GRAB's alone, the incline's overloaded climb
@@ -21710,6 +22027,7 @@ PRI loadDrive(tid) : whyCode | startMs, winStartMs, safeEvent, bReached
                 if bLoadGoing(safeEvent) and bReached
                     bLdGrabbed := TRUE
                     ldGrabMs := getms() - startMs
+                    ldGrabAtMs := startMs + ldGrabMs        ' SRC_REV 81: LDFLT counts faults from the grab point
                     safeEvent, _ := loadWatch(UNTIL_TIME, LOAD_PULL_LEAD_MS, FALSE)
             if bLoadGoing(safeEvent) and bLdGrabbed
                 ldWinStart := instTotal
@@ -21880,6 +22198,22 @@ PRI loadEngages() : nFlips, nEngagesPre, bEngaged
     nEngagesPre := evdPathPre
     bEngaged := bLdWinValid and (evdPathEng[EVI_LEFT] or evdPathEng[EVI_RIGHT] or (evdPathIn > 0))
 
+PRI loadEvents() | slotIdx
+' SRC_REV 81 (PL-189): what the last GRAB drain read for LDFLT and LDPATH's premise -- whether it read whole, each wheel's EV_FAULT and
+' EV_FAULT_RESYNC counts from the grab point (evdFltSinceMs was set to ldGrabAtMs), and the gripped wheel's fold-back against the judged
+' window: engaged at its start (its last EV_FOLDBACK before the window was an engage, value 0) or an EV_FOLDBACK inside it. A log's
+' index is its wheel's slot (EVI_LEFT is SLOT_LEFT, EVI_RIGHT SLOT_RIGHT).
+'
+' @local slotIdx - motor slot
+
+    bLdEvRead := bEvdClean()
+    repeat slotIdx from SLOT_LEFT to SLOT_RIGHT
+        ldFltN[slotIdx] := evdFltAfter[EVI_LEFT + slotIdx]
+        ldRsyN[slotIdx] := evdRsyAfter[EVI_LEFT + slotIdx]
+    ldFoldIn := evdFoldIn[EVI_LEFT + LOAD_GRIP_SLOT]
+    bLdFoldPre := bEvdFoldPre[EVI_LEFT + LOAD_GRIP_SLOT]
+    bLdFoldHeld := bLdFoldPre or (ldFoldIn > 0)
+
 PRI loadJudge() | slotIdx, startJ, endJ, largerTicks, nHeld, nBad
 ' A loaded trial's readings from the frozen ring (I10), over its window: each wheel's hall ticks on the instrument's own
 ' decode and that as a percentage of the command's predicted rate (windowStats()); the mismatch; each wheel's longest
@@ -21910,15 +22244,21 @@ PRI loadJudge() | slotIdx, startJ, endJ, largerTicks, nHeld, nBad
             ldHeldN += nHeld
             ldHeldBad += nBad
 
-PRI loadFold() | bJudged
-' Resolve a GRAB trial's outcome (LDO_*) and fold a judged one into LDPATH, LDHUNT and the gripped wheel's LDHOLD.
+PRI loadFold() | bJudged, bPctRead, bFltSeen
+' Resolve a GRAB trial's outcome (LDO_*) and fold a judged one into LDPATH, LDHUNT and the gripped wheel's LDHOLD, and the trial into
+' LDFLT.
 ' LDHOLD'S PRECONDITION (SRC_REV 63: GRAB is the overload hold's only proof): the grip actually held the gripped wheel
 ' (LOAD_GRIP_SLOT) below its command -- it read SHORT in the window and ran under LOAD_OVL_PCT of its command's rate,
 ' with no latch -- or a wheel faulted (LDHOLD's negative). A window it ran through at LOAD_OVL_PCT or more is LIGHT
 ' (NOT_OVERLOADED): not judged, and the RESULT line asks for a firmer grip next run. A trial read from the ring adds its
-' HELDATSPD counts.
+' HELDATSPD counts. SRC_REV 81 (PL-189): LDHOLD also needs the wheel to have run LDHOLD_PCT_LO % or more of its command (else
+' ldHoldWhy NEAR_STOP, or NO_SAMPLES with no window read); LDPATH needs the gripped wheel's fold-back NOT engaged in the window (else
+' ldPathWhy LIMIT_HELD, EVENTS_LOST when the drain did not read whole); LDFLT is judged for every driven trial whose grip slowed
+' the gripped wheel but left it moving (LDFLT_PCT_LO .. LDFLT_PCT_HI), the CON's 3.; each cell's why is BM-LDFLT's.
 '
 ' @local bJudged - T/F where T means this trial is a judged overload
+' @local bPctRead - T/F where T means the window was read from the ring, so ldPct is the wheel's reading
+' @local bFltSeen - T/F where T means a wheel's log held an EV_FAULT or an EV_FAULT_RESYNC from the grab point
 
     if bLdDriven
         if bLdFault
@@ -21935,22 +22275,57 @@ PRI loadFold() | bJudged
             ldOutcome := LDO_LIGHT
             if ldWhy == WHY_NONE
                 ldWhy := WHY_NOT_OVERLOADED
+    bPctRead := bLdFrozen and bLdDriven and (ldWinStart >= 0) and (ldWinEnd > ldWinStart)
     bJudged := (ldOutcome == LDO_OVERLOAD) or (ldOutcome == LDO_FAULT)
+    ldHoldWhy := WHY_NONE
+    ldPathWhy := WHY_NONE
     if bJudged
-        sfLdHoldN := (sfLdHoldN + 1) <# LIM_SMALL
-        if ldOutcome == LDO_FAULT
-            sfLdHoldMs := LOAD_GAP_FAULT_MS                 ' a fault is LDHOLD's negative
-        else
-            sfLdHoldMs #>= ldGapMs[LOAD_GRIP_SLOT]
         bLdJudged := TRUE
+        ' SRC_REV 81: LDHOLD reads the hold only on a wheel that kept turning (the CON, 1.): a gap near a stop is the hand's
+        if bPctRead == FALSE
+            ldHoldWhy := WHY_NO_SAMPLES
+        elseif ldPct[LOAD_GRIP_SLOT] < LDHOLD_PCT_LO
+            ldHoldWhy := WHY_NEAR_STOP
+        else
+            sfLdHoldN := (sfLdHoldN + 1) <# LIM_SMALL
+            if ldOutcome == LDO_FAULT
+                sfLdHoldMs := LOAD_GAP_FAULT_MS             ' a fault is LDHOLD's negative
+            else
+                sfLdHoldMs #>= ldGapMs[LOAD_GRIP_SLOT]
         if bLdEngaged                                       ' LDHUNT's precondition: the limiter was engaged over the window
             bSfLdHunt := TRUE
             sfLdHunt := ldFlips
-        if bLdWinValid and bLdFrozen and ((ldTicks[SLOT_LEFT] #> ldTicks[SLOT_RIGHT]) >= LOAD_MIN_TICKS)
+        ' SRC_REV 81: LDPATH reads the line only where drv_incr is the field's speed (the CON, 2.): not under the fold-back's hold
+        if (bLdWinValid == FALSE) or (bLdFrozen == FALSE)
+            ldPathWhy := WHY_NO_SAMPLES
+        elseif (ldTicks[SLOT_LEFT] #> ldTicks[SLOT_RIGHT]) < LOAD_MIN_TICKS
+            ldPathWhy := WHY_TOO_FEW_TICKS
+        elseif bLdEvRead == FALSE
+            ldPathWhy := WHY_EVENTS_LOST
+        elseif bLdFoldHeld
+            ldPathWhy := WHY_LIMIT_HELD
+        else
             bSfLdPath := TRUE
             sfLdPathPm := ldMisPm
-        elseif bLdWinValid and (ldWhy == WHY_NONE)
+        if bLdWinValid and (ldWhy == WHY_NONE) and (ldPathWhy == WHY_TOO_FEW_TICKS)
             ldWhy := WHY_TOO_FEW_TICKS
+    ' SRC_REV 81 (PL-189): LDFLT -- every driven trial that reached the grab, the grip leaving the gripped wheel slowed but moving
+    ldFltWhy := WHY_NONE
+    if (bLdDriven == FALSE) or (bLdGrabbed == FALSE)
+        ldFltWhy := WHY_NOT_REACHED
+    elseif bPctRead == FALSE
+        ldFltWhy := WHY_NO_SAMPLES
+    elseif ldPct[LOAD_GRIP_SLOT] < LDFLT_PCT_LO
+        ldFltWhy := WHY_NEAR_STOP
+    elseif ldPct[LOAD_GRIP_SLOT] > LDFLT_PCT_HI
+        ldFltWhy := WHY_NOT_SLOWED
+    else
+        bFltSeen := (ldFltN[SLOT_LEFT] + ldFltN[SLOT_RIGHT] + ldRsyN[SLOT_LEFT] + ldRsyN[SLOT_RIGHT]) > 0
+        if bFltSeen or bLdEvRead                            ' a fault seen is a FAIL whatever else the drain lost; none seen needs a whole drain
+            bSfLdFltRan := TRUE
+            bSfLdFltOk := (bFltSeen == FALSE)
+        else
+            ldFltWhy := WHY_EVENTS_LOST
     if bLdFrozen and bLdDriven and (ldWinStart >= 0)
         sfHeldN := (sfHeldN + ldHeldN) <# LIM_SMALL
         sfHeldBad := (sfHeldBad + ldHeldBad) <# LIM_SMALL
@@ -22132,12 +22507,14 @@ PRI resultGrab() : pBody, pWhy | bFirm, bHuntBad, bNoEngage
 ' faulted, too light (hold harder next run), stalled (hold less next run), or ended short. SRC_REV 70: an overload the
 ' line check could not judge (LDPATH NOMEAS: the hold slowed the wheels under LOAD_MIN_TICKS of travel, TOO_FEW_TICKS) says
 ' the hold was too firm and to hold less next run; a path limiter that changed state during the hold (LDHUNT FAIL) says
-' so, and one not engaged over the window (LDHUNT NOMEAS) says that; "judged" is printed only when none happened.
+' so, and one not engaged over the window (LDHUNT NOMEAS) says that; "judged" is printed only when none happened. SRC_REV 81: the
+' firm-hold wording also covers an overload that left the gripped wheel under LDHOLD_PCT_LO of its command (LDHOLD NOMEAS, NEAR_STOP);
+' LDPATH's LIMIT_HELD (the fold-back held the wheel) is not a hold too firm, and still prints "judged".
 '
 ' @returns pBody - what happened and what to do next run
 ' @returns pWhy - the cause after it, or the empty string
 '
-' @local bFirm - an overload whose line check (LDPATH) read NOMEAS for too little travel
+' @local bFirm - an overload whose line check (LDPATH) read NOMEAS for too little travel, or whose LDHOLD read NOMEAS near a stop
 ' @local bHuntBad - the path limiter changed state inside the window (LDHUNT's value is over its band)
 ' @local bNoEngage - an overload whose path limiter was not engaged over the window (LDHUNT NOMEAS)
 
@@ -22145,7 +22522,7 @@ PRI resultGrab() : pBody, pWhy | bFirm, bHuntBad, bNoEngage
     if bLdDriven == FALSE
         pBody, pWhy := resultEnded(FALSE, ldWhy)
     else
-        bFirm := (ldOutcome == LDO_OVERLOAD) and (bSfLdPath == FALSE)
+        bFirm := (ldOutcome == LDO_OVERLOAD) and ((ldPathWhy == WHY_TOO_FEW_TICKS) or (ldHoldWhy == WHY_NEAR_STOP))
         bHuntBad := bSfLdHunt and ((sfLdHunt < LOAD_HUNT_LO) or (sfLdHunt > LOAD_HUNT_HI))
         bNoEngage := (ldOutcome == LDO_OVERLOAD) and (bSfLdHunt == FALSE)
         case ldOutcome
@@ -22324,7 +22701,7 @@ PRI resultObstSession() : pBody, pWhy | kindIdx
 PRI emitLoadCells() | slotIdx
 ' The floor situations' load cells' verdicts (their CON), each NOMEAS when nothing measured it: POSTFLT X100 per motor;
 ' BLKSTOP COUNT (BOTH), PROTCLR COUNT (BOTH); per motor BLKSHORT MV, the control, before BLKCOAST MV; HELDATSPD COUNT
-' (BOTH); BLKLIMIT BOOL (BOTH, SRC_REV 75); BLKWIN and BLKFLT BOOL (BOTH, SRC_REV 77); LDPATH PERMILLE (BOTH); LDHUNT COUNT (BOTH, SRC_REV 62); LDHOLD MS for the gripped wheel only (SRC_REV 63:
+' (BOTH); BLKLIMIT BOOL (BOTH, SRC_REV 75); BLKWIN and BLKFLT BOOL (BOTH, SRC_REV 77); LDFLT BOOL (BOTH, SRC_REV 81); LDPATH PERMILLE (BOTH); LDHUNT COUNT (BOTH, SRC_REV 62); LDHOLD MS for the gripped wheel only (SRC_REV 63:
 ' GRAB alone judges it, and it grips LOAD_GRIP_SLOT, so the other wheel's instance could only ever read NOMEAS).
 '
 ' @local slotIdx - motor slot
@@ -22346,6 +22723,8 @@ PRI emitLoadCells() | slotIdx
     emitSignoff(@sSfCellLdPath, SIDE_BOTH, @sSfCritLdPath, bSfLdPath, sfLdPathPm, 0, LOAD_LINE_PM, SIGNOFF_ONE_INSTANCE, @sSfUnitsPm)
     emitSignoff(@sSfCellLdHunt, SIDE_BOTH, @sSfCritLdHunt, bSfLdHunt, sfLdHunt, LOAD_HUNT_LO, LOAD_HUNT_HI, SIGNOFF_ONE_INSTANCE, @sSfUnitsCount)
     emitSignoff(@sSfCellLdHold, SIDE_LEFT + LOAD_GRIP_SLOT, @sSfCritLdHold, sfLdHoldN > 0, sfLdHoldMs, 0, LOAD_GAP_HI_MS, sfLdHoldN, @sSfUnitsMs)
+    ' SRC_REV 81 (PL-189): LDFLT, the grab's I-9' (no EV_FAULT, no EV_FAULT_RESYNC from the grab point); BM-LDFLT's why says why it is NOMEAS
+    emitSignoffBool(@sSfCellLdFlt, SIDE_BOTH, @sSfCritLdFlt, bSfLdFltRan, bSfLdFltOk, SIGNOFF_ONE_INSTANCE)
 
 PRI emitFlBuild()
 ' BM-FLBUILD (SRC_REV 62): the floor rules' pre-registered numbers -- every straight leg's travel in mm and ticks, the
@@ -22533,7 +22912,7 @@ PRI emitBlkClr() | bRead, slotIdx, bridgeCode[INST_MOTORS]
 
 PRI emitBlkWin()
 ' BM-BLKWIN (SRC_REV 77, FMT 52): one OBSTACLE trial's BLKWIN and BLKFLT readings -- the trial and kind, each wheel's window
-' (passes read from the pass after a limiter acted with no tick since, the passes whose |err| read BLK_WIN_LO_ERR..
+' (passes read from the pass after the fold-back acted with no tick since, the passes whose |err| read BLK_WIN_LO_ERR..
 ' BLK_WIN_HI_ERR, and the largest |err| read), each wheel's EV_FAULT and EV_FAULT_RESYNC counts over the trial, and the
 ' cause each cell is not measured for (WHY_NONE when it was). Printed after the trial's fold. Worst case 218 bytes:
 ' tag 9 + seq 15 + trial 11 + kind 11 + l_win, r_win 14 each + l_hit, r_hit 11 each + l_emax, r_emax 12 each + l_flt,
@@ -22578,6 +22957,30 @@ PRI emitLoad()
     benchLog.naNumField(@"l_code", ldLeftCode, LIM_SMALL, bLdSrRead)
     benchLog.naNumField(@"r_code", ldRightCode, LIM_SMALL, bLdSrRead)
     whyField(ldWhy)
+    emitRecord()
+
+PRI emitLdFlt() | bRead
+' BM-LDFLT (SRC_REV 81, FMT 53; PL-189): one GRAB trial's three new readings -- the gripped wheel's l_pct (BM-LOADW's, repeated
+' because LDFLT's and LDHOLD's preconditions read it), each wheel's EV_FAULT and EV_FAULT_RESYNC counts from the grab point (LDFLT's
+' value), the gripped wheel's EV_FOLDBACK events inside the judged window (fold_in) and whether its fold-back was already engaged at
+' the window's start (fold_pre) -- LDPATH's premise -- and the cause each cell is not measured for (WHY_NONE when it was): LDFLT,
+' LDHOLD and LDPATH. Printed after BM-LOADW. Worst case 192 bytes: tag 8 + seq 15 + l_pct 14 + l_flt, r_flt, l_rsy, r_rsy 11 each +
+' fold_in 13 + fold_pre 15 + flt_why 27 + hold_why 28 + path_why 28 (each field is 2 + its name + its width).
+'
+' @local bRead - the window was read from the ring
+
+    bRead := bLdFrozen and bLdDriven and (ldWinStart >= 0) and (ldWinEnd > ldWinStart)
+    recBegin(@"BM-LDFLT")
+    benchLog.naNumField(@"l_pct", ldPct[LOAD_GRIP_SLOT], LIM_SMALL, bRead)
+    benchLog.naNumField(@"l_flt", ldFltN[SLOT_LEFT], LIM_TINY, bLdEvRead)
+    benchLog.naNumField(@"r_flt", ldFltN[SLOT_RIGHT], LIM_TINY, bLdEvRead)
+    benchLog.naNumField(@"l_rsy", ldRsyN[SLOT_LEFT], LIM_TINY, bLdEvRead)
+    benchLog.naNumField(@"r_rsy", ldRsyN[SLOT_RIGHT], LIM_TINY, bLdEvRead)
+    benchLog.naNumField(@"fold_in", ldFoldIn, LIM_TINY, bLdEvRead)
+    benchLog.boolField(@"fold_pre", bLdFoldPre)
+    benchLog.tokenField(@"flt_why", tokenAt(@tokWhy, WHY_COUNT, ldFltWhy), TOKMAX_WHY)
+    benchLog.tokenField(@"hold_why", tokenAt(@tokWhy, WHY_COUNT, ldHoldWhy), TOKMAX_WHY)
+    benchLog.tokenField(@"path_why", tokenAt(@tokWhy, WHY_COUNT, ldPathWhy), TOKMAX_WHY)
     emitRecord()
 
 PRI emitLoadW() | bRead
@@ -24713,23 +25116,31 @@ PRI drainFindMark() | markIdx
 
 CON { --- trace emission (design sec 3.5, sec 12.4) and window statistics (I2) --- }
 
-PRI bTraceDrain(tid, slotPri, slotOth, endCode) : bLost
+PRI bTraceDrain(tid, slotPri, slotOth, endCode) : bLost | emitMax
 ' Drain a frozen capture as one trace: locate the mark by ring index, bound the trace to
 ' TRACE_MAX_SAMPLES from TRACE_PRE_SAMPLES before it, find rest, choose the dense window and stride that
 ' fit TRACE_EMIT_MAX (dense 250, then 100, then stride 1, 2, 4, 8), emit the BM-TS lines, then
 ' BM-TRACE-END. The caller has emitted BM-TRACE or BM-STRACE, and folds nothing: this method folds the
-' trace into R14-DUAL-TRACES-*.
+' trace into R14-DUAL-TRACES-*. SRC_REV 79 (PL-187): with bTrWhole the mark is ignored (the trace starts at the first stored
+' sample, so a rung's window marks cannot trim its approach), the last trTail samples are lines too, the stride may grow to
+' trStrideCap, and trWatch names a wheel whose safety is read while the drain runs; all three shaping VARs are cleared at the end.
 '
 ' @param tid - trace id from nextTraceId()
 ' @param slotPri - primary motor slot (the o_ fields are the other slot)
 ' @param slotOth - the other motor slot
 ' @param endCode - TEND_* naming why the capture ended
 ' @returns bLost - TRUE when the capture lost data at or before its mark, or dropped samples
+'
+' @local emitMax - the lines the fit may emit: TRACE_EMIT_MAX, or trEmitMax when a caller asked for more (SRC_REV 80)
 
+    emitMax := TRACE_EMIT_MAX #> trEmitMax
     drainBegin()
     drPri := slotPri
     drOth := slotOth
     drainFindMark()
+    if bTrWhole
+        drMarkJ := drStored
+        bDrMarkFound := FALSE
     drStartJ := 0
     if bDrMarkFound
         drStartJ := (drMarkJ - TRACE_PRE_SAMPLES) #> 0
@@ -24746,10 +25157,10 @@ PRI bTraceDrain(tid, slotPri, slotOth, endCode) : bLost
     trDense := TRACE_DENSE_SAMPLES
     trStride := 1
     traceWalk(FALSE)
-    if trLines > TRACE_EMIT_MAX
+    if trLines > emitMax
         trDense := TRACE_DENSE_MIN
         traceWalk(FALSE)
-        repeat while (trLines > TRACE_EMIT_MAX) and (trStride < TRACE_STRIDE_MAX)
+        repeat while (trLines > emitMax) and (trStride < (TRACE_STRIDE_MAX #> trStrideCap))
             trStride *= TRACE_STRIDE_GROWTH
             traceWalk(FALSE)
     traceWalk(TRUE)
@@ -24759,6 +25170,24 @@ PRI bTraceDrain(tid, slotPri, slotOth, endCode) : bLost
     if bLost
         sfTraceLost := (sfTraceLost + 1) <# LIM_BIG
     emitTraceEnd(tid, endCode, WHY_NO_SAMPLES)
+    trTail := 0
+    trStrideCap := 0
+    trEmitMax := 0
+    bTrWhole := FALSE
+
+PRI traceWatchPoll() | safeEvent
+' One safety read of the wheel trWatch names, at most once per SAMPLE_MS, as every watched wait reads it (SRC_REV 79): a LIMTOP
+' study trace drains while its wheel is still driven, and the counting walks and the emission take seconds with nothing else
+' watching it. An absolute-current abort stops the wheel and prints its BM-ABORT inside safetyPoll(); trWatchEvent keeps the
+' worst event read, and the caller treats it as it treats a rung's safeEvent.
+'
+' @local safeEvent - SAFE_* this read returned
+
+    if (getms() - trWatchMs) >= SAMPLE_MS
+        trWatchMs := getms()
+        safeEvent := safetyPoll(trWatch)
+        if (safeEvent == SAFE_ABS_ABORT) or (safeEvent == SAFE_INST_STALL) or (trWatchEvent == SAFE_NONE)
+            trWatchEvent := safeEvent
 
 PRI traceFindRest() | restSamples, stillCount, runStartJ, sampleIdx
 ' Find rest after the mark: pos and hwPos of the primary motor unchanged for REST_CONFIRM_MS. Sets
@@ -24814,6 +25243,8 @@ PRI traceIdleMove() | sampleIdx
     if drStored > 0
         repeat sampleIdx from drStartJ to drEndJ
             beat(CP_LOOP_DRAIN)
+            if trWatch <> SIDE_NONE
+                traceWatchPoll()
             trIdleMove #>= abs(smpHw(sampleIdx, drOth) - smpHw(drStartJ, drOth))
 
 PRI traceIntegritySums() | sampleIdx
@@ -24827,21 +25258,25 @@ PRI traceIntegritySums() | sampleIdx
     if (drStored > 0) and (drStartJ < drEndJ)
         repeat sampleIdx from drStartJ + 1 to drEndJ
             beat(CP_LOOP_DRAIN)
+            if trWatch <> SIDE_NONE
+                traceWatchPoll()
             drIgSum := (drIgSum + smpIg(sampleIdx, drPri)) <# LIM_BIG
             drOIgSum := (drOIgSum + smpIg(sampleIdx, drOth)) <# LIM_BIG
 
-PRI traceWalk(bEmit) | sampleIdx, kIdx, markK, posRel, hwRel, stNow, bFltNow, bUpNow, bWant, bChanged
+PRI traceWalk(bEmit) | sampleIdx, kIdx, markK, lastK, posRel, hwRel, stNow, bFltNow, bUpNow, bWant, bChanged
 ' Walk the trace applying the emission rule. With bEmit FALSE it only counts the lines the rule wants
 ' (trLines), so bTraceDrain() can pick a dense window and stride; with bEmit TRUE it emits them, never
 ' more than TRACE_EMIT_MAX (the last sample is always kept), and leaves trLines / trKSum as emitted.
-' Rule: k below mark_k + dense; or, on every stride-th k, a change of pos, hw, st, flt or up from the
-' last emitted line, or k a multiple of TRACE_SPARSE_EVERY x stride; or the first or last sample.
+' Rule: k below mark_k + dense; or k within trTail of the last k (SRC_REV 79; no sample when trTail is 0); or, on every
+' stride-th k, a change of pos, hw, st, flt or up from the last emitted line, or k a multiple of
+' TRACE_SPARSE_EVERY x stride; or the first or last sample. Each pass reads the safety of the wheel trWatch names, when one is.
 '
 ' @param bEmit - TRUE to emit BM-TS lines, FALSE to count only
 '
 ' @local sampleIdx - logical index
 ' @local kIdx - trace index k
 ' @local markK - k of the mark (0 when the mark was not found)
+' @local lastK - k of the trace's last sample
 ' @local posRel - primary pos relative to k = 0
 ' @local hwRel - primary hwPos relative to k = 0
 ' @local stNow - primary state
@@ -24855,9 +25290,12 @@ PRI traceWalk(bEmit) | sampleIdx, kIdx, markK, posRel, hwRel, stNow, bFltNow, bU
     trIgRun := 0
     bTrEmitted := FALSE
     markK := bDrMarkFound ? (drMarkJ - drStartJ) : 0
+    lastK := drEndJ - drStartJ
     if drStored > 0
         repeat sampleIdx from drStartJ to drEndJ
             beat(CP_LOOP_DRAIN)
+            if trWatch <> SIDE_NONE
+                traceWatchPoll()
             kIdx := sampleIdx - drStartJ
             if kIdx > 0
                 trIgRun := (trIgRun + smpIg(sampleIdx, drPri)) <# LIM_BIG
@@ -24866,7 +25304,7 @@ PRI traceWalk(bEmit) | sampleIdx, kIdx, markK, posRel, hwRel, stNow, bFltNow, bU
             stNow := smpState(sampleIdx, drPri)
             bFltNow := bSmpFault(sampleIdx, drPri)
             bUpNow := bSmpUp(sampleIdx, drPri)
-            bWant := (sampleIdx == drStartJ) or (sampleIdx == drEndJ) or (kIdx < markK + trDense)
+            bWant := (sampleIdx == drStartJ) or (sampleIdx == drEndJ) or (kIdx < markK + trDense) or (kIdx > lastK - trTail)
             if (kIdx +// trStride) == 0
                 bChanged := (bTrEmitted == FALSE) or (posRel <> trLastPos) or (hwRel <> trLastHw)
                 bChanged := bChanged or (stNow <> trLastSt) or (bFltNow <> trLastFlt) or (bUpNow <> trLastUp)
@@ -25624,6 +26062,11 @@ VAR { the driver's reporting (task 3621) -- one drain's staging, cog 0 only }
     LONG    bEvdFold[EV_WHEELS]                             ' ...one was read
     LONG    evdBlockedMs[EV_WHEELS]                         ' ...and of the first EV_STOP whose reason was SR_BLOCKED, the protective stop's latch
     LONG    bEvdBlocked[EV_WHEELS]                          ' ...one was read
+    LONG    evdFltSinceMs                                   ' SRC_REV 81 (PL-189): set by the caller before a drain: the stamp EV_FAULT and EV_FAULT_RESYNC are counted from, getms()
+    LONG    evdFltAfter[EV_WHEELS]                          ' ...each log's EV_FAULT events stamped at or after it
+    LONG    evdRsyAfter[EV_WHEELS]                          ' ...and its EV_FAULT_RESYNC events
+    LONG    evdFoldIn[EV_WHEELS]                            ' ...each log's EV_FOLDBACK events (engages and releases) stamped inside the window evdSinceMs .. evdUntilMs
+    LONG    bEvdFoldPre[EV_WHEELS]                          ' ...whether its last EV_FOLDBACK before that window was an engage (value 0), the fold-back still engaged at its start
 
 PRI evDrain(src, stage) | eKind, nMs, eWheel, nValue, logIdx
 ' DRAIN one event log (this section's CON): getEvent() until EV_NONE, at most EV_DRAIN_MAX reads, each event printed as
@@ -25632,6 +26075,10 @@ PRI evDrain(src, stage) | eKind, nMs, eWheel, nValue, logIdx
 ' the window evdSinceMs..evdUntilMs: the engages before it (evdPathPre), the transitions inside it (evdPathIn) and
 ' whether each wheel's last one before it was an engage (evdPathEng), the GRAB trial's LDHUNT reading. SRC_REV 75: and each log's
 ' first EV_FOLDBACK engage and first SR_BLOCKED stop, with their stamps (bEvdFold, evdFoldMs, bEvdBlocked, evdBlockedMs: BLKLIMIT).
+' SRC_REV 81 (PL-189): and each log's EV_FAULT and EV_FAULT_RESYNC stamped at or after evdFltSinceMs (evdFltAfter, evdRsyAfter: LDFLT),
+' and its EV_FOLDBACK events inside the window evdSinceMs..evdUntilMs with whether the last before it was an engage (evdFoldIn,
+' bEvdFoldPre: LDPATH's premise). The caller sets all three stamps before the drain; a drain whose caller set none counts them
+' from a stale stamp, and no one reads them.
 '
 ' @param src - EVSRC_STEER, EVSRC_LEFT (wheelL) or EVSRC_RIGHT (wheelR)
 ' @param stage - EVST_* printed on each BM-EV
@@ -25655,6 +26102,10 @@ PRI evDrain(src, stage) | eKind, nMs, eWheel, nValue, logIdx
     longfill(@bEvdFold, FALSE, EV_WHEELS)
     longfill(@evdBlockedMs, 0, EV_WHEELS)
     longfill(@bEvdBlocked, FALSE, EV_WHEELS)
+    longfill(@evdFltAfter, 0, EV_WHEELS)
+    longfill(@evdRsyAfter, 0, EV_WHEELS)
+    longfill(@evdFoldIn, 0, EV_WHEELS)
+    longfill(@bEvdFoldPre, FALSE, EV_WHEELS)
     bEvdEnded := FALSE
     repeat EV_DRAIN_MAX
         beat(CP_LIB_STEER_QUERY)
@@ -25686,6 +26137,15 @@ PRI evDrain(src, stage) | eKind, nMs, eWheel, nValue, logIdx
                     evdPathPre += 1
             elseif (nMs - evdUntilMs) <= 0
                 evdPathIn += 1
+        if (eKind == wheelL.EV_FAULT) and ((nMs - evdFltSinceMs) >= 0)              ' SRC_REV 81 (LDFLT): faults from the stamp on
+            evdFltAfter[logIdx] += 1
+        if (eKind == wheelL.EV_FAULT_RESYNC) and ((nMs - evdFltSinceMs) >= 0)
+            evdRsyAfter[logIdx] += 1
+        if eKind == wheelL.EV_FOLDBACK                      ' SRC_REV 81 (LDPATH's premise): the fold-back against the window, as the path limiter above
+            if (nMs - evdSinceMs) < 0
+                bEvdFoldPre[logIdx] := (nValue == 0)
+            elseif (nMs - evdUntilMs) <= 0
+                evdFoldIn[logIdx] += 1
         emitEv(stage, eKind, nMs, logIdx, nValue)
 
 PRI evFold(logIdx, eKind, nValue) | arrIdx, qIdx
@@ -27594,7 +28054,10 @@ PRI emitPlan(seg, orderIdx) | bAttended, estS, estKb
     ' Task 3604, the LIMITS part. LIMTOP: 4 climbs of up to ~15 rungs at the ladder's ~2.5 s, plus an AT_SPEED
     '  bound or two at the edge, and BM-CLIP beside each rung's five records. LIMRAMP: 20 traces at STOPMODE's
     '  worst case of TRACE_EMIT_MAX lines each. LIMLOW: 32 rungs of about 10 s (LIMLOW_WINDOW_MS, its settle
-    '  and a quick AT_SPEED).
+    '  and a quick AT_SPEED). SRC_REV 79 (PL-187): LIMTOP gains eight study traces, an EDGE and an OVERCMD trace per climb, at most
+    '  TRACE_EMIT_MAX BM-TS lines each: 8 x (400 x 308 B + a 233 B BM-TRACE and a 277 B BM-TRACE-END) = 990 KB at BM-TS's worst
+    '  case, which this row counts at the true 308 B rather than the 241 B of the rows above; and about 2 s of drain each (the
+    '  counting walks and the emission), 20 s in all: LIMTOP's row 360 s and 90 KB -> 380 s and 1_080 KB.
     ' Task 3613, the FAULTRESP part. FLTRESP: per wheel the hook's at-rest check (~4 s, no trace) and 12 driven trials,
     '  each its own lifetime (~2 s start and zero), a spin-up of up to ~2 s, a 1 s settle, a capture of about a second
     '  and a FAULT_COOL_MS cool-down -- about 13 s -- and one trace each at STOPMODE's worst case of TRACE_EMIT_MAX lines:
@@ -29191,6 +29654,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellPowerMap)
                 emitSignoffDecl(@sSfCellFollowM)
                 emitSignoffDecl(@sSfCellFolFall)
+                emitSignoffDecl(@sSfCellOvrStep)            ' SRC_REV 81 (task 3668): the over-command's full-power step completes
 #elseifdef DBP_FAULTRESP
                 emitSignoffDecl(@sSfCellNoStallX)
                 emitSignoffDecl(@sSfCellDbgMaskX)
@@ -29286,6 +29750,7 @@ PRI emitSignoffDecls()
                 emitSignoffDecl(@sSfCellBlkLimit)
                 emitSignoffDecl(@sSfCellBlkWin)             ' SRC_REV 77 (task 3662): the blocked-wheel stop's two new cells
                 emitSignoffDecl(@sSfCellBlkFlt)
+                emitSignoffDecl(@sSfCellLdFlt)              ' SRC_REV 81 (task 3668): the grab does not fault a wheel
 #elseifdef DBP_PACK
                 emitSignoffDecl(@sSfCellNoStallV)
                 emitSignoffDecl(@sSfCellDbgMaskV)
@@ -29341,7 +29806,7 @@ PRI emitSignoffs() | slotIdx, side
 '  ALIGN  NOSTALL BOOL; DBGMASK BOOL; ALIGN-ND MV (the no-drive invariant), ALIGN-CLIP / -COVER / -RES
 '         COUNT (the three that can disqualify a reading), ALIGN-MTRX BOOL (all four wheel x direction)
 '  LEAD   NOSTALL BOOL; DBGMASK BOOL; LEAD-BRKT COUNT per motor
-'  LIMITS NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; TOPSPD INCR_E6 and PWMCLIP PWM_CNT per motor
+'  LIMITS NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; TOPSPD INCR_E6 and PWMCLIP PWM_CNT per motor; SRC_REV 81: OVRSTEP BOOL per motor
 '  FRESP  NOSTALL BOOL; DBGMASK BOOL; TRACES COUNT; per motor HOOKREST and RESYNC BOOL, FORCED, RSTPROV, BLUNT,
 '         GRADED, GRD100, FRREST, RESTFLAT, COASTEMF, SHORTTK and SHORTI COUNT, PLATSTOP PCT (the wheel that was NOT
 '         faulted); B4PULSE NOT_BUILT (emitFaultRespCells())
@@ -29355,7 +29820,7 @@ PRI emitSignoffs() | slotIdx, side
 '         per motor RSTPROV, SPINHUNT, SPINERR COUNT, SPINSTRT PERMILLE, SPINPEAK, SPINSYM, SPINCTL, SPINLEAD X100,
 '         SPINFOL COUNT, CREEP TICKS, CRPHOLD BOOL; SPINPLAT PCT on the wheel FAULTRUN does not fault; LAGBOUND COUNT per
 '         motor (emitSpinCells()); SRC_REV 75: SPINRATE PCT and SPINHOLD COUNT per motor, LIMGIVE and RAMPARR COUNT (BOTH),
-'         BLKLIMIT BOOL (BOTH); SRC_REV 77: BLKWIN and BLKFLT BOOL (BOTH); SRC_REV 58/62: POSTFLT X100 per motor; BLKSTOP, PROTCLR, HELDATSPD COUNT (BOTH);
+'         BLKLIMIT BOOL (BOTH); SRC_REV 77: BLKWIN and BLKFLT BOOL (BOTH); SRC_REV 81: LDFLT BOOL (BOTH); SRC_REV 58/62: POSTFLT X100 per motor; BLKSTOP, PROTCLR, HELDATSPD COUNT (BOTH);
 '         BLKSHORT and BLKCOAST MV per motor; LDPATH PERMILLE, LDHUNT COUNT (BOTH); LDHOLD MS per motor (emitLoadCells())
 '  PACK   NOSTALL BOOL; DBGMASK BOOL; METER MV twice (CAL_POINT_MV, SECOND_POINT_MV), ABSENT COUNT, EV COUNT twice
 '         (PACK_STEADY_NO_EV, PACK_UNPLUG_EV); every pack cell NOT_BUILT when unfitted (emitPackCells())

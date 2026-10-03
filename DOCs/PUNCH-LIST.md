@@ -2076,7 +2076,8 @@ status ("HOLDING while rolling"); no hold was ever engaged.
 
 ### PL-187 -- above about 175 ×10⁶ the wheel runs rough: gravelly, vibrating, never settling
 
-> **Status (2026-10-03): cause established at the desk; T-1 RULED** (STEPHEN 2026-10-03 *"yes a"*; design §4.11, «#3668»):
+> **Status (2026-10-03): T-1 BUILT, DRIVER_REV 49; awaits the third visit** (its `dual-limits` traces the edge rung; TOPSPD
+> should read above 175). **Earlier: cause established at the desk; T-1 RULED** (STEPHEN 2026-10-03 *"yes a"*; design §4.11, «#3668»):
 > at the duty ceiling the limit hold (D-5) and D-3 act on a duty-cap pass, yanking the field back every sector. T-1: only
 > the current fold-back triggers the limit hold. The second visit's `dual-limits` read 185 ×10⁶ the same way (its
 > negative). **Earlier:** OPEN, evidence only (Stephen's report of the first visit's `dual-limits`).
@@ -2108,7 +2109,8 @@ this region. Evidence for the "less torque in reserve near top speed" Known Issu
 
 ### PL-188 -- the obstacle mirror zeroes its count on the pass that sees the latch
 
-> **Status (2026-10-03): ⛔ FIX, harness, 6.1.0** («#3668»); found by the second 6.1.0 visit
+> **Status (2026-10-03): FIXED in `test_bench_dual` SRC_REV 80**, awaits the third visit (the count is kept on the pass that
+> first sees ESTOP). **Earlier:** ⛔ FIX, harness, 6.1.0 («#3668»); found by the second 6.1.0 visit
 > (`DOCs/analyses/bench/2026-10-02b/VISIT-6.1.0B-EVALUATION.md` §3.2, G-1).
 
 **MEASURED 2026-10-02** (`debug_261002-143413.log` `BM-BLOCK` seq 383, 757): both trials latched with stands of 1,022 and
@@ -2118,8 +2120,11 @@ is checked. **Fix:** check the latch before the count's bookkeeping, or keep the
 
 ### PL-189 -- the limit hold (C4) protects a wheel only from its first set-back to its next forward tick, and keeps the field fast
 
-> **Status (2026-10-03): ⛔ FIX, design then driver, 6.1.0** («#3668», with T-1); found by the second 6.1.0 visit (§3.2-3.4,
-> §2.2; G-2, G-3, G-4). Each correction changes driver behaviour: to Stephen with its benefit before it is built (P5).
+> **Status (2026-10-03): BUILT, DRIVER_REV 49; awaits the third visit.** STEPHEN 2026-10-03 *"yes A"* (design §4.12): U-1 the
+> hold arms at every fold-back action; U-2 it stays armed until the rotor crosses a whole sector forward with no fold; U-5 its
+> release caps the field's speed at 4 sectors over the passes since the fold. MODELLED: over-command end 34 A → 3 A; obstacle
+> fault-band readings 4 → 0; steady grab faults 1 → 0 of 16. Certified by BLKWIN, the new LDFLT and OVRSTEP (SRC_REV 81).
+> **Earlier:** ⛔ FIX, design then driver; found by the second 6.1.0 visit (§3.2-3.4, §2.2; G-2, G-3, G-4).
 
 **MEASURED 2026-10-02, DRIVER_REV 48:**
 - **Before it arms:** on both obstacle trials the RIGHT wheel's lag reached 85 / 83 once inside the window after its first
