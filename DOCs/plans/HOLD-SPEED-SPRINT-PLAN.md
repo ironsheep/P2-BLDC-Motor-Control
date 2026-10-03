@@ -182,6 +182,14 @@ second visit shows hold does not stop the spin.
 
 ---
 
+### 1.7 Rough running above 175 ×10⁶ (added 2026-10-02, PL-187)
+
+**Why.** Stephen heard the wheels go gravelly and vibrate at the top of `dual-limits`; the log shows every wheel clean at
+175 ×10⁶ and, at 185, the PWM at its rails, no steady state and hall skips, with no lag fault. A pack at the nominal
+18.5 V may put full power (165 ×10⁶) in the same region. **Deliverable:** a desk study naming which of voltage
+saturation, a lag past the torque peak, or commutation timing explains it, and a `dual-limits` trace of the edge rung and
+the over-command that separates them on the next visit; any driver change to Stephen with its benefit (P5).
+
 ## 2. Wheels-up verdicts for the fix (harness for this plan's runs)
 
 **Why.** The design's wheels-up certification (§6 there: Visit 8's A-1, A-2, A-3, A-5) has been judged so far by
@@ -390,6 +398,13 @@ known and fixable stays unbuilt when the sheet goes out).
 finding. A finding that needs a fix and a run is the only way a second visit is added, and its count is stated then.
 
 ---
+
+### 9.2 The third visit (added 2026-10-03)
+
+The second visit (evaluation `DOCs/analyses/bench/2026-10-02b/VISIT-6.1.0B-EVALUATION.md`) certified the blocked stop, the
+kick fix, the pivot hold and the corrected floor cells, and found three gaps in C4 (PL-189) and a harness count defect
+(PL-188). With T-1 (ruled 2026-10-03, PL-187) these need one more run: `floor-obstacle`, `floor-grab`, `dual-limits` (with
+SRC_REV 79's top-speed traces, completing), `dual-a`, `floor-auto`. Owned by «#3668».
 
 ### 9.1 The second visit (added 2026-10-02)
 

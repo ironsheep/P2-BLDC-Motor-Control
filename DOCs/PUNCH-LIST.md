@@ -1411,7 +1411,11 @@ observation, makes it actionable. Owner: each visit's log analysis (now «#3634�
 
 ### PL-132 -- the blocked-wheel protective stop shorts the phases even when the user chose coast
 
-> **6.1.0 status (2026-10-02, the visit): STILL UNMEASURED.** The COAST trial never latched under DRIVER_REV 47 (PL-179),
+> **6.1.0 status (2026-10-03): ✅ CERTIFIED** by the second visit: after a protective stop the COAST trial's phases read
+> 166 / 160 mV (coasting, BLKCOAST PASS) and the BRAKE trial's 16 / 13 mV (shorted, BLKSHORT PASS)
+> (`debug_261002-143413.log`).
+>
+> **Earlier 6.1.0 status (2026-10-02, the visit): STILL UNMEASURED.** The COAST trial never latched under DRIVER_REV 47 (PL-179),
 > so BLKCOAST read NOMEAS; the BRAKE trial faulted at contact (PL-180), so BLKSHORT did too. The COAST half waits for
 > PL-179's fix and its visit.
 >
@@ -1823,7 +1827,8 @@ From `FLOOR-RERUN-EVALUATION.md` §4, §2.1, §7:
 
 ### PL-169 -- the FlySky demos re-send the acceleration setting on knob noise
 
-> **Status (2026-10-02, the 6.1.0 visit): the deadband CERTIFIED; the ends NOT SHOWN.** 47 rate updates in the FlySky
+> **Status (2026-10-03): ✅ CERTIFIED** — the second visit's FlySky drive swept both knobs end to end (raw 240-1,807;
+> rates 200-3,000 and 1,000-3,000 mm/s²), still sending only on a move. **Earlier (2026-10-02):** the deadband CERTIFIED; the ends NOT SHOWN. 47 rate updates in the FlySky
 > drive (`debug_261002-104014.log`), each more than 10 mm/s² from the one before, and none while a knob stood still. The
 > knobs were not turned to both stops (VRA 499-1,735, VRB 270-1,514 raw; rates 662-2,867 and 1,048-2,626), so "both ends
 > reached" waits for the next FlySky drive.
@@ -1944,7 +1949,11 @@ the driver that ships.
 
 ### PL-179 -- under D-5 a blocked platform does not stop itself: the protective stop never latched
 
-> **Status (2026-10-02): BUILT, DRIVER_REV 48; awaits the second visit** («#3662»). Cause SETTLED at the desk
+> **Status (2026-10-03): the DRIVER fix CERTIFIED by the second visit** — both obstacle trials latched, stands 1,022 / 1,002
+> ms (`debug_261002-143413.log` seq 383, 757). BLKSTOP / BLKLIMIT still FAIL on the harness mirror (PL-188), and C4's gaps
+> are PL-189.
+>
+> **Earlier status (2026-10-02): BUILT, DRIVER_REV 48; awaits the second visit** («#3662»). Cause SETTLED at the desk
 > (`DOCs/plans/HOLD-SPEED-UNDER-LOAD-DESIGN.md` §4.10.3): at a low limit the fold-back acts in single frames (the stall's
 > own counters: 1,677 / 914 fold frames in ~9.5 s, so at most 18 % / 10 % of passes), and the count needed 1,000 in a
 > row. STEPHEN 2026-10-02 (*"yes, a"*) ruled all three parts: **F-a** the count's limiter half is sticky from the first
@@ -1966,7 +1975,11 @@ none after. On DRIVER_REV 46 the same trial stood 1,183 / 1,092 ms (`2026-09-30/
 
 ### PL-180 -- lag faults on hard transients, and a slow-down current kick, new at DRIVER_REV 47
 
-> **Status (2026-10-02): two of three BUILT, DRIVER_REV 48; the reversal fault UNEXPLAINED** («#3662»; design §4.10.4-5).
+> **Status (2026-10-03, second visit):** the slow-down kick CERTIFIED gone (TRKICK-A 24 / 30 mV); no fault at obstacle
+> contact (BLKFLT PASS); no reversal fault in the FlySky drive, on fewer reversals (9 samples at ≥ 150 tps against 27): not
+> settled. A hand-slowed wheel faulted under the grab (PL-189).
+>
+> **Earlier status (2026-10-02): two of three BUILT, DRIVER_REV 48; the reversal fault UNEXPLAINED** («#3662»; design §4.10.4-5).
 > - **The contact fault: consistent with, modelled.** Between fold-back frames the field walked back from 64 through
 >   |err| 82..88, where one tick against it faults; C4 keeps it at 64 while blocked. Modelled lag faults against a
 >   yielding object 7 → 0 of 16 (DRIVER_REV 46: 1).
@@ -2041,7 +2054,8 @@ pairs, both directions, before any claim about the schedule's saving at the quar
 
 ### PL-186 -- in a fast pivot turn the coasting inner wheel is driven backward, so the platform spins about its centre
 
-> **Status (2026-10-02): BUILT, awaits the second visit** («#3663»). STEPHEN 2026-10-02 chose option (a), *"yes your
+> **Status (2026-10-03): ✅ CERTIFIED in the log** by the second visit: `RC-PIVOT,samples,378,moving,0,max_tps,25,unheld,0,
+> ...,verdict,PASS` (`debug_261002-143653.log`); Stephen's word on the feel is still to come. **Earlier: BUILT** («#3663»). STEPHEN 2026-10-02 chose option (a), *"yes your
 > recommendation"*: the FlySky demos (and `test_bench_rc`, SRC_REV 7) select `holdAtStop(true)`, and `DRIVE-OBJECTS.md`'s
 > `driveDirection()` row says a pivot needs hold. Cell `RC-PIVOT` judges it (a wheel at rest in a pivot moving faster than
 > 50 tps FAILs; desk arithmetic on the logs: the 2026-10-02 drive fails 65 of 547, the 2026-09-30 drive passes 126 of
@@ -2062,8 +2076,10 @@ status ("HOLDING while rolling"); no hold was ever engaged.
 
 ### PL-187 -- above about 175 ×10⁶ the wheel runs rough: gravelly, vibrating, never settling
 
-> **Status (2026-10-02): OPEN, 6.1.0, evidence only** (Stephen's report of the first visit's `dual-limits`; found in its
-> log). Mechanism not established: this tier traces none of its top-speed rungs.
+> **Status (2026-10-03): cause established at the desk; T-1 RULED** (STEPHEN 2026-10-03 *"yes a"*; design §4.11, «#3668»):
+> at the duty ceiling the limit hold (D-5) and D-3 act on a duty-cap pass, yanking the field back every sector. T-1: only
+> the current fold-back triggers the limit hold. The second visit's `dual-limits` read 185 ×10⁶ the same way (its
+> negative). **Earlier:** OPEN, evidence only (Stephen's report of the first visit's `dual-limits`).
 
 **Stephen, 2026-10-02:** *"at the highest speeds, the motor sounds gravelly. It's having a hard time spinning, and it's
 making terrible noises and a huge amount of vibration. That would suggest that we're out of sync with our positioning at
@@ -2089,6 +2105,49 @@ the drive does once the duty is at its ceiling. **Why it matters to a user:** fu
 here at 92 % duty on a 20.5 V pack; on a pack at the nominal 18.5 V the same speed needs about 102 % of that duty
 (DERIVED: 25,460 × 20.5 / 18.5 ≈ 28,200 against the 27,648 ceiling), so a user at full power on a lower pack may reach
 this region. Evidence for the "less torque in reserve near top speed" Known Issue (P5).
+
+### PL-188 -- the obstacle mirror zeroes its count on the pass that sees the latch
+
+> **Status (2026-10-03): ⛔ FIX, harness, 6.1.0** («#3668»); found by the second 6.1.0 visit
+> (`DOCs/analyses/bench/2026-10-02b/VISIT-6.1.0B-EVALUATION.md` §3.2, G-1).
+
+**MEASURED 2026-10-02** (`debug_261002-143413.log` `BM-BLOCK` seq 383, 757): both trials latched with stands of 1,022 and
+1,002 ms, yet `l_count,0,r_count,0`, so BLKSTOP and BLKLIMIT FAIL. `blockWatch()` (SRC_REV 77) applies the driver's state
+test to its count; on the pass that sees the latch the wheel already reads ESTOP, so the count is zeroed before the latch
+is checked. **Fix:** check the latch before the count's bookkeeping, or keep the count on the latching pass.
+
+### PL-189 -- the limit hold (C4) protects a wheel only from its first set-back to its next forward tick, and keeps the field fast
+
+> **Status (2026-10-03): ⛔ FIX, design then driver, 6.1.0** («#3668», with T-1); found by the second 6.1.0 visit (§3.2-3.4,
+> §2.2; G-2, G-3, G-4). Each correction changes driver behaviour: to Stephen with its benefit before it is built (P5).
+
+**MEASURED 2026-10-02, DRIVER_REV 48:**
+- **Before it arms:** on both obstacle trials the RIGHT wheel's lag reached 85 / 83 once inside the window after its first
+  limiter action (BLKWIN FAIL; `BM-BLKWIN` seq 386, 760). C4 arms at the first set-back, not the first limiter action.
+- **On a wheel the limit slows but does not stop:** under the grab at 2 A, LEFT (slowed to 19 %) re-synced and lag-faulted
+  (`debug_261002-143538.log` seq 16, 19). C4 disarms at every forward tick, so the exposure returns each sector.
+- **At the end of a sustained limit:** the 1 A over-command now ends with the field at 47-52 % of command (13 % on
+  DRIVER_REV 47); the full-power step after it drew ~9.6 A on LEFT (`BM-ABORT ... ABS_CURRENT,value,1_445`, `debug_261002-
+  142002.log` seq 161) and the board fell silent at the same step on RIGHT (reset or link, not separated).
+**Candidate corrections (to design):** arm at the first limiter action; stay armed while the wheel is limited; let D-3 give
+the field's speed way on armed passes at a sustained limit.
+
+### PL-190 -- SRVKEEP's fixed reference reads a day's spread as a regression
+
+> **Status (2026-10-03): WATCH, harness** (second 6.1.0 visit §2.1, G-5).
+
+**MEASURED 2026-10-02:** three re-visited rung windows read net current 5.6-7.7 % over the 2026-09-27 DRIVER_REV 46
+reference (rid 22, 41, 136 of `debug_261002-134026.log`); duty within; pack 20.2 V against 20.5 the same morning; the
+steady drive is unchanged by construction (`tools/pasm_equiv`, C4 / S-1 neutralised: 112 of 112 equal). **Settles it:** a
+same-session control, or a band derived from repeat runs of one driver.
+
+### PL-191 -- a speed raised while a wheel is still slowing dips before it climbs
+
+> **Status (2026-10-03): WATCH, the ramp generator (PL-160's)**; Known Issues evidence (second 6.1.0 visit §3.4, G-9).
+
+**MEASURED 2026-10-02** (`debug_261002-143653.log` 161.1-161.5 s): the stick went 0 → 5 → 35 → 45 while LEFT was slowing
+from 56.6 ×10⁶; the jerk-limited generator unwound the deceleration first, the field fell to 6.8 ×10⁶ (12 % of its new
+target) for ~300 ms, the wheel stood, and the steering object scaled both wheels (`EV_PATH_LIMIT` 184 ‰). Twice in the drive.
 
 ### PL-185 -- a hand cannot slow the platform at the grab's 4 A limit, so the grab cells measure nothing
 

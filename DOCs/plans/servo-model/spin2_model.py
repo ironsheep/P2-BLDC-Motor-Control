@@ -33,6 +33,13 @@ limiter acted. The design's runs add `d5=1 blk_lim=1` to the D-1..D-3 flags.
   diag=1     block mode: each wheel's limiter pattern over its stand (the separating reading for F-1)
   python3 spin2_model.py stepdn   [key=value ...]   -- wheels up, the ladder's speed steps (F-3)
   python3 spin2_model.py reversal [key=value ...]   -- the floor, straight, a slow-down / reversal from -175 tps (F-2)
+
+«#3668» (design doc 4.11), off by default so every earlier command reproduces its numbers:
+  python3 spin2_model.py topspd   [key=value ...]   -- wheels up, LIMTOP's climb past the duty ceiling (165-245 x 10^6)
+  d5_fold_only=1  candidate T-1: D-5's limit hold (and C4's arming) acts on a pass the fold-back acted, not on one where
+                  only the duty ceiling clamped; D-3's decay still reads both limiters
+  top_v=V (one model supply; 0 = 18.5 and 20.5), top_L=L (a fixed lead; -99 = the schedule), top_lo / top_hi (rungs,
+  x 10^6), top_over=1 (also the over-command, 245 x 10^6 at a 1 A limit from 175)
 """
 import math, sys
 from spin_model import P, Drive, lead_tenths, l_eff, ke_from_ladder, FRAME, PASS, SECTOR, TWO32, SLOW, MED, BRISK
@@ -81,6 +88,15 @@ Q.update(m=7.7, r=0.08255, track=0.387, Jw=0.006, Iz=0.26,     # Iz: NOT measure
          cap_lift=0,              # candidate S-1 (4.10.6): 0 = the PL-55 ceiling lifts at LAG_SOFT (as built); N = it
                                   #  lifts once the pass's lag_s reaches N (SERVO_SETPOINT 48: the rotor trails its point)
          boost_run=0,             # candidate S-2 (4.10.6): 1 = D-2's boost only in SPIN_UP / AT_SPEED
+         # «#3668» (design doc 4.11). Off by default: every earlier command reproduces its numbers
+         d5_fold_only=0,          # 1 = candidate T-1: the limit hold (and C4's arming) acts on a pass the fold-back acted,
+                                  #  not on one where only the duty ceiling clamped; D-3's decay still reads both
+         top_v=0.0,               # topspd mode: one model supply, V (0 = 18.5 and 20.5)
+         top_L=-99.0,             # topspd mode: a fixed lead L, deg (-99 = the schedule)
+         top_lo=165, top_hi=245,  # topspd mode: the rungs, x 10^6, LIMTOP's 10 x 10^6 apart
+         top_over=0,              # topspd mode: 1 = also the over-command, 245 x 10^6 at a 1 A limit from 175
+         path=1,                  # 0 = no steering path limiter: each wheel is its own motor object (topspd sets it;
+                                  #  LIMTOP drives one motor object at a time, with no steering object)
          )
 
 PATH_RELEASE_SLOTS, PATH_RELEASE_STEP, PATH_BEHIND = 4, 20, 100
@@ -158,6 +174,7 @@ class Wheel:
         w.win_frames = 0                  # frames the driven lag reads in that band: a backward tick there faults
         w.ring = []                       # diag=1: the last frames' (t, err, sector, field speed, state, duty, note)
         w.back_in_win = 0                 # backward hall ticks taken while the lag read in that band
+        w.folds_seen = 0                  # «#3668» T-1 (d5_fold_only): the fold count as the previous pass left it
 
     def permille(w):
         return min(abs(w.drv.v) * 1000 // abs(w.cmd), 1000) if w.cmd else 1000
@@ -267,7 +284,7 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             sh = [w.hold_slots_ago < SHORT_SLOTS for w in W]
             pm = [w.permille() for w in W]
             behind = [sh[0] and (pm[1] - pm[0] > PATH_BEHIND), sh[1] and (pm[0] - pm[1] > PATH_BEHIND)]
-            if behind[0] or behind[1]:
+            if p['path'] and (behind[0] or behind[1]):     # «#3668»: path=0, no steering object (topspd)
                 clean = 0
                 want = pm[0] if behind[0] else pm[1]
                 if want < scale:
@@ -303,6 +320,7 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                 prev = w.drv.state
                 if p['pasm'] and prev not in RUNNING:
                     w.capped_seen = w.capped          # (c) gettgtincr's re-take: frames in another state are no limit
+                    w.folds_seen = w.folds
                 at_rest = w.drv.jerk_step(w.tgt, w.e)
                 if p['pasm'] and not at_rest and w.drv.state in RAMPING_DOWN and prev not in RAMPING_DOWN:
                     w.duty0 = w.duty; w.incr0 = abs(w.drv.v)    # (b) jerkStep's .report: where the ramp-down starts
@@ -311,7 +329,9 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                     dir_ = -1 if w.drv.v < 0 else 1
                     if w.lim_sector is not None and (math.floor(w.thr / SECTOR) - w.lim_sector) * dir_ > 0:
                         w.lim_sector = None       # C4: the rotor ticked forward past the armed sector
-                    lim_hold = p['d5'] and (w.capped != w.capped_seen or w.lim_sector is not None) \
+                    # «#3668» T-1 (d5_fold_only): only the fold-back arms the limit hold; else either limiter (as built)
+                    lim_now = (w.folds != w.folds_seen) if p['d5_fold_only'] else (w.capped != w.capped_seen)
+                    lim_hold = p['d5'] and (lim_now or w.lim_sector is not None) \
                         and w.drv.state in ('SPIN_UP', 'AT_SPEED')
                     hold_at = p['lag_lim'] if lim_hold else p['lag_hold']
                     if lag_s < hold_at:
@@ -349,8 +369,10 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                             elif w.drv.state == 'AT_SPEED':
                                 w.drv.state = 'SPIN_UP'
                     w.capped_seen = w.capped
+                    w.folds_seen = w.folds
                 if p['pasm']:
                     w.capped_seen = w.capped          # passEnd's snapshot, every pass
+                    w.folds_seen = w.folds
                     # (b) the PL-55 ceiling for this pass's frames: duty0 x |drv_incr| / incr0 while ramping down,
                     #  lifted when the pass's lag_s >= LAG_SOFT (:7798-7817)
                     w.duty_cap = p['duty_max']
@@ -507,7 +529,9 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                 break
         if f % every == 0:
             samples.append((t, [(w.duty, w.e * w.sign, max(w.pin, 0) / p['Vbus'], w.thr * w.sign / SECTOR,
-                                 w.drv.v, w.drv.held, w.drv.state, math.hypot(w.idd, w.iq), w.capped) for w in W], scale))
+                                 w.drv.v, w.drv.held, w.drv.state, math.hypot(w.idd, w.iq), w.capped,
+                                 # «#3668»: appended, so every reader above (by index) is unchanged
+                                 w.setbacks, w.cap_frames, w.folds, w.iq, w.wm) for w in W], scale))
             if trace is not None:
                 trace.append(samples[-1])
     ta = [w.t_arrive for w in W if w.t_arrive is not None]
@@ -680,6 +704,45 @@ def mon_line(mon):
     return '\n      '.join(out) + (f"\n      FAULT {f_[1]} at {f_[0]:.3f} s in {f_[2]}" if f_ else '')
 
 
+def top_rung(q, tgt, prev, pair, kt):
+    """«#3668» topspd: one LIMTOP rung, wheels up. prev is commanded from rest on the built-in ramp, then tgt 0.5 s
+    after the generator alone would arrive at prev (the harness climbs 10 x 10^6 a rung). Per wheel: the first sample
+    reporting AT_SPEED after the step (s; None when none within 6 s, the harness's LADDER_STEADY_MS, whose miss is
+    STEADY_TIMEOUT), and over the last 1 s of those 6 s: the rotor's rate and the field's speed (drv_incr) as % of
+    the command, the share of 0.5 ms samples reporting AT_SPEED, duty, the lag's mean and peak, held passes, set-backs,
+    duty-ceiling frames and fold frames per second, and the noise proxies: the phase current's mean, standard deviation
+    and peak, the torque ripple kt x std(iq) and the rotor's speed ripple std(rpm)."""
+    d = Drive(q); d.state = 'SPIN_UP'; k = 0
+    while d.state != 'AT_SPEED' and k < 40000:
+        d.jerk_step(prev, 0); k += 1
+    ts = k * PASS / 44000.0 + 0.5
+    tr = []
+    res = run(q, prev, ts + 6.0, pair, 1.0, sample_ms=0.5, trace=tr, t0_override=ts + 5.0, prog=[(ts, tgt)])
+    pred = abs(tgt) / TWO32 * (44000 / PASS) * 6
+    win = [s for s in tr if ts + 5.0 <= s[0] < ts + 6.0]
+    dt = win[-1][0] - win[0][0]
+    n = len(win)
+
+    def sd(xs):
+        m = sum(xs) / len(xs)
+        return (sum((x - m) ** 2 for x in xs) / len(xs)) ** 0.5
+
+    out = []
+    for i in (0, 1):
+        col = [[s[1][i][j] for s in win] for j in range(14)]
+        a, b = win[0][1][i], win[-1][1][i]
+        # the step is taken on the next pass, which leaves AT_SPEED: reach counts from the first sample after that
+        left = next((k_ for k_, s in enumerate(tr) if s[0] >= ts and s[1][i][6] != 'AT_SPEED'), len(tr))
+        out.append(dict(
+            reach=next((s[0] - ts for s in tr[left:] if s[1][i][6] == 'AT_SPEED'), None),
+            fol=100 * (b[3] - a[3]) / dt / pred, field=100 * sum(col[4]) / n / tgt, field_min=100 * min(col[4]) / tgt,
+            atspd=100 * sum(1 for x in col[6] if x == 'AT_SPEED') / n, duty=sum(col[0]) / n,
+            e=sum(col[1]) / n, e_pk=max(col[1]), held=(b[5] - a[5]) / dt, setb=(b[9] - a[9]) / dt,
+            cap=(b[10] - a[10]) / dt, folds=(b[11] - a[11]) / dt, iph=sum(col[7]) / n, iph_sd=sd(col[7]),
+            iph_pk=max(col[7]), tq_sd=kt * sd(col[12]), rpm_sd=sd(col[13]) * 60 / (2 * math.pi), idc=sum(col[2]) / n))
+    return out, res['faulted']
+
+
 def parse(argv):
     p = dict(Q)
     for a_ in argv:
@@ -836,6 +899,39 @@ if __name__ == '__main__':
         print(f"SUMMARY: lag faults in {n_f} of {n_t} transients; over all, both wheels: |err| in 82..88 for "
               f"{tot['win']:.0f} ms, held {tot['held']}, ceiling-clamped {tot['cap']}, boost {tot['boost']} frames; "
               f"lag_pk {tot['lag']}, Iph_pk {tot['iph']:.1f} A")
+    elif mode == 'topspd':
+        # «#3668» (design doc 4.11): wheels up (as wheelsup, but the supply is the mode's), LIMTOP's climb past the duty
+        #  ceiling, the schedule's lead unless top_L. The fold-back at the rig's 40 A peak (BM-ABIP2 i_limit_k 12,015;
+        #  BM-OCLIM peak_a 40) unless i_limit is given. Positive direction; both wheels (LEFT 501, RIGHT 467 mOhm)
+        q = dict(p); q.update(m=0.0, Iz=0.0, Tc=0.20, path=0)
+        if 'i_limit=' not in ' '.join(sys.argv[2:]):
+            q['i_limit'] = 40.0
+        pair = ('SCHED', None, -4) if q['top_L'] == -99.0 else ('FIXED', q['top_L'], -4)
+        print('-- topspd: wheels up, each rung from the one 10e6 below; MEASURED (debug_261002-101625.log, DRIVER_REV 47, '
+              'pack ~20.5 V): 165 / 175 clean, duty 25,460-25,721 / 27,025-27,306, err_pk 71-74; 185 STEADY_TIMEOUT on '
+              'all four; 245 at 1 A: field 12.6-13.1 % (BM-FOLLOW OVER). Columns: reach = first AT_SPEED after the step; '
+              'over the last 1 s of 6 s: rotor rate and field speed % of command, AT_SPEED share, per-second counts')
+        for V in ((q['top_v'],) if q['top_v'] else (18.5, 20.5)):
+            qv = dict(q); qv['Vbus'] = V
+            kt = 1.5 * qv['pp'] * ke_fit(qv)
+            print(f"  Vbus {V} V, fold at {qv['i_limit']} A peak, lead "
+                  f"{'the schedule' if pair[0] == 'SCHED' else pair[1]}, kt {kt:.3f} N m/A")
+            rows = [(r_ * 1_000_000, (r_ - 10) * 1_000_000, qv)
+                    for r_ in range(int(q['top_lo']), int(q['top_hi']) + 1, 10)]
+            if q['top_over']:
+                qo = dict(qv); qo['i_limit'] = 1.0
+                rows.append((245_000_000, 175_000_000, qo))
+            for tgt, prev, qq in rows:
+                ws, flt = top_rung(qq, tgt, prev, pair, kt)
+                tag = f"{tgt // 1_000_000:3}e6" + (f" at {qq['i_limit']:.0f} A" if qq['i_limit'] != qv['i_limit'] else '')
+                for n_, x, f_ in zip('LR', ws, flt):
+                    rch = f"{1000 * x['reach']:5.0f} ms" if x['reach'] is not None else ' none   '
+                    print(f"    {tag} {n_} reach {rch} | fol {x['fol']:5.1f} % field {x['field']:5.1f} % (min "
+                          f"{x['field_min']:5.1f}) AT_SPEED {x['atspd']:3.0f} % duty {x['duty']:6.0f} lag {x['e']:4.1f} pk "
+                          f"{x['e_pk']:4} | held {x['held']:4.0f} set-backs {x['setb']:4.0f} cap {x['cap']:6.0f} fold "
+                          f"{x['folds']:4.0f} /s | Iph {x['iph']:5.2f} sd {x['iph_sd']:5.2f} pk {x['iph_pk']:5.2f} A "
+                          f"torque sd {x['tq_sd']:5.3f} N m rpm sd {x['rpm_sd']:5.2f} Idc {x['idc']:4.2f} A"
+                          + (' FAULT' if f_ else ''), flush=True)
     elif mode == 'wheelsup':
         q = dict(p); q.update(m=0.0, Iz=0.0, Tc=0.20, Vbus=18.5)
         print('-- wheels up (no platform, J 0.006, Tc 0.20, 18.5 V), schedule; manual 6.4: swing 178-399, err_pk 76-86 at 10/20e6')

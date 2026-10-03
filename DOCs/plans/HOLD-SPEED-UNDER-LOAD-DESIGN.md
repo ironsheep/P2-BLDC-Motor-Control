@@ -1260,6 +1260,501 @@ python3 $S/spin2_model.py step|release|ramp|wheelsup|design $R47 $CAL           
 python3 $S/spin2_model.py design acc_shift=16 dC=1 d5=1 $CAL                                 # PL-181 (D-2 off); + e90_L18=53 Tnoise=0.4 Iz=0.42
 ```
 
+### 4.11 — rough running above 175 ×10⁶ (PL-187)
+
+**Status: DESIGN, Part A of «#3668» (the desk study). No driver code is changed by this section.** It answers PL-187
+(HOLD-SPEED plan §1.7). In the 6.1.0 visit's `dual-limits` run, wheels up, Stephen heard the wheels at their highest
+speeds sound gravelly, labour and vibrate hard, and suspected the drive was out of sync with the rotor's position. The
+fix proposed here (T-1, §4.11.7) is a new driver behaviour, so it goes to Stephen with its benefit before anything is
+built (P5).
+
+- **Evidence:** `DOCs/analyses/bench/2026-10-02/debug_261002-101625.log` (DRIVER_REV 47), its LIMTOP segment (seq
+  53-491). Cited by seq as `:seq` in this section; source lines are cited as `:line`.
+- **Driver:** `src/isp_bldc_motor.spin2` at DRIVER_REV 48. Line numbers below are REV 48's. On this path REV 48 differs
+  from the logged REV 47 only in `holdGate`'s C4 head (`:8879-8891`).
+- **Harness:** `src/test_bench_dual.spin2`, read only.
+
+Command shorthand (`S=DOCs/plans/servo-model`; every run is `python3 $S/spin2_model.py topspd ...` unless named):
+- `CAL` and `R47` as in §4.10.
+- `R48` = `R47 cap_lift=48 d5_sticky=1 blk_fix=1` (§4.10's FIX, as built).
+- `R46` = no drive flags.
+- `T1` = `R48 d5_fold_only=1`.
+- `V20` = `top_v=21.3`, the model supply that reproduces this run's duty (§4.11.4), i.e. the session's pack at about
+  20.5 V.
+- `V18` = `top_v=19.2`, the same scaled to an 18.5 V pack (× 18.5 / 20.5).
+
+#### 4.11.1 Summary for Stephen
+
+- **What you heard is the drive's own reaction to running out of voltage. The motor is not losing its place.**
+  - Above about 175 ×10⁶ (wheels up, on this pack) the motor needs more voltage than the battery gives, and the duty
+    (the share of the battery's voltage the drive applies) reaches its ceiling.
+  - From then on the drive treats that ceiling as a limit, exactly as it treats the current limit. It does the two
+    things 6.1.0 added for a wheel stopped against an obstacle:
+    - it stops the field (the rotating magnetic pull) running more than 90° ahead of the rotor, and pulls it back when
+      it is further;
+    - each time it does, it takes 1/64 off the field's speed.
+- **At speed that is the wrong move.**
+  - A motor at its voltage ceiling needs the field *further* ahead than 90° to keep its speed. The earlier driver ran
+    this way, smoothly, up to 245 ×10⁶ at Visit 9.
+  - So, about 20 times a second, the drive holds the field back for one step (15.5° of the electrical cycle at
+    185 ×10⁶), sometimes pulls it back further, and slows it.
+  - Each of those is a jolt of current: in the model, peaks of 11-16 A where steady running draws under 2 A. That is
+    the gravel and the vibration.
+  - The field's speed never settles. That is why the 185 rung timed out on all four wheel-directions.
+- **What it is not.**
+  - Not the PWM clipping its waveform. The drive caps the duty before it makes the waveform, and the waveform stayed 3
+    counts inside its limits.
+  - Not the hall sensors losing track. The driver's own hall checks counted no missed and no illegal transitions. The
+    log's "skips" are the test instrument, which samples 500 times a second and cannot resolve 494 hall ticks a second
+    (as at Visit 9).
+  - Not the timing (the lead) being wrong at that speed. The same lead runs 175 ×10⁶ clean. In the model, changing the
+    lead only moves the speed at which the ceiling is reached, and the roughness moves with the ceiling.
+  - Not the motor slipping past its peak torque. The model shows that regime only far higher (205-245 ×10⁶) or under a
+    heavy load.
+- **It reaches full power, on two counts.**
+  - On an 18.5 V pack, full power (165 ×10⁶) needs 102-104 % of the duty ceiling (worked out from this run's duty). The
+    model runs it rough, at 96.5 % of the commanded speed.
+  - On the floor it already happens on a full charge. In the FlySky drive the right wheel reached 96-99.6 % of the
+    ceiling in full-power pivots. The drive was holding its field on 11 of 13 samples, and the field ran 4-8 % slow
+    (measured).
+- **The fix (T-1): the hold acts on the current limit only, not on the voltage ceiling.**
+  - One rule changes in the driver. When only the voltage ceiling clamped the duty, the field keeps the allowance it had
+    before 6.1.0: up to 140° ahead before it is held.
+  - The 6.1.0 rule that the field gives way only at a limit stays.
+  - The blocked-wheel stop is unchanged by construction: a stalled wheel reaches its current limit, not the voltage
+    ceiling.
+- **Benefit (modelled; currents compared within a row, as the model's absolute currents run high):**
+  - 185 ×10⁶ wheels up settles in 0.4 s at 100 %. Its current ripple is 50 times smaller (0.05 A against 2.4-3.2 A).
+  - Full power on an 18.5 V pack runs at 100 % and calm, instead of 96.5 % and rough.
+  - Full power on a charged pack carries 4 N·m on one wheel (about 48 N at the tyre) at 100 %. Today's drive runs rough
+    from 1 N·m (12 N).
+  - Nothing else moves. The obstacle stops, the load steps, the spins and the slow-downs are identical digit for digit.
+- **Cost (estimated): no change to the shared-memory layout.** One cog register (50 → 49 free), about 5 LUT longs
+  (13 → 8 free), about 10 clocks per drive pass.
+- **Decision for you (§4.11.9):** build T-1 into the 6.1.0 load. Recommendation: yes.
+- **RULED (STEPHEN 2026-10-03, *"yes a"*): build T-1** — only the current fold-back triggers the limit hold; the duty
+  ceiling alone no longer does.
+
+#### 4.11.2 What the driver does at the duty ceiling, pass by pass
+
+At 185 ×10⁶ the rung runs in SPIN_UP or AT_SPEED. The PL-55 ceiling binds only in SPIN_DN and SLOW_TO_CHG
+(`:7831-7834`), so on a rung `duty_cap_` is `duty_max_`, 27,648.
+
+**Every frame (44 kHz, `.ctlMotor`):**
+1. **The feedforward is already at the ceiling.** `feedForward` (`:8823-8831`) gives |drv_incr| × duty_max /
+   ff_ceiling, at most duty_max.
+   - `ff_ceiling` is 167,501,483 in this build (`BM-ABIP1`, `:18`). So from 167.5 ×10⁶ up, the feedforward alone is
+     27,648, and only the trim's negative part keeps the duty under it.
+   - At 175 the trim held −342 to −623 counts (duty 27,025-27,306; `:141`, `:250`, `:359`, `:468`) and no frame
+     clamped (`BM-RUNGHL` `win_cap,0`; `:143`, `:252`, `:361`, `:470`). DERIVED.
+2. **At 185 the trim asks for more than the ceiling.**
+   - `.dutyLimits` clamps and counts `duty_capped_` (`:8085-8086`).
+   - The anti-windup re-derives `servo_acc` from the clamped duty (`:8094-8100`): here 0, the ceiling less the
+     feedforward.
+   - From then on every frame with `|err_|` above 48 asks for more than the ceiling and is counted. The frames below
+     48 pull the duty under it. So `duty_capped_` advances within almost every pass's 23 frames.
+3. **The waveform touches its limits and never crosses them.**
+   - `duty_ >> 4` feeds three QROTATEs (`:7915-7926`), then the min/max centring (`:7930-7954`).
+   - At 27,648 the centred levels span 2 × 0.866 × 1,728 = 2,993 of the 2,998 counts the frame leaves after its 70-count
+     dead gap.
+   - `BM-CLIP` reads `lvl_min,3,lvl_max,2_995,room,3` on all four 185 rungs (`:152`, `:261`, `:370`, `:479`), and room
+     20-36 at 175. DERIVED and MEASURED: **no clipped sine**.
+
+**Every drive pass (1,913/s, `drvMotor`):**
+
+4. `lag_s := ±err_` (`:7715-7716`). `jerkStep` (`:7787` → `:8960-9054`) steps toward the command. Its lag gate
+   (`:8999-9010`) does not act below 80.
+5. **`holdGate` (`:7807` → `:8876-8908`) sees a limiter.**
+   - `duty_capped_ + foldback_cnt_` differs from `lim_seen` (`:8876-8878`): Z = 0.
+   - In SPIN_UP or AT_SPEED it takes `.limHold` (`:8890-8891`): the field may advance only while `lag_s < LAG_LIM`, 64
+     (`:8893`).
+   - Past 64, the field is set back to 64 (`:8895-8903`), the hold arms (C4, `:8906-8907`), and C = 0.
+6. **Held.** In `.justIncr` (`:7812-7815`) the field does not take this pass's increment.
+   - At 185 ×10⁶ that drops 11 counts, 15.5° electrical, of field phase. `lag_held_` counts the pass.
+   - `holdDecay` (`:8847-8855`) turns AT_SPEED into SPIN_UP and, with Z = 0, takes `drv_incr −= drv_incr SAR 6`:
+     2.9 ×10⁶ off the field's speed.
+7. **C4** (`:8883-8889`) keeps the limit hold on every running pass until the rotor ticks forward past `lim_pos`. At 494
+   ticks/s that is the next sector, under 2 ms. It changes little here: REV 47 and REV 48 model alike (§4.11.4).
+8. **The climb back.** `passEnd` (`:8821-8822`) re-snapshots `lim_seen`. The next passes' `jerkStep`, now in SPIN_UP,
+   re-accelerates toward 185 ×10⁶ at `jerk_up` 71 per pass. Winning back one decay from a standing acceleration takes
+   about 150 ms (√(2 × 2.9 ×10⁶ / 71) = 286 passes).
+9. **Why it recurs in most sectors (DERIVED; no model parameter).**
+   - Between hall edges `err_` is a staircase: +11 counts a pass at 185 ×10⁶, −42.7 at each edge, about 3.9 passes a
+     sector.
+   - With its mean at the servo point (48) or above, the top step reads 64 or more. The bench's 175 rungs read `err_pk`
+     73-74 (`BM-RUNG2`; `:141`, `:250`, `:359`, `:468`), so the staircase passes 64 in every sector.
+   - Below the ceiling that step meets `LAG_HOLD` 100 (`:8892`) and nothing happens. Once a frame has clamped, it meets
+     `LAG_LIM` 64.
+   - **So once the duty caps, the limit hold acts in most sectors, whatever the motor's parameters.**
+10. **The lead does not move.** `frontApplyLead()` keys the lead on `|drv_incr_now|` (`:6493`), and the table is flat at
+    8° above 73.5 ×10⁶ (`:5038-5045`; held flat past its end, `:5060`). Neither the decay nor the climb writes a new pair.
+
+The driver's own history names step 6's effect. Skipping one increment at a ramp's arrival "dropped a whole drv_incr of
+field phase at every arrival (12.3 deg electrical at 147e6) and rang the load angle at ~18 Hz: the current kick at every
+speed change" (`:7788-7793`, PL-78 / PL-87 / PL-95). At the ceiling, REV 47 and REV 48 drop that increment 18-24 times
+a second (MODELLED, §4.11.4).
+
+#### 4.11.3 The log, fact by fact
+
+The rivals:
+- (a) voltage saturation: (a1) the clipped sine, (a2) the duty at its ceiling;
+- (b) the lag past the torque peak once the duty can rise no further (`LAG_HOLD`, PL-105);
+- (c) the lead or commutation timing wrong at that speed;
+- (d) the one §4.11.2 adds: the drive's limit response (D-3's give-way and D-5's limit hold) engaged by the voltage
+  ceiling.
+
+| # | Log fact | What it supports or refutes | Standing | The separating reading |
+|---|---|---|---|---|
+| 1 | 165 and 175 clean on all four wheel-directions: OK, follow 99-100 %, `err_pk` 71-74, no hold, no clamp (`:133-146`, `:242-255`, `:351-364`, `:460-473`) | Against (c): the same 8° lead runs 175 clean. Consistent with (d): no limiter, so no hold | MEASURED | — |
+| 2 | 175 duty 27,025-27,306, room 20-36, `win_cap` 0; `BM-TOPSPD` `unsat,175_000_000` (`:163`, `:272`, `:381`, `:490`) | The ceiling lies between 175 and 185 on all four: (a2) is the trigger | MEASURED | — |
+| 3 | 185 `STEADY_TIMEOUT` on all four: no AT_SPEED in 6 s (`LADDER_STEADY_MS`, `test_bench_dual.spin2:1845`; `:147`, `:256`, `:365`, `:474`) | **Supports (d)**: `holdDecay` turns AT_SPEED into SPIN_UP on each held pass, and the field never reaches the command (model REV 47 / 48: no AT_SPEED in 6 s; REV 46 and T-1: AT_SPEED in 392 ms). Against (a) alone: the old driver followed 185 by field weakening (fact 8). Not (b) under REV 47: a pass the ceiling clamped holds at 64 (`:8893`), so the lag cannot sit at 100 there | MEASURED; MODELLED | The trace (§4.11.10): `lag_held` rising while `duty_capped` rises and `foldback_frames` does not, with `err` never at 100 |
+| 4 | `BM-CLIP` `room,3` on all four at 185 | (a1) **REFUTED**: room ≥ 0 is no clip (`clipRoom()`, `test_bench_dual.spin2:10399-10408`; the judge passed its own negative case, `BM-CLIPTEST` `:54`), and the duty is clamped before the waveform by construction. (a2) **SETTLED**: levels at the rails means duty 27,648 | SETTLED | — |
+| 5 | `hw_skip` 2-6 at 185 (`:151`, `:260`, `:369`, `:478`); `missed_d,0,illegal_d,0` | Supports no rival. It is the harness instrument's 500 Hz hall poll (`instReadHall()` `:24012-24016`, one poll per sample `:23979-23980`) meeting 494 ticks/s. At Visit 9, `hw + hw_skip` matched the driver's ticks within 2 (`VISIT-9-EVALUATION.md` §2.1). The driver decodes the halls every frame and missed none. **Not evidence of lost synchronism** | SETTLED | — |
+| 6 | No lag fault in LIMTOP (`BM-SEG` `:491`, faults 0) | Consistent with (d): a hold at 64 keeps the reading far from 125. Against (b) as a slip at 185 | MEASURED | — |
+| 7 | The over-command (245 ×10⁶) falls to 12.6-13.1 % (`BM-FOLLOW OVER`, `:159`, `:268`, `:377`, `:486`) | Says nothing about 185. The 1 A limit is set only inside `overCommandStep()` (`test_bench_dual.spin2:10540`, restored `:10545`; read back 40 / 27 A, `BM-OCLIM` `:160`, `:269`, `:378`, `:487`). The rungs ran at the 40 A peak, so this is the fold-back, not the ceiling. It **validates the model**: REV 47 gives field 12.6-12.7 % and rotor 3.7 % (harness `h_pct` 5). The Visit 9 driver did the same (6-19 ×10⁶, `VISIT-6.1.0-EVALUATION.md` §2.3) | SETTLED; MODELLED | — |
+| 8 | Visit 9, same rig, older driver (`2026-09-23/debug_260922-193000.log`): 185 followed at 100 % drawing 0.32-0.41 A; 245 followed on 3 of 4 by field weakening (`err` 48 → 65); one slip at 235 with a ~25 A peak | (a2) alone does not make the motor rough or lose the rung; the drive's response does. The 235 slip is the (b) regime | MEASURED | — |
+| 9 | Stephen: gravel, labouring, vibration, "out of sync" | (d) predicts an irregular ~20/s train of field steps back against a turning rotor, with current peaks 6-8× the steady current (MODELLED). (b) predicts a slip with one large peak (fact 8) | CONSISTENT-WITH (d) | The trace's `drv_incr_now` steps and hold rate |
+| 10 | Floor, FlySky, REV 47, pack 20,208-20,255 mV (`debug_261002-104014.log` RC-TEL seq 3,811-3,823): full-power pivot (LEFT at power 0), RIGHT `r_duty` 26,492-27,535 (96-99.6 % of the ceiling), SPIN_UP throughout, field 152.2-158.2 ×10⁶ of 165 (92.2-95.9 %), `r_short` 1 on 11 of 13 samples, `r_err` 21-65 | (d)'s signature in use: holds at the ceiling with `err` never above 65. Against (b): no `err` near 100 | MEASURED | — |
+
+**Verdicts.**
+- (a1) the clipped sine: **REFUTED** (SETTLED).
+- (a2) the duty at its ceiling: **SETTLED as the trigger**; refuted as the carrier (MEASURED at Visit 9, MODELLED).
+- (b) past the torque peak: **UNKNOWN on the bench at 185**, since the rung opened no window. Excluded under REV 47 by
+  construction while the ceiling clamps (`:8893`). In the model it appears only at 205-245 ×10⁶ or under 6 N·m (T-1).
+- (c) the lead: **REFUTED as the carrier**. MEASURED: 175 runs clean at the same lead. MODELLED: Table C below.
+- (d) the limit response at the ceiling: **CONSISTENT-WITH every fact, and MODELLED as the carrier** (§4.11.4, §4.11.6).
+
+#### 4.11.4 The model, 165-245 ×10⁶ wheels up
+
+**The new mode.** `topspd` (§4.11.13) climbs as LIMTOP does: wheels up, each rung commanded 10 ×10⁶ above the last,
+read over the last 1 s of the 6 s after the step. "Reaches" is the harness's 6 s steady bound. It runs with no steering
+path limiter (`path=0`), because LIMTOP drives one motor object at a time. The fold-back is at the rig's 40 A peak
+(`BM-ABIP2` `i_limit_k,12_015`).
+
+**Calibration.** The model's own 18.5 V does not reproduce this run's duty. Its back-EMF constant comes from the ladder's
+"170 per 10⁶ at 18.5 V", which was measured on the same pack under that nominal label (§4.11.11 S-a). At `top_v=21.3`
+it does:
+
+| Reading | MEASURED | MODELLED, `R47 CAL V20` |
+|---|---|---|
+| 165 ×10⁶ duty | 25,460-25,721 | 25,558-25,594 |
+| 175 ×10⁶ duty | 27,025-27,306 | 27,136-27,169 |
+| 165 / 175 `err_pk` | 71-74 | 74 |
+| 185 ×10⁶ | `STEADY_TIMEOUT` on all four | no AT_SPEED within 6 s, both wheels |
+| 245 ×10⁶ at 1 A: field / rotor | 12.6-13.1 % / `h_pct` 5 | 12.6-12.7 % / 3.7 % |
+
+So V20 (21.3) stands for this run's pack, about 20.5 V, and V18 (19.2) for an 18.5 V pack. The raw supplies tell the
+same story with the knee about 10 ×10⁶ lower (`topspd R48 CAL top_hi=205`):
+- REV 48 is rough from 165 at 18.5 V and from 175 at 20.5 V.
+- T-1 is steady to 185 at both, with one wheel rippling from 195.
+
+**Table A: the climb at V20** (`R47`, `R48`, `R46`, `T1`, each `CAL V20 top_over=1`; LEFT and RIGHT together):
+
+| Rung ×10⁶ | DRIVER_REV 47 / 48 (as built) | REV 46 (no PL-167) | REV 48 + T-1 |
+|---|---|---|---|
+| 165, 175 | AT_SPEED in 392 ms, 100 %, current sd 0.06-0.07 A, peak 1.9-2.1 A | identical | identical |
+| **185** | **never steady**: rotor 93.4-95.1 %, field 94.9-96.2 %; 18-24 held passes/s, 12-19 set-backs/s; phase current sd 2.4-3.2 A, peak 11.6-15.7 A; torque sd 1.7-2.3 N·m; speed sd 15-20 rpm (at 330 rpm) | AT_SPEED in 392 ms, 100 %, lag 50.2-50.3 (peak 76), no hold; sd 0.05 A, peak 1.9 A; torque sd 0.007 N·m | identical to REV 46 |
+| 195 | rotor 88.5-89.3 %, sd 2.8 A | 100 %; LEFT calm (sd 0.11 A); RIGHT ripples (sd 2.7-2.8 A, lag peak 83-84) | as REV 46 |
+| 205-245 | the field gives way: rotor 84 → 71 %, field 86 → 72 % (≈ 175 ×10⁶); sd 2.8-3.2 A, peak 13.8-15.6 A throughout | 97.7-99.9 %; lag 55 → 66 (Visit 9 MEASURED 48 → 65); from 205-215 lag peaks 108-114, 4-10 holds/s at `LAG_HOLD`, sd 7.9-8.8 A, peaks 30-39 A | as REV 46, within a few % |
+| 245 at 1 A | REV 47: field 12.6-12.7 %, rotor 3.7 % (MEASURED 12.6-13.1 %). REV 48: field 64.8 %, rotor 3.4-3.5 % (S-b) | field 5.9-6.0 % (the Visit 9 driver: 2.4-7.8 %) | as REV 48 |
+
+**Table B: what carries it** (185 ×10⁶, V20; same model, only flags differ):
+
+| Drive | Steady? | Rotor | Held / set-backs per s | Phase current sd / peak |
+|---|---|---|---|---|
+| `R47` | no | 93.8-95.1 % | 18-20 / 12-13 | 2.4-3.0 / 11.6-13.7 A |
+| D-1..D-3 without D-5 (`acc_shift=16 dB=1 boost_shift=10 dC=1 blk_lim=1 CAL`) | yes, 392 ms | 100 % | 0 / 0 | 0.05 / 1.9 A |
+| `R47 d5_back=0`: the limit hold, no set-back | no | 95.1-95.5 % | 19-20 / 0 | 1.9-2.2 / 10.0-11.6 A |
+| `R47 hold_decay_shift=30`: no decay | AT_SPEED 97-98 % of the time | 96.7-96.8 % | 43-44 / 41-42 | 2.0 / 10.2-11.1 A |
+| `T1` | yes, 392 ms | 100 % | 0 / 0 | 0.05 / 1.9 A |
+
+What Table B shows:
+- **The limit hold on a pass the ceiling clamped is necessary and sufficient for the roughness.** Without it, or armed
+  only by the fold-back, 185 runs clean.
+- The set-back adds to it, but the hold alone already jolts.
+- The decay turns the jolts into the lost speed and the never-steady state. With no decay the rotor still runs 3 %
+  slow: 43 held passes a second drop 43 field steps that are never made up.
+
+**Table C: rival (c), the lead** (`R48 CAL V20 top_lo=175 top_hi=185 top_L=3`, `=13`, `=18`; 8° is the schedule):
+
+| Fixed lead | 175 ×10⁶ | 185 ×10⁶ |
+|---|---|---|
+| 3° | clean, duty 25,428-25,556 | below the ceiling (26,717-26,931): LEFT clean; RIGHT ripples without a clamp (sd 2.2 A, lag peak 77, the low-lead side) |
+| 8° (the schedule) | clean | rough (Table A) |
+| 13° | rough: 91.5-92.8 %, sd 2.6-3.0 A | rough: 86.9-87.5 % |
+| 18° | rough: 85.6-86.1 % | rough: 80.5-81.3 % |
+
+The lead moves where the duty first caps (manual §6.3, "alignment moves the knee"). In every column the first capped rung
+is the rough one. **The roughness follows the ceiling, not the lead.**
+
+**Parameters: central only.** The phase 2 refit (e90 52, 0.85 mH) hunts at 145-175 ×10⁶ wheels up even under REV 46
+with the supply far above its need (`R46 CAL e90_L18=52 Lh=0.00085 top_v=26.0 top_lo=145 top_hi=175`: lag peaks 107-109,
+current sd 5.4-6.0 A, 83-95 %). The bench runs these rungs calm (`err_pk` 71-74). So the refit is falsified at top speed,
+and the central parameters are the ones that reproduce the bench at 165, 175 and 185 (§4.11.11 S-c).
+
+#### 4.11.5 Does full power on an 18.5 V pack enter the region?
+
+**Yes. It is DERIVED from this run's duty and MODELLED, and on the floor it is MEASURED at a full charge.**
+- **DERIVED from this run's duty.** The duty a speed needs is the voltage the motor needs divided by the pack's voltage,
+  and the motor's need does not depend on the pack.
+  - At 165 ×10⁶ this run needed 25,460-25,721 (`:134`, `:243`, `:352`, `:461`).
+  - The run prints no pack reading: `BM-BUILD`'s `pack_mV,18_500` (`:4`) is the configured value.
+  - The same pack read 20,521 mV 19 minutes later (`debug_261002-103332.log` `BM-FLLEG` seq 797) and 20,508-20,588 mV
+    at 10:40 (RC-TEL). The rig's sensor read 20.72 V at Visit 10 pass 7.
+  - At 20.5-20.7 V, 165 ×10⁶ on 18.5 V needs 25,460-25,721 × (20.5-20.7) / 18.5 = 28,212-28,780: **102-104 % of the
+    ceiling.**
+  - With this run's 165 → 175 slope (156.5-158.5 per 10⁶, × (20.5-20.7) / 18.5), **an 18.5 V pack reaches the ceiling at
+    158-162 ×10⁶: power 96-98.**
+- **MODELLED (V18).**
+  - REV 48: 145 and 155 are clean. 165 is rough: 96.5 % of command, never steady, 16 holds/s, current sd 1.6 A, peaks
+    7.5-8.3 A, torque sd 1.06 N·m.
+  - T-1: 165, 175 and 185 run steady at 100 % (lag 50 / 53 / 55, current sd 0.02-0.17 A).
+- **MEASURED on the floor at 20.2 V.** The FlySky drive's full-power pivots put the RIGHT wheel at 96-99.6 % of the
+  ceiling, with the hold acting (§4.11.3 fact 10).
+- **So the reserve the power table rests on holds only for a charged pack, wheels up.** That reserve is 165 ×10⁶ at
+  92-93 % of the ceiling (manual §6.1).
+
+#### 4.11.6 The cause
+
+**Established at the desk to §4.9.8's standard.** The mechanism is SETTLED in the driver's logic, MODELLED as the
+carrier, and CONSISTENT-WITH every log fact.
+- **Statement.**
+  - At the duty ceiling, D-3 and D-5 (DRIVER_REV 47) treat the voltage limit as a limiter.
+  - D-5's limit hold then caps the lag at 64. That is the stall's torque placement (§4.9.1), and it sits 18-24 counts
+    short of where the voltage-limited torque peaks at speed.
+  - The cap catches the top step of the lag's staircase in most sectors. Each held pass drops 15.5° of field phase, and
+    some step the field back as well; D-3 then takes 1/64 off the field's speed.
+  - The field can neither settle nor follow, and the current jolts 18-24 times a second.
+- **Why the peak is out of reach (DERIVED, §3.2's model).**
+  - With the voltage's magnitude fixed, the torque peaks where the voltage leads the back-EMF by 90° + φ, with
+    φ = atan(ωL/R).
+  - At 185 ×10⁶, ω = 518 rad/s. With 0.5 mH and 0.25 Ω, φ = 46° = 33 counts, so on the schedule's 8° (e90 ≈ 49) the
+    peak reads `err` ≈ 82. At 0.85 mH, φ = 60° and the peak is at about 88.
+  - A hold at 64 sits before that peak, and `LAG_HOLD` 100 sits after it.
+  - At a stall there is no back-EMF, φ plays no part, and the peak is at e90 (56-57 at MEDIUM, §4.9.1). That is the case
+    D-5 was designed for.
+- **The separating evidence (MODELLED, same model, only the flags differ).**
+  - D-5 off: 185 clean.
+  - D-5 armed only by the fold-back (T-1): clean.
+  - D-5 as built (REV 47 and 48): the bench's `STEADY_TIMEOUT`, with 50× the current ripple.
+  - REV 46 reproduces Visit 9's following to 245 (lag 66 against 65 MEASURED).
+- **Hardware standing: consistent with.** The trigger is a fact of the source: §4.11.2 step 9 needs only the logged
+  `err_pk`. That this train of holds is what Stephen heard rests on the model, and on the floor's MEASURED holds at the
+  ceiling. The trace (§4.11.10) can refute it. Per P10 it is not a precondition for building the fix.
+
+#### 4.11.7 The fix: T-1, the limit hold on the current limit only
+
+**Mechanism.**
+- In `holdGate`, the limit hold (and C4's arming) is entered when the **fold-back** acted since the previous pass, or
+  while the hold is armed. A pass on which only the duty ceiling clamped does not enter it.
+- D-3's fact, Z ("a limiter acted"), is unchanged and still feeds `holdDecay`.
+- So a pass where only the ceiling clamped takes today's `LAG_HOLD` gate. If its lag reaches 100 there, the field is held
+  and D-3 gives way, as REV 46 did. I-2 stands.
+
+**Sketch.** The build counts and checks it. It needs one cog register, `fold_seen`. TJNZ and TJZ write no flag
+(`p2kbPasm2Tjnz`, `p2kbPasm2Tjz`), and SUB without WC/WZ writes none (`p2kbPasm2Sub`), so Z reaches `holdDecay` unchanged.
+
+```
+' passEnd (:8821-8822), after lim_seen:
+                mov     fold_seen, foldback_cnt_        ' T-1: the fold count as this pass leaves it (no flag)
+' gettgtincr's re-take (:8804-8805), beside lim_seen: a drive starts from STOPPED, so this also seeds it
+    if_nz       mov     fold_seen, foldback_cnt_
+' holdGate: .noArm (:8890) becomes
+.noArm          mov     tmpX, foldback_cnt_             ' T-1: did the FOLD-BACK act since the previous pass?
+                sub     tmpX, fold_seen                 '  mod 2^32; no flag written, so Z (any limiter) survives
+                tjnz    tmpX, #.limHold                 ' yes: the limit hold, as today
+                tjz     lim_arm, #.today                ' no, and not armed: today's LAG_HOLD gate (was IF_Z TJZ)
+                jmp     #.limHold                       ' :8891 unchanged: armed, the limit hold
+```
+
+**Invariant (I-11).** In SPIN_UP / AT_SPEED the limit hold (`LAG_LIM`, its set-back and C4's arming) acts only on a pass
+where the current fold-back acted since the previous pass, or while a hold such a pass armed is still armed. A pass on
+which only the duty ceiling clamped keeps `LAG_HOLD`. D-3's give-way still reads both limiters, so I-2 stands.
+
+**Why it is correct by construction.**
+- **The hold's placement (64) is right where the current limit binds: at a stall** (§4.9.1).
+  - For the 6.5″ motor at 18.5-20.5 V, a stalled wheel meets the fold-back first. The ceiling's phase voltage,
+    0.563 × 18.5 = 10.4 V, over 0.24-0.25 Ω would drive 42-43 A, above the 40 A peak limit. DERIVED.
+  - The obstacle grids are identical with T-1 (§4.11.9).
+- **In SPIN_UP / AT_SPEED the ceiling clamps only when back-EMF has used the voltage** (`duty_cap_` is `duty_max_` there,
+  `:7831-7834`). There the torque peak sits at e90 + φ, past 64 (§4.11.6). So the ceiling must never arm a hold placed for
+  a stall.
+- **It changes nothing where the ceiling does not clamp.** `legs`, `design R48 CAL`, `release`, `stepdn` and `block`
+  re-ran identical with and without it (§4.11.13).
+- **Boundary (UNKNOWN).** In a configuration whose ceiling binds before its current limit at a stall (a lower supply, or
+  a higher-resistance motor), T-1 gives that stall REV 46's `LAG_HOLD` instead of D-5's 64.
+  - Not modelled. The 12 V single-motor (DocoEng) build is the one to check.
+  - T-1b (§4.11.8) keeps D-5 for that case.
+
+**Cost (ESTIMATE from the sketch).**
+- **Cog:** +1 register (`fold_seen`), 50 → 49 free (`:8503`).
+- **LUT:** +5 longs (`holdGate` +3, `passEnd` +1, `gettgtincr` +1), 13 → 8 free (`:9517`).
+- **Time:** about +6 clocks per running pass in `holdGate` (+2 when the TJNZ is taken), +2 in `passEnd` and +2 in
+  `gettgtincr`; 0 per frame.
+- **ABI:** none. No params or status long; `foldback_frames` is already in the status run.
+- **Text:** the comments at `:7082-7087`, `:7807-7811` and `:8858-8875` change. DRIVER_REV 49.
+
+#### 4.11.8 Candidates considered
+
+| Candidate | Modelled | Verdict |
+|---|---|---|
+| **T-1:** the limit hold armed only by the fold-back | 185 clean at V20; 165-185 clean at V18; 4 N·m at full power at 100 %; obstacle, load, spins and slow-downs identical | **Recommended** |
+| T-1b: T-1, but the ceiling still arms the hold while the field is slow (\|drv_incr\| under a set speed, e.g. ff_ceiling / 4) | not run; identical to T-1 on every rung here (all above 145 ×10⁶) | Viable if Stephen wants D-5 kept for a stall that meets the ceiling first (§4.11.7 boundary); +2-3 LUT longs |
+| T-0: drop the ceiling from D-3's give-way too | not run | Rejected, DERIVED. At `LAG_HOLD` with no decay, the field pauses on every held pass at speed: §4.11.2 step 6 again. And I-2 loses its voltage half: a load the voltage cannot carry would never give way |
+| A separate hold at the ceiling near the voltage-limited peak (about 80-88) | not run | Rejected: 82-88 is the fault lattice's window (§4.9.4, §4.10.2) |
+| Lower the top of the lead table (3°) | L 3° moves the knee above 185 at V20 (Table C) | Not a fix: the response at the ceiling is unchanged, and 3° is not measured above 73.5 ×10⁶ (manual §5.2: 8° at 147, and 13° costs 2×). A lever on headroom only |
+| Keep users below the knee: a power-100 ceiling that follows the measured pack | — | Not a fix: a loaded wheel at full power reaches the ceiling on a full pack (§4.11.3 fact 10). It also needs the optional pack sensor |
+
+#### 4.11.9 The measure of benefit (for Stephen; P5)
+
+MODELLED unless marked: central parameters under `CAL`; V20 is the session's pack (about 20.5 V), V18 an 18.5 V pack. The
+model's absolute currents run high (§5; here 3.3-4× the bench's DC current at 175, 1.27 A against 0.32-0.38 A). So
+currents are compared within a row.
+
+| What a user sees | DRIVER_REV 47 / 48 (as built) | **REV 48 + T-1** | Standing |
+|---|---|---|---|
+| Wheels up at 185 ×10⁶, charged pack: does it settle? | no. Bench: `STEADY_TIMEOUT`, 4 of 4. Model: never; rotor 93-95 % | yes, in 0.4 s, 100 % | MEASURED (REV 47); MODELLED |
+| The same: phase-current ripple (sd / peak), torque ripple, speed ripple at 330 rpm | 2.4-3.2 A / 11.6-15.7 A; 1.7-2.3 N·m; 15-20 rpm | 0.05 A / 1.9 A; 0.007 N·m; 0 | MODELLED |
+| Full power (165 ×10⁶) on an 18.5 V pack, unloaded | 96.5 % of speed, never steady; sd 1.6 A, peaks 7.5-8.3 A; torque sd 1.06 N·m | 100 %, steady; sd 0.02-0.03 A | DERIVED (needs 102-104 % of the ceiling) + MODELLED |
+| Full power, charged pack: the largest load on one wheel carried at 100 %, calm | 0.5 N·m (about 6 N at the tyre). Rough from 1 N·m (98.8 %, peaks 10.5 A); 90.8 % at 2 N·m | **4 N·m (about 48 N)** at 100 %. Gives way at 6 N·m (93.6 %, at `LAG_HOLD`, torque sd 0.28 N·m) | MODELLED |
+| The same on an 18.5 V pack | none: rough unloaded | 2 N·m at 100 %; 96.0 % at 4 N·m | MODELLED |
+| On the floor, full-power pivots at 20.2 V | duty at the ceiling, the field held (11 of 13 samples), 4-8 % slow | UNKNOWN on the floor (the wheels-up rows above) | MEASURED (REV 47) / UNKNOWN |
+| Above 195 ×10⁶ wheels up (beyond any user command) | the field gives way to about 175 ×10⁶, rough | follows (97-100 %). From 205 the model holds at `LAG_HOLD` with large ripple, as REV 46 does; Visit 9 measured smooth following to 245 on 3 of 4 | UNKNOWN (the model over-states) |
+| Unloaded DC current, 175 → 185 ×10⁶ | 185 never steady | +9 % (field weakening). Visit 9 measured 0.32-0.41 A at 185 against 0.32-0.38 A at 175 | MODELLED / MEASURED |
+| Blocked on a rocking obstacle (1,000 N/m): stopped / pushed on / lag fault, of 16 | 15 / 1 / 0, 1,080-1,738 ms after contact | identical, digit for digit | MODELLED |
+| Load and release, spins, slow-downs, the stop from 147 ×10⁶ | §4.10.8 | identical, digit for digit | MODELLED |
+| The 1 A over-command (the harness's negative case): field / rotor | REV 47: 12.6-12.7 % / 3.7 % (MEASURED 12.6-13.1 %). REV 48: 64.8 % / 3.4 % | as REV 48 | MODELLED (S-b) |
+
+**No row gets worse.** Every row the ceiling never reaches is identical.
+
+**RULING NEEDED (P5): build T-1 into the 6.1.0 load?**
+- **Recommendation: yes.**
+- It removes the roughness at the voltage ceiling that a user meets at full power on a part-charged pack, or under load.
+- It costs one register and about five LUT longs.
+- It changes no behaviour below the ceiling.
+- If Stephen wants D-5 kept for a hypothetical low-voltage stall, the variant is T-1b.
+
+#### 4.11.10 What the dual-limits trace must record (Part B)
+
+**Fields per 2 ms sample:**
+- the driver's `pos`, not the instrument's `hw`, which aliases at 494 ticks/s;
+- duty, signed `err`, `drv_state` and `drv_incr_now`;
+- the cumulative counters `lag_held`, `duty_capped` and `foldback_frames` (all in the status run: `BM-ABIS2`, `BM-ABIS3`);
+- the DC-link reading.
+
+**Once per trace:** the pack's mV (the rig's sensor is fitted: Visit 10 pass 7), the offsets in force, and `duty_max`.
+
+**Windows:**
+- the 185 rung, from its step to the 6 s timeout: about 3,000 samples, inside the 4,096-sample ring;
+- the last 1 s of the 175 rung, as the control;
+- the over-command's hold and window.
+
+**Does Part B's 2 ms BM-STRACE suffice? Yes, for the verdict.**
+- The counters are cumulative, so the holds, clamps and folds in each 2 ms are exact.
+- The decay's 1/64 steps and the climbs back (about 150 ms) are resolved in `drv_incr_now`.
+- `err` is sampled every 2.00 ms against a 2.02 ms sector at 185 ×10⁶, so single samples alias. But the samples beat
+  through the whole staircase about every 200 ms, so over the window `err`'s range is complete.
+- It does not resolve each current jolt (about 1-2 ms wide; a 2 ms DC-link snapshot under-reads the peaks). The verdict
+  does not need the jolt's shape.
+
+**The readings at the 185 rung that separate the rivals:**
+
+| Reading | (d) the limit response | (b) past the peak | (a2) saturation alone | (c) the lead |
+|---|---|---|---|---|
+| `lag_held` rate while `duty_capped` rises and `foldback_frames` does not | 18-24/s (model) | > 0, with `err` ≥ 100 at the holds | 0 | 0 |
+| `err` range | peaks 84-88, none ≥ 100 | samples ≥ 100 | mean 50-53, peaks ≤ about 80 | — |
+| `drv_incr_now` | steps down by 1/64, climbs back; mean 95-96 % | decays at `LAG_HOLD` | 100 % | 100 % |
+| `drv_state` | never AT_SPEED for long | — | AT_SPEED | — |
+| The 175 control | no hold, no clamp | the same | the same | rough at 175 too |
+
+- **The falsifier for (d):** holds absent at 185 while the rung is still rough or times out. Then the carrier is physical,
+  (a) or (c), and T-1 does not apply.
+- **Certification after T-1:** the same trace shows `lag_held` 0, AT_SPEED within the 6 s bound, and `duty_capped`
+  rising.
+  - This run's REV 48 build is the cell's negative.
+  - Proposed cell: on the 185 and 195 rungs, no `lag_held` while `duty_capped` advances and `foldback_frames` does not,
+    and AT_SPEED reached.
+- **The over-command under REV 48 (MODELLED):** rotor 3.4-3.5 %, `drv_incr_now` about 65 % (permille about 648), holds
+  about 1,780/s, folds about 78 frames/s. `BM-FOLLOW OVER` would then read `h_pct` 3-5 against a permille of about 650,
+  where REV 47 read 126-131 (S-b).
+
+#### 4.11.11 Side findings (recorded, not acted on)
+
+- **S-a. The "18.5 V" top speed was measured on a pack at about 20.7 V.**
+  - The rig's pack read 20.72 V (meter 20.74 V) at Visit 10 pass 7 (`VISIT-10-PASS7-EVALUATION.md`), and Visit 9's runsheet
+    calls the same rig "18.5 V".
+  - The duty at 165 ×10⁶ is the same at Visit 9 (25,334-25,582) and in this run (25,460-25,721). Both therefore ran on the
+    pack.
+  - So the manual's "ceiling increment at 18.5 V: 165 ×10⁶, measured" (§6.1) and the feedforward line "measured at
+    18.5 V" (`:4495`) belong to about 20.5-20.7 V. On a true 18.5 V pack, full power reaches the ceiling (§4.11.5).
+  - It touches the power table, the manual and DRIVE-OBJECTS. A punch-list candidate for Stephen.
+- **S-b. REV 48's C4 decouples `drv_incr` from the field during a held crawl (MODELLED).**
+  - At the 1 A over-command, REV 48 keeps the field held on about 1,780 passes a second, but decays it only on fold
+    passes (about 78/s).
+  - Meanwhile `jerkStep` (`:7787`), which runs before `holdGate`, keeps raising `drv_incr` toward the command
+    (`:9011-9019`).
+  - Result: the field crawls with the rotor at 3.4 %, while `drv_incr_now` reads 64.8 % (REV 47 read 12.6 %).
+  - Two readers take `drv_incr_now` as the field's speed: the steering object's shortfall (`shortfallNow()`,
+    `:6470-6479`; §2.3: "exact only because the decay walks the field down to the rotor"), and the harness's FOLLOW /
+    FOLFALL.
+  - The fold-back case, so outside T-1's scope. A punch-list candidate. Part B should expect it.
+- **S-c. The refit parameters are falsified at top speed (MODELLED against MEASURED).** They hunt at 145-175 ×10⁶ wheels
+  up, where the bench runs calm. Any later use of the refit at speed should cite this.
+
+#### 4.11.12 Not checked, and the model's limits
+
+- **Above 195 ×10⁶.** The model holds at `LAG_HOLD` with large ripple in every drive, which Visit 9's bench did not show
+  on 3 of 4. UNKNOWN there. No user command reaches it: power 100 is 165 ×10⁶.
+- **Parameters.** Only the central parameters reproduce the bench at speed. The bracket between them and the refit is
+  not run.
+- **Not modelled:**
+  - cogging;
+  - unequal hall sectors, which change which pass meets 64 (DERIVED only as "most sectors");
+  - Rev A;
+  - the current jolt's shape, which needs sub-pass sampling;
+  - the sound itself: current and torque ripple are its proxies.
+- **Not run:**
+  - the floor at full power with T-1 (the platform's straight drive at 165 ×10⁶);
+  - T-1's boundary case (a stall that meets the ceiling first; the 12 V DocoEng build) and T-1b.
+- **The PASM sketch is not assembled.** Its costs are ESTIMATE.
+
+#### 4.11.13 Reproduce
+
+```
+S=DOCs/plans/servo-model; CAL="pasm=1 v_dt=0.18 i_noise=3"; R47="acc_shift=16 dB=1 boost_shift=10 dC=1 d5=1 blk_lim=1"
+R48="$R47 cap_lift=48 d5_sticky=1 blk_fix=1"; T1="$R48 d5_fold_only=1"
+python3 $S/spin2_model.py topspd $R47 $CAL top_v=21.3 top_lo=155 top_hi=195             # calibration (V20); REV 47 at the edge
+python3 $S/spin2_model.py topspd $R47 $CAL top_v=21.3 top_lo=205 top_over=1             # REV 47 above it; the 1 A over-command
+python3 $S/spin2_model.py topspd $R48 $CAL top_v=21.3 top_over=1                        # Table A, REV 48
+python3 $S/spin2_model.py topspd $CAL top_v=21.3 top_over=1                             # Table A, REV 46
+python3 $S/spin2_model.py topspd $T1 $CAL top_v=21.3 top_over=1                         # Table A, T-1
+python3 $S/spin2_model.py topspd acc_shift=16 dB=1 boost_shift=10 dC=1 blk_lim=1 $CAL top_v=21.3 top_lo=185 top_hi=195  # Table B: no D-5
+python3 $S/spin2_model.py topspd $R47 $CAL d5_back=0 top_v=21.3 top_lo=185 top_hi=185                                  # Table B: no set-back
+python3 $S/spin2_model.py topspd $R47 $CAL hold_decay_shift=30 top_v=21.3 top_lo=185 top_hi=185                        # Table B: no decay
+python3 $S/spin2_model.py topspd $R48 $CAL top_v=21.3 top_lo=175 top_hi=185 top_L=3                                    # Table C; top_L=13, 18
+python3 $S/spin2_model.py topspd $R48 $CAL top_v=19.2 top_lo=145 top_hi=185             # an 18.5 V pack (V18); and $T1
+python3 $S/spin2_model.py topspd $R48 $CAL top_v=21.3 top_lo=165 top_hi=165 step_T=1.0  # reserve: REV 48 step_T=0.5, 1, 2; $T1 1, 2, 4, 6; V18 $T1 2, 4
+python3 $S/spin2_model.py topspd $R48 $CAL top_hi=205                                   # the raw supplies, 18.5 and 20.5 V; and $T1
+python3 $S/spin2_model.py topspd $CAL e90_L18=52 Lh=0.00085 top_v=26.0 top_lo=145 top_hi=175  # S-c: the refit hunts at speed
+python3 $S/spin2_model.py block ob_n=16 ob_k=1000 $R48 $CAL                             # T-1 changes nothing: each of these
+python3 $S/spin2_model.py release $R48 $CAL                                             #  four, with and without
+python3 $S/spin2_model.py design $R48 $CAL                                              #  d5_fold_only=1, printed
+python3 $S/spin2_model.py stepdn $R48 $CAL                                              #  identically
+python3 $S/spin2_model.py legs                                                          # must-not-change: identical on the original copy and the edited file
+```
+
+**Model changes (`spin2_model.py`, additive; every new parameter defaults to the old behaviour):**
+- the `topspd` mode and `top_rung()`;
+- new parameters: `d5_fold_only` (T-1), `path` (default 1, the steering path limiter as before), `top_v`, `top_L`,
+  `top_lo`, `top_hi`, `top_over`;
+- the trace sample gains five appended fields (set-backs, ceiling frames, fold frames, iq, rotor speed). Every earlier
+  reader reads by index, so none sees them.
+
+**The identity checks:**
+- `legs` (no flags) and `stepdn $R48 $CAL` printed identically on a copy of the original file and on the edited one.
+- `block ob_n=16 ob_k=1000 $R48 $CAL` reproduces §4.10.8's 15 / 1 / 0, 1,080-1,738 ms.
+- `release $R48 $CAL` reproduces §4.10.8's 99.9 / 100.0 %.
+
 ---
 
 ## 5. The measure of benefit (for Stephen's decision; P5)
