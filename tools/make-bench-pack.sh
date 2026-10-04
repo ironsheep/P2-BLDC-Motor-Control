@@ -94,6 +94,12 @@ done
 
 cp -p "$WORK/tree/tools/bench-run.sh" "$WORK/$NAME/bench-run.sh"
 
+# The run sheets travel with the binaries (Stephen 2026-10-04: the sheet was not at the bench). They are committed in
+#  DOCs/runsheets/; every one in the packed commit is copied beside the binaries, so the sheet a pack names is in it.
+for sheet in "$WORK/tree/DOCs/runsheets/"*.md; do
+    [ -f "$sheet" ] && run cp -p "$sheet" "$WORK/$NAME/"
+done
+
 {
     echo "commit $COMMIT ($(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M' "$REF")): $(git log -1 --format=%s "$REF" | cut -c1-100)"
     echo "built $(date '+%Y-%m-%d %H:%M') by tools/make-bench-pack.sh with $(pnut-ts --version 2>/dev/null | head -1 | sed 's/^pnut-ts: *//')"

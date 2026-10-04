@@ -1,0 +1,77 @@
+# Doco visit D1b — measure the motor on the driver (your only instructions)
+
+**Plan:** `DOCs/plans/DOCO-AND-CLOCK-SPRINT-PLAN.md` §10, step 3 (task «#3696»). **Driver:** DRIVER_REV 52. **Harness:**
+`test_bench_single` SRC_REV 12. **Pack:** `dist/bench-d19b80b.zip` (commit `d19b80b`).
+
+**What this visit is for:** the measurements the driver's Doco tables are made from, the way the 6.5″'s were. First the
+cold hall zero by hand (the 6.5″'s align method). Then, at each tested voltage, hands off: the hall map in both directions,
+the timing (offset) scan, the slowest steady speed, the speed ladder to the top, the built-in speed-up and stop, and the
+stop limits — all judged on the encoder. At 11.1 V, the drive's timing at five system clocks. This visit measures; the
+next one (D2) qualifies the tuned driver.
+
+Everything you need is on this page. Nothing is marked for the log: the log records everything.
+
+---
+
+## The bench
+
+The Doco bench as at D1a: the motor on the Rev A board (P16 group), the encoder on the shaft at the motor's back, the
+bench supply, nothing on the shaft but the encoder. **The supply voltage you set must match the command's name**
+(`v11p1` is 11.1 V): the harness is told the voltage, it does not measure it.
+
+**Get the tests:** copy the pack to the bench machine, unzip it, `cd` into its folder.
+
+## ⭐ The visit
+
+| # | Supply | Command | What happens | You |
+|---|---|---|---|---|
+| 1 | **11.1 V** | `./bench-run.sh single-align-v11p1` | About 5 minutes. A panel: **four hand passes**, the motor started but never driven (its drive stays off). Each pass: click START STEP, keep the shaft still about a second while it reads the rest level, then at YOUR TURN spin the shaft **looking at the encoder end**, in the direction and at the pace the step names — about **2 turns a second** for the slow passes, **4** for the fast — for about three turns, then DONE. The panel shows your live speed. | Spin as steadily as the small shaft allows. **If a result says NOT RESOLVED, click REDO and spin a little faster** — that is the signal being too small to read, not a fault. NEXT when it says MEASURED |
+| 2 | **11.1 V** | `./bench-run.sh single-measure-v11p1 ; ./bench-run.sh single-passprobe-v11p1 clk-floor ; ./bench-run.sh single-passprobe-v11p1 clk-200 ; ./bench-run.sh single-passprobe-v11p1 clk-270 ; ./bench-run.sh single-passprobe-v11p1 clk-350 ; ./bench-run.sh single-passprobe-v11p1 clk-frac` | About 23 minutes of measuring, then five runs of under a minute each (half speed each way at five system clocks) | Nothing. Keep hands clear |
+| 3 | **7.4 V** | `./bench-run.sh single-measure-v7p4` | About 23 minutes | Nothing |
+| 4 | **14.8 V** | `./bench-run.sh single-measure-v14p8` | About 23 minutes | Nothing |
+| 5 | **18.5 V** | `./bench-run.sh single-measure-v18p5` | About 23 minutes | Nothing |
+| 6 | **22.2 V** | `./bench-run.sh single-measure-v22p2` | About 23 minutes | Nothing |
+| 7 | **24.0 V** | `./bench-run.sh single-measure-v24p0` | About 23 minutes | Nothing |
+
+**What to watch for, named in advance:**
+- **The bench supply when the motor stops from its top speed.** A bench supply cannot take current back. If it trips or
+  drops out during a stop, the run stops itself; send the logs and note the row.
+- **At 11.1 V the top of the ladder may hold back or fault** — the desk model predicts it. That is a measurement.
+- **The encoder check:** if the terminal shows `B1-CHECK ... FAIL`, the encoder and the halls disagreed; send the log.
+- **Heat:** if the motor is too hot to hold comfortably, wait before the next row.
+- **The panel in row 1 is a little larger than any we have loaded before** (11.8 MB of images; 25 MB is the size that
+  failed once): if the panel does not draw within a minute, close it and send the log.
+
+**If a run goes silent** (nothing new on the terminal for two minutes): close the terminal and go on to the next row.
+
+**A stop is yours: turn the supply off.** Send back every log in `logs/`.
+
+---
+
+## Check the first lines of each log
+
+| Test | The banner must read |
+|---|---|
+| every run | `B1-BANNER,src_rev,12,commit,d19b80b,fmt,10,driver_rev,52,...`, `told_mv` equal to the supply you set, and `B1-BOARD` reading Rev A |
+| the five probes | `clkfreq` 120000000, 200000000, 270000000, 350000000, 271250000 |
+
+## The visit, declared
+
+| | |
+|---|---|
+| **Purpose** | **Measurement** for the driver's Doco tables (plan §6): the cold hall zero (align, per hall edge); per tested voltage the hall map both ways (the hall order for both power signs), the timing scan's current minimum (the offset, and whether the best timing moves with speed), the slowest steady speed each way, the speed ladder (the duty line, the top speed with the 6.5″'s duty reserve, the feedforward line, the misdial check), the built-in speed-up and stop, the stop limits; at 11.1 V the drive pass at five clocks and the front cog's worst pass. Today's tables are measured as the "before" |
+| **Hardware risk** | Align: the drive is never commanded. Hands-off rows: a 2 A test current limit (3 A at 11.1 V), a run charge cap, and the harness's stops on over-current, stall, time or an encoder disagreement. No hand loads this visit. Stops from top speed return energy to a supply that cannot take it (*What to watch for*) |
+| **Who acts** | You: the four hand passes in row 1; set the supply for each row |
+| **Runs that carry state** | None |
+| **Run length** | About 2 hours 30 minutes of runs; about 3 hours with set-up |
+| **Repeatability** | Every run is repeatable and independent; a row can be rerun alone |
+| **Variant matrix** | Rev A board (P16), DocoEng motor, the tested voltages 7.4, 11.1, 14.8, 18.5, 22.2 and 24.0 V (12.0 V is not tested), 270 MHz (and five probe clocks at 11.1 V), DRIVER_REV 52 |
+
+## What this visit does not measure
+
+- The hand-load and held-stop behaviour, and the lowest and highest speeds on the tuned driver: D2.
+- 12.0 V (not tested, by ruling).
+
+## Revision history
+
+- **2026-10-04** — written («#3696»).

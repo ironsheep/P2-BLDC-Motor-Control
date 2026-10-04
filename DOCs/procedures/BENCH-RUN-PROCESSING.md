@@ -219,7 +219,9 @@ Part 4 is forward-looking: the open question, what would settle it, and which ta
   `todo_start`.** (2026-10-03: the second 6.1.0 visit added §1.7 and §9.2 with no revision line, and eight mid-sprint
   tasks had no table row; both were found only at closeout.) Since Stephen's 2026-09-23 `.gitignore` change (`/DOCs/analyses`), a new evaluation and its logs stay in
   the tree untracked. Do not force-add them. The tracked record is the punch list and the run sheet, and those
-  are committed.
+  are committed. **A run sheet lives in `DOCs/runsheets/` (tracked), never under `DOCs/analyses/`**, and is committed
+  before its pack is built, so the pack (which copies every sheet in its commit) and a `git pull` both carry it to the
+  bench. (2026-10-04: the D1a sheet sat in the ignored folder and never reached the bench.)
 - **When the banner check fails because the tree was not pushed**, the run sheet's resume states the SHA to run
   and PUSH FIRST before anything else is written (PL-125).
 
