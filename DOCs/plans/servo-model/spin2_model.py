@@ -52,6 +52,25 @@ limiter acted. The design's runs add `d5=1 blk_lim=1` to the D-1..D-3 flags.
   blkwin=1   block mode: the BLKWIN mirror (test_bench_dual blockWatch()), at every frame and at the harness's 5 ms poll
   grab_B / grab_v / grab_a / grab_f / grab_rnd   the hand: a damper to a hand moving at grab_v of the command, rocking
              by grab_a of it, every 1 / grab_f s (grab_rnd=1 random -1..1, 2 random -1..0: a hand that only holds back)
+
+«#3678» the DocoEng 4k RPM motor (DOCs/analyses/DOCO-DESK-MODEL-2026-10-03.md), off by default so every earlier command
+reproduces its numbers. doco=1 swaps the 6.5in plant for the Doco's (DOCO below: the sheet's numbers, the brackets for
+what the sheet does not give, Rev A's 5 mV/A sense, one motor, no platform) AND sets the drive as built at DRIVER_REV
+49-52 (the design doc 4.12.11's $FIX $CAL), so a doco* mode runs 6.1.0's servo with no further flags. Any key=value
+after doco=1 overrides the preset (Jw, Lh, Tc, Bv, e90 through lead, ...). Every doco* mode takes:
+  dv=V       one supply (one of the seven Rev A rows); 0 = the mode's own set
+  lead=L     the voltage's lead over q at the servo's point, deg (e90 = 48 - L x 256/360); -99 = the mode's default
+  ke_set=K   (any motor) the back-EMF constant, phase peak V per electrical rad/s; 0 = fitted from the 6.5in ladder
+  python3 spin2_model.py docoss   doco=1 [...]   -- DERIVED steady state + per-pass arithmetic per Rev A row: hall
+                                                    rate per front pass, field step per drive pass, the duty each
+                                                    speed needs at a fixed lead, the best lead, the reserve ceiling
+  python3 spin2_model.py doco     doco=1 [...]   -- the 6.1.0 servo on a ladder to each row's ceiling, unloaded
+  python3 spin2_model.py docoramp doco=1 [...]   -- the wheel-less built-in ramp: rates, times, stops; ramp_x=N runs
+                                                    a start at N x the built-in steps
+  python3 spin2_model.py docostep doco=1 [...]   -- a load step at top speed: the LAG_HOLD-to-fault margin
+  python3 spin2_model.py docohand doco=1 [...]   -- a hand stall at low speed: current, the blocked stop's latch;
+                                                    i_limit=A is testSetCurrentLimits(A, A)
+  python3 spin2_model.py docohold doco=1 [...]   -- DERIVED: the hold at rest (SM_BRAKE) at the hold defaults
 """
 import math, sys
 from spin_model import P, Drive, lead_tenths, l_eff, ke_from_ladder, FRAME, PASS, SECTOR, TWO32, SLOW, MED, BRISK
@@ -142,10 +161,45 @@ FOLD_MIN_MV = 4                  # :7287
 RUNNING = ('SPIN_UP', 'AT_SPEED')
 RAMPING_DOWN = ('SPIN_DN', 'SLOW_TO_CHG')
 
+# «#3678»: the keys the Doco modes add, each off (0) or unused by every earlier mode
+Q.update(doco=0, ke_set=0.0, dv=0.0, lead=-99.0, ramp_x=1.0,
+         hand_k=0.5, hand_c=0.002, hand_pwr=10,  # docohand: the hand as a rotational spring, N m/rad, N m s/rad; the power
+         step_load=0.0,                          # docostep: one load, N m (0 = the mode's set)
+         rung_e6=0,                              # doco: one rung, x 10^6 increment (0 = 25/50/75/100 % of the row)
+         sag_t=0.0, sag_rate=0.0)                # run(): the supply falls at sag_rate V/s from sag_t s (0 = none)
+DOCO_ROWS = (7.4, 11.1, 12.0, 14.8, 18.5, 22.2, 24.0)
+# confgurePowerLimits(), the Rev A rows (src/isp_bldc_motor.spin2, maxRevIncreAtPwr's lookup, the else branch)
+DOCO_CEIL_REVA = dict(zip(DOCO_ROWS, (282_000_000, 545_000_000, 335_000_000, 376_000_000, 398_000_000, 470_000_000,
+                                      391_000_000)))
+DOCO_KE_LL = 3.53 / (1000 * 2 * math.pi / 60)   # DOCs/DOCOMotor.pdf: 3.53 V/kRPM, read as line-to-line PEAK (its no-load
+                                                 #  6,800 rpm at 24 V is 24.0 V of it; Kt 0.034 = Ke in SI, the DC form)
+DOCO_RATED_NM = 0.0625                           # the sheet's rated torque
+DOCO_SECTOR_RAD = 2 * math.pi / 24               # one hall tick of shaft: 15 deg
+DOCO = dict(
+    pp=4, RL=0.9, RR=0.9,                        # sheet: 8 poles; 1.8 ohm phase to phase, so 0.9 per phase
+    ke_set=DOCO_KE_LL / math.sqrt(3) / 4,        # phase peak V per electrical rad/s; kt = 1.5 pp ke = 0.0292 N m per A peak
+    Jw=4.0e-6,                                   # kg m^2: NOT on the sheet. Bracket 2e-6 .. 8e-6 (a 20-22 mm x 25-35 mm rotor,
+                                                 #  0.5 m r^2, plus the encoder and its coupling); fitted from D1's coast-down
+    Tc=0.003, Bv=1.0e-5,                         # N m, N m s/rad: NOT on the sheet beyond the no-load 0.4 A max (<= 0.0136 N m
+                                                 #  at 6,800 rpm). Bracket (0.002, 5e-6) .. (0.006, 1.05e-5)
+    w0=0.5,                                      # rad/s: the Coulomb term's smoothing (stable at the frame step with this J)
+    Lh=1.0e-3,                                   # H per phase: NOT on the sheet. Bracket 0.5 .. 1.5 mH
+    e90_L18=48.0,                                # with the FIXED (18, -4) pair this IS e90: 48 puts the voltage on q at the setpoint
+    m=0.0, Iz=0.0, path=0,                       # one motor: no platform, no steering object (both model wheels are the Doco)
+    r_sense=5,                                   # Rev A, 5 mV per A (the Doco bench)
+    i_limit=40.0,                                # I_PEAK_A, the default fold-back (the derate's 27 A average never engages)
+    duty_ff_line=24_264,                         # init(): dutyAtFfLine at 270 MHz; ff_incr is set per row (doco_at())
+    # the drive as built, DRIVER_REV 49-52: HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.12.11's $FIX $CAL
+    acc_shift=16, dB=1, boost_shift=10, dC=1, d5=1, blk_lim=1, cap_lift=48, d5_sticky=1, blk_fix=1, d5_fold_only=1,
+    c4_state=1, u_arm=1, u_span=2, u_cap=1, u_cap_sec=4, pasm=1, v_dt=0.18, i_noise=3.0)
+
 
 def ke_fit(p):
     """ke as spin_model.ke_from_ladder fits it (rung 20e6 at L 18 needs duty 170 per 1e6 at 18.5 V), with the bridge's
-    dead-time voltage v_dt opposing the current (a fixed point of the steady dq equations). v_dt = 0: that function."""
+    dead-time voltage v_dt opposing the current (a fixed point of the steady dq equations). v_dt = 0: that function.
+    «#3678»: ke_set > 0 is the motor's own constant (the Doco's from its sheet), and no fit is made."""
+    if p['ke_set']:
+        return p['ke_set']
     if not p['v_dt']:
         return ke_from_ladder(p)
     incr = 20e6
@@ -465,6 +519,10 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             e_true = (w.thf - w.thr) * sgn
             delta = math.radians(90 + (e_true - w.e90) * 360 / 256) * sgn
             Va = p['Vbus'] * w.duty / (16 * 3068)
+            if p['sag_rate']:
+                # «#3678» docosag: the supply falls at sag_rate V/s from sag_t (the bridge's voltage only; the fold's
+                #  reading keeps the nominal Vbus, which no default-limit Doco run reaches)
+                Va = (p['Vbus'] - max(0.0, t - p['sag_t']) * p['sag_rate']) * w.duty / (16 * 3068)
             we = w.wm * p['pp']
             Vd = Va * math.cos(delta); Vq = Va * math.sin(delta)
             if p['v_dt']:
@@ -905,8 +963,120 @@ def top_rung(q, tgt, prev, pair, kt):
     return out, res['faulted']
 
 
+def doco_at(p, V, lead):
+    """«#3678»: the Doco at one Rev A row: the supply, the feedforward's scale (init(): ff_ceiling := the row's ceiling,
+    so the feedforward reaches dutyAtFfLine there), the dead-time voltage scaled with the supply (CAL's 0.18 V at
+    18.5 V), and the voltage's lead over q at the servo's point (e90 = 48 - lead x 256/360)"""
+    q = dict(p)
+    q['Vbus'] = V
+    q['ff_incr'] = DOCO_CEIL_REVA[V]
+    q['v_dt'] = p['v_dt'] * V / 18.5
+    q['e90_L18'] = 48.0 - lead * 256 / 360
+    return q
+
+
+def doco_rows(p):
+    return (p['dv'],) if p['dv'] else DOCO_ROWS
+
+
+def doco_ramp(q, x):
+    """the built-in ramp's steps (the 6.5in wheel's, which a wheel-less Doco falls back to) times x, jerk over TAU"""
+    q = dict(q)
+    q['accel_up'] = int(33_958 * x); q['jerk_up'] = max(1, round(q['accel_up'] / 478.3))
+    q['accel_dn'] = int(49_918 * x); q['jerk_dn'] = max(1, round(q['accel_dn'] / 478.3))
+    return q
+
+
+def rpm_of(incr):
+    """shaft rpm of the Doco at a field increment: one hall cycle is 2^32, 4 cycles a revolution"""
+    return incr / TWO32 * (44000 / PASS) * 60 / 4
+
+
+def doco_need(q, incr, lead):
+    """«#3678», DERIVED from the model's own plant at steady state (run()'s dq equations with d/dt = 0, no sector
+    sawtooth, no dead-time voltage): the 6.1.0 trim holds the mean |err| at SERVO_SETPOINT (48), so at a fixed offset
+    the voltage sits `lead` deg ahead of q and only the duty is free. Unloaded (friction only). Returns (duty, phase A
+    peak, d-axis A) or None where no duty holds that speed at that lead."""
+    ke = ke_fit(q); kt = 1.5 * q['pp'] * ke
+    we = incr / TWO32 * (44000 / PASS) * 2 * math.pi
+    wm = we / q['pp']
+    iq = (q['Tc'] + q['Bv'] * wm) / kt
+    R = q['RL']; X = we * q['Lh']; Z2 = R * R + X * X
+    d = math.radians(90 + lead)
+    den = R * math.sin(d) - X * math.cos(d)
+    if den <= 0:
+        return None
+    Va = (iq * Z2 + R * ke * we) / den
+    idd = (R * Va * math.cos(d) + X * (Va * math.sin(d) - ke * we)) / Z2
+    return Va * 16 * 3068 / q['Vbus'], math.hypot(idd, iq), idd
+
+
+def doco_best_lead(q, incr):
+    """the lead (deg, 1-deg grid -30..85) of least phase current whose duty fits duty_max; (lead, duty, amps) or None"""
+    best = None
+    for L in range(-30, 86):
+        r = doco_need(q, incr, L)
+        if r and r[0] <= q['duty_max'] and (best is None or r[1] < best[2]):
+            best = (L, r[0], r[1])
+    return best
+
+
+def doco_top(q, lead, reserve=0.925):
+    """the fastest increment (5e6 grid) whose steady duty stays at or under reserve x duty_max (the 6.5in ceiling rule:
+    165e6 ran at 92-93 % of its duty cap); lead None = the best lead at every speed (a lead schedule)"""
+    top = 0
+    for k in range(1, 215):
+        incr = k * 5_000_000
+        if lead is None:
+            b = doco_best_lead(q, incr)
+            ok = b is not None and b[1] <= reserve * q['duty_max']
+        else:
+            r = doco_need(q, incr, lead)
+            ok = r is not None and r[0] <= reserve * q['duty_max']
+        if not ok:
+            break
+        top = incr
+    return top
+
+
+def doco_arrival(q, tgt):
+    """the generator alone from rest to tgt: (passes, field travel in angle units)"""
+    d = Drive(q); d.state = 'SPIN_UP'; k = 0; trav = 0
+    while d.state != 'AT_SPEED' and k < 400_000:
+        d.jerk_step(tgt, 0); trav += d.v; k += 1
+    return k, trav
+
+
+def doco_stop(q, v0):
+    """the generator alone from v0 at rest acceleration to 0: (passes, field travel in angle units)"""
+    d = Drive(q); d.state = 'AT_SPEED'; d.v = v0; d.a = 0; k = 0; trav = 0
+    while k < 400_000:
+        k += 1
+        if d.jerk_step(0, 0):
+            break
+        trav += d.v
+    return k, trav
+
+
+def doco_rung(q, tgt, settle=1.5, win=1.0, prog=None):
+    """one rung from rest on q's ramp; the window is the last `win` s of arrival + settle. Returns (run, mon, arrival s)"""
+    k, _ = doco_arrival(q, tgt)
+    ta = k * PASS / 44000.0
+    t0 = ta + settle - win
+    mon = dict(t_from=t0, t_to=t0 + win)
+    r = run(q, tgt, ta + settle, ('FIXED', 18, -4), win, t0_override=t0, mon=mon, prog=prog)
+    return r, mon, ta
+
+
+def mon_counts(m, win):
+    c = [b_ - a_ for a_, b_ in zip(m['c0'], m['c1'])] if m['c0'] and m['c1'] else [0] * 7
+    return dict(held=c[0] / win, cap=c[1] / win, fold=c[2] / win, boost=c[3] / win)
+
+
 def parse(argv):
     p = dict(Q)
+    if 'doco=1' in argv:
+        p.update(DOCO)                  # «#3678»: the preset first, so a key=value after it overrides it
     for a_ in argv:
         k, v = a_.split('=')
         p[k] = type(Q[k])(float(v))
@@ -1203,6 +1373,273 @@ if __name__ == '__main__':
                   f"{fol:5.1f} % over its 3-4 s window", flush=True)
         if mon['fault']:
             print(f"  FAULT {mon['fault'][1]} at {mon['fault'][0]:.3f} s in {mon['fault'][2]}")
+    elif mode == 'docoss':
+        # «#3678» part 1 and 2's arithmetic, DERIVED: per Rev A row, the hall rate against the 1 ms front pass and the
+        #  8 ms window slot, the field's step per drive pass against the LAG_HOLD -> fault margin (125 - 100 = 25 counts),
+        #  the steady |err| sawtooth's peak against LAG_SOFT, then the model plant's steady state (doco_need()) per Lh
+        print('-- docoss: per Rev A row (DERIVED). saw = 48 + (field step + one sector, 42.7) / 2, the steady |err| peak '
+              'the trim leaves when it holds the mean at 48. "fills" = rpm at which the back-EMF alone needs duty_max. '
+              'Reserve ceilings search to 1.07e9 = 7149 rpm, the last 5e6 step under the increment\'s 2^30 encoding limit '
+              '(7174 rpm; setTargetAccel ZEROX 30); '
+              '"best lead" = least phase current, unloaded (it minimises current, not duty)')
+        args = ' '.join(sys.argv[2:])
+        for V in doco_rows(p):
+            c = DOCO_CEIL_REVA[V]
+            q = doco_at(p, V, 0.0)
+            tps = c / TWO32 * (44000 / PASS) * 6
+            a = c / 2 ** 24
+            saw = 48 + (a + 256 / 6) / 2
+            fills = 0.9757 * V / 3.53 * 1000
+            print(f"{V:4} V ceiling {c / 1e6:4.0f}e6 = {rpm_of(c):4.0f} rpm, {tps:4.0f} ticks/s: {tps / 1000:4.2f} ticks per "
+                  f"front pass, {tps * 0.008:4.1f} per window slot, {tps / (44000 / PASS):4.2f} per drive pass; field step "
+                  f"{a:4.1f} counts ({'under' if a < 25 else 'OVER'} the 25 margin); saw {saw:4.1f} "
+                  f"({'under' if saw < 80 else 'OVER'} LAG_SOFT); fills {fills:4.0f} rpm", flush=True)
+            for Lh in ((p['Lh'],) if 'Lh=' in args else (0.5e-3, 1.0e-3, 1.5e-3)):
+                qL = dict(q); qL['Lh'] = Lh
+                leads = (0, 15, 30, 45, 60)
+                tops = [doco_top(qL, L) for L in leads]
+                sched = doco_top(qL, None)
+                bl = [doco_best_lead(qL, int(c * f_)) for f_ in (0.25, 0.5, 1.0)]
+                need = [doco_need(qL, c, L) for L in leads]
+                print(f"   Lh {Lh * 1e3:3.1f} mH | reserve ceiling rpm at lead 0/15/30/45/60: "
+                      + '/'.join(f"{rpm_of(t_):4.0f}" for t_ in tops) + f", best lead each speed {rpm_of(sched):4.0f} | "
+                      "best lead (A) at 25/50/100 % of the row: "
+                      + '/'.join(f"{b[0]:2d} ({b[2]:4.2f})" if b else '--' for b in bl)
+                      + " | duty % at the row's ceiling, lead 0/15/30/45/60: "
+                      + '/'.join(f"{100 * n[0] / q['duty_max']:3.0f}" if n else '--' for n in need), flush=True)
+    elif mode == 'doco':
+        # «#3678» part 1: the 6.1.0 servo on a ladder to each row's ceiling, unloaded. lead -99: per row, the best
+        #  (least-current) lead at the row's ceiling -- an offset tuned at top speed, as the 2023 rows were
+        q0 = doco_ramp(p, p['ramp_x'])
+        print(f"-- doco: the 6.1.0 servo, unloaded, from rest on {p['ramp_x']} x the built-in ramp; J {p['Jw']:.1e} kg m^2, "
+              f"Lh {p['Lh'] * 1e3:.1f} mH, Tc {p['Tc']} N m, Bv {p['Bv']:.1e}; window the last 1 s of arrival + 1.5 s. "
+              f"soft = ms per s the frame |err| reads >= LAG_SOFT; per-second counts; Iph phase A peak; Idc the DC link")
+        for V in doco_rows(p):
+            q = doco_at(q0, V, 0.0)
+            if p['lead'] == -99.0:
+                b = doco_best_lead(q, DOCO_CEIL_REVA[V])
+                lead = float(b[0]) if b else 0.0
+            else:
+                lead = p['lead']
+            q = doco_at(q0, V, lead)
+            print(f"  {V:4} V, lead {lead:3.0f} deg (e90 {q['e90_L18']:5.1f})", flush=True)
+            fracs = (p['rung_e6'] * 1e6 / DOCO_CEIL_REVA[V],) if p['rung_e6'] else (0.25, 0.5, 0.75, 1.0)
+            for f_ in fracs:
+                tgt = int(DOCO_CEIL_REVA[V] * f_)
+                r, mon, ta = doco_rung(q, tgt)
+                m = mon['w'][0]; c = mon_counts(m, 1.0)
+                if r.get('ok') and not any(r['faulted']):
+                    x = r['L']
+                    print(f"    {int(f_ * 100):3} % {rpm_of(tgt):4.0f} rpm: fol {x['fol']:5.1f} % duty "
+                          f"{100 * x['duty'] / q['duty_max']:3.0f} % swing {x['swing']:5.0f} | lag {x['err']:4.1f} pk "
+                          f"{m['lag_pk']:3} soft {m['soft'] / 44:5.1f} | held {c['held']:4.0f} cap {c['cap']:5.0f} fold "
+                          f"{c['fold']:4.0f} boost {c['boost']:5.0f} | Iph {x['iph']:4.2f} pk {m['iph_pk']:4.2f} Idc "
+                          f"{x['amps']:4.2f}", flush=True)
+                else:
+                    f2 = mon['fault']
+                    print(f"    {int(f_ * 100):3} % {rpm_of(tgt):4.0f} rpm: "
+                          + (f"FAULT at {f2[0]:.3f} s ({f2[0] - ta:+.3f} s from the generator's arrival) in {f2[2]}"
+                             if f2 else 'no window'), flush=True)
+    elif mode == 'docomap':
+        # «#3678» part 1's bracket: the 6.1.0 servo at each row's 25 % and top rung (11.1 V: 75 %, the top is past its
+        #  back-EMF) over the offset's lead x Lh x J, from rest at ramp_x (4 unless given: the steady state, not the
+        #  ramp, is judged). clean = no fault, no held pass, lag pk < LAG_HOLD and duty swing < 400 (the 6.5in hunting
+        #  signature's bounds, spin2_model.signature()); rough = only the swing is >= 400 (the field never held); hunt =
+        #  lag pk >= LAG_HOLD or a held pass; FAULT = the 125 test tripped. TALLY counts each class per rung kind
+        rx = p['ramp_x'] if 'ramp_x=' in ' '.join(sys.argv[2:]) else 4.0
+        args = ' '.join(sys.argv[2:])
+        Lhs = (p['Lh'],) if 'Lh=' in args else (0.5e-3, 1.0e-3, 1.5e-3)
+        Js = (p['Jw'],) if 'Jw=' in args else (2.0e-6, 8.0e-6)
+        leads = (p['lead'],) if p['lead'] != -99.0 else (0.0, 10.0, 20.0, 30.0)
+        print(f"-- docomap: ramp x {rx}; cell = class(lag pk, swing, held/s); leads {leads}")
+        tally = {kind: dict(clean=0, rough=0, hunt=0, FAULT=0) for kind in ('25 %', 'top')}
+        for V in doco_rows(p):
+            for f_ in (0.25, 0.75 if V == 11.1 else 1.0):
+                kind = '25 %' if f_ == 0.25 else 'top'
+                tgt = int(DOCO_CEIL_REVA[V] * f_)
+                for Lh in Lhs:
+                    for J in Js:
+                        cells = []
+                        for L in leads:
+                            q = doco_at(doco_ramp(p, rx), V, L); q['Lh'] = Lh; q['Jw'] = J
+                            r, mon, ta = doco_rung(q, tgt)
+                            m = mon['w'][0]; c = mon_counts(m, 1.0)
+                            if mon['fault'] or not r.get('ok'):
+                                k_ = 'FAULT'; cells.append(f"L{L:2.0f} FAULT")
+                            else:
+                                x = r['L']
+                                if c['held'] > 0 or m['lag_pk'] >= 100:
+                                    k_ = 'hunt'
+                                else:
+                                    k_ = 'clean' if x['swing'] < 400 else 'rough'
+                                cells.append(f"L{L:2.0f} {k_:5}({m['lag_pk']:3},{x['swing']:5.0f},{c['held']:3.0f})")
+                            tally[kind][k_] += 1
+                        print(f"  {V:4} V {rpm_of(tgt):4.0f} rpm Lh {Lh * 1e3:3.1f} J {J:.0e}: " + ' | '.join(cells), flush=True)
+        print('TALLY:', tally)
+    elif mode == 'docoramp':
+        # «#3678» part 3: the wheel-less built-in ramp. The generator alone (rates, arrival, stop), then the model's
+        #  start from rest to the row's ceiling at 1 x and at candidate multiples of the built-in steps
+        g = (44000 / PASS) ** 2 * 6 / TWO32                      # ticks/s^2 per unit of ramp step
+        up, dn = 33_958 * g, 49_918 * g
+        print(f"-- docoramp: built-in up {up:5.1f} ticks/s^2 = {up / 90 * 60:5.1f} rpm/s on the 6.5in, {up / 24 * 60:5.1f} "
+              f"rpm/s on the Doco ({90 / 24:.2f} x); down {dn:5.1f} ticks/s^2 = {dn / 90 * 60:5.1f} / {dn / 24 * 60:5.1f} rpm/s")
+        q1 = doco_ramp(p, p['ramp_x'])
+        for V in doco_rows(p):
+            c = DOCO_CEIL_REVA[V]
+            k, _ = doco_arrival(q1, c)
+            ks, trav = doco_stop(q1, c)
+            wm = rpm_of(c) * 2 * math.pi / 60
+            fr = p['Tc'] + p['Bv'] * wm
+            a_dn = dn * p['ramp_x'] * 2 * math.pi / 24          # shaft rad/s^2 at ramp_x x the built-in deceleration
+            print(f"  {V:4} V x {p['ramp_x']:3.1f} to {rpm_of(c):4.0f} rpm: arrives {k * PASS / 44000:5.2f} s; stop {ks * PASS / 44000:5.2f} s, "
+                  f"{trav / TWO32 * 6 / 24:6.1f} rev; braking torque the ramp asks J x a {p['Jw'] * a_dn * 1e3:6.3f} mN m "
+                  f"against friction {fr * 1e3:5.2f} mN m at the top: {'motoring all the way (no regeneration)' if p['Jw'] * a_dn < p['Tc'] else 'REGENERATES'}",
+                  flush=True)
+        xs = (p['ramp_x'],) if p['ramp_x'] != 1.0 else (1.0, 2.5, 10.0)
+        for V in ((p['dv'],) if p['dv'] else (12.0, 24.0)):
+            for x_ in xs:
+                q = doco_ramp(doco_at(p, V, 0.0), x_)
+                b = doco_best_lead(q, DOCO_CEIL_REVA[V])
+                q = doco_at(doco_ramp(p, x_), V, float(b[0]) if b else 0.0)
+                c = DOCO_CEIL_REVA[V]
+                k, _ = doco_arrival(q, c)
+                ta = k * PASS / 44000
+                mon = dict(t_from=0.0, t_to=ta + 0.3)
+                tr = []
+                r = run(q, c, ta + 0.8, ('FIXED', 18, -4), 0.5, t0_override=ta + 0.3, mon=mon, trace=tr)
+                m = mon['w'][0]; cc = mon_counts(m, ta + 0.3)
+                a_dn = 49_918 * x_ * g * 2 * math.pi / 24
+                print(f"  {V:4} V start x {x_:4.1f} ({up * x_ / 24 * 60:6.0f} rpm/s): generator arrives {ta:5.2f} s | over the "
+                      f"ramp: lag pk {m['lag_pk']:3} soft {m['soft'] / 44:6.1f} ms, held {cc['held'] * (ta + 0.3):4.0f} "
+                      f"boost {cc['boost'] * (ta + 0.3):6.0f} frames, Iph pk {m['iph_pk']:5.2f} A | after: "
+                      + (f"fol {r['L']['fol']:5.1f} %" if r.get('ok') else 'no window')
+                      + (f" FAULT at {mon['fault'][0]:.3f} s" if mon['fault'] else '')
+                      + f" | its stop: J x a {p['Jw'] * a_dn * 1e3:5.3f} mN m vs Tc {p['Tc'] * 1e3:4.1f}", flush=True)
+    elif mode == 'docostep':
+        # «#3678» part 2's driver-side consequence: at top speed a load step makes the rotor fall behind; the field is held
+        #  at LAG_HOLD (100) and, released, steps a whole drive pass's advance. Over 25 counts a step from just under 100
+        #  passes the 125 fault test. Each row at its ceiling, and (rows over 419.4e6) at 400e6 for comparison
+        rows = doco_rows(p) if p['dv'] else (11.1, 22.2, 18.5)
+        loads = (p['step_load'],) if p['step_load'] else (0.02, 0.04, 0.0625, 0.1)
+        print('-- docostep: steady at the speed, then a load step held 1 s (N m; the sheet rates 0.0625). LAG_HOLD 100, '
+              'fault 125: a field step over 25 counts can cross it')
+        for V in rows:
+            q = doco_at(p, V, 0.0)
+            c = DOCO_CEIL_REVA[V]
+            for tgt in ((c, 400_000_000) if c > 419_430_400 else (c,)):
+                b = doco_best_lead(q, tgt)
+                qv = doco_at(p, V, float(b[0]) if b else 0.0)
+                k, _ = doco_arrival(qv, tgt)
+                ts = k * PASS / 44000 + 0.5
+                for T_ in loads:
+                    q2 = dict(qv); q2.update(step_t=ts, step_T=T_)
+                    mon = dict(t_from=ts, t_to=ts + 1.0)
+                    r = run(q2, tgt, ts + 1.0, ('FIXED', 18, -4), 0.5, t0_override=ts + 0.5, mon=mon)
+                    m = mon['w'][0]; cc = mon_counts(m, 1.0)
+                    f2 = mon['fault']
+                    print(f"  {V:4} V {tgt / 1e6:4.0f}e6 ({tgt / 2 ** 24:4.1f} counts/pass, lead {b[0] if b else 0:2}) load "
+                          f"{T_:6.4f}: lag pk {m['lag_pk']:3} held {cc['held']:5.0f}/s cap {cc['cap']:5.0f}/s | "
+                          + (f"FAULT {1000 * (f2[0] - ts):6.1f} ms after the step, in {f2[2]}" if f2 else
+                             (f"no fault, last 0.5 s fol {r['L']['fol']:5.1f} %, Iph {r['L']['iph']:4.2f} A" if r.get('ok')
+                              else 'no window')), flush=True)
+    elif mode == 'docosag':
+        # «#3678» part 2's driver-side margin on the unloaded bench: at a row's top, the supply is dialled down at
+        #  sag_rate V/s (1 unless given) from 0.5 s after the generator arrives, until the drive loses the speed. A field
+        #  step under 25 counts should let the field be held and decay (the speed falls, no fault); over 25 a release
+        #  from just under LAG_HOLD lands past 125 (a fault). Reported: the supply when the first held pass comes, when
+        #  the field speed first falls 2 % under the command, and when (if) the fault test trips
+        rate = p['sag_rate'] or 1.0
+        rows = doco_rows(p) if p['dv'] else (22.2, 18.5, 24.0, 12.0)
+        print(f"-- docosag: unloaded, each row's top, the supply falling {rate} V/s from arrival + 0.5 s")
+        for V in rows:
+            c = DOCO_CEIL_REVA[V]
+            for tgt in ((c, 400_000_000) if c > 419_430_400 else (c,)):
+                b = doco_best_lead(doco_at(p, V, 0.0), tgt)
+                q = doco_at(p, V, float(b[0]) if b else 0.0)
+                k, _ = doco_arrival(q, tgt)
+                ts = k * PASS / 44000 + 0.5
+                q['sag_t'] = ts; q['sag_rate'] = rate
+                dur = min(V - 3.0, 14.0) / rate
+                tr = []
+                mon = dict(t_from=ts, t_to=ts + dur)
+                run(q, tgt, ts + dur, ('FIXED', 18, -4), 0.5, sample_ms=1.0, trace=tr, t0_override=ts, mon=mon)
+                held_t = next((s[0] for s in tr if s[0] >= ts and s[1][0][5] > 0), None)
+                slow_t = next((s[0] for s in tr if s[0] >= ts and abs(s[1][0][4]) < 0.98 * tgt), None)
+                f2 = mon['fault']
+
+                def vat(t_):
+                    return V - (t_ - ts) * rate
+                print(f"  {V:4} V {tgt / 1e6:4.0f}e6 ({tgt / 2 ** 24:4.1f} counts/pass, {rpm_of(tgt):4.0f} rpm, lead "
+                      f"{b[0] if b else 0:2}): first held pass at "
+                      + (f"{vat(held_t):5.2f} V" if held_t else ' none ') + "; field 2 % under command at "
+                      + (f"{vat(slow_t):5.2f} V" if slow_t else ' none ') + "; "
+                      + (f"FAULT at {vat(f2[0]):5.2f} V in {f2[2]}" if f2 else f"no fault down to {vat(ts + dur):5.2f} V"),
+                      flush=True)
+    elif mode == 'docohand':
+        # «#3678» part 1's hand load: a hand closes on the shaft at low speed (a rotational spring hand_k N m/rad with
+        #  damping hand_c, reached 0.5 s after the generator arrives; ob_n contact points over one 15-deg hall sector)
+        #  and holds. The front cog's blocked stop is ported (bFrontProtect() with F-a). i_limit is the fold-back's peak
+        #  (testSetCurrentLimits(A, A)); 40 is the default
+        rows = doco_rows(p) if p['dv'] else (12.0, 24.0)
+        args = ' '.join(sys.argv[2:])
+        lims = (p['i_limit'],) if 'i_limit=' in args else (40.0, 4.0, 2.0)
+        n = int(p['ob_n'])
+        print(f"-- docohand: power {p['hand_pwr']}, hand {p['hand_k']} N m/rad damping {p['hand_c']}, {n} contact points; "
+              f"MEASURED on the 6.5in (2026-09-30 obstacle): BLKSTOP band 988-1,168 ms")
+        for V in rows:
+            c = DOCO_CEIL_REVA[V]
+            tgt = 544_628 + (c - 544_628) * (p['hand_pwr'] - 1) // 99        # incrementForPower()'s map, reverse floor
+            b = doco_best_lead(doco_at(p, V, 0.0), c)
+            for lim in lims:
+                q = doco_at(p, V, float(b[0]) if b else 0.0)
+                q['i_limit'] = lim
+                k, trav = doco_arrival(q, tgt)
+                ta = k * PASS / 44000
+                x0 = (trav + tgt * int(0.5 * 44000 / PASS)) / TWO32 * 2 * math.pi / q['pp']
+                lat = []; flt = 0; nol = 0; ipk = 0.0; idc = []; fold = 0; setb = 0; Fm = 0.0; dpk = 0
+                for j in range(n):
+                    qj = dict(q); qj.update(obst=1, r=1.0, ob_x=x0 + DOCO_SECTOR_RAD * j / n, ob_dx=0.0, ob_k=p['hand_k'],
+                                            ob_c=p['hand_c'], ob_slip=1e9)
+                    mon = dict(t_from=ta + 0.3, t_to=ta + 4.0, post=(ta + 0.9, ta + 1.3))
+                    res = run(qj, tgt, ta + 4.0, ('FIXED', 18, -4), 0.5, mon=mon)
+                    bl = res['block']; w0_ = bl['wheels'][0]; m = mon['w'][0]
+                    ipk = max(ipk, m['iph_pk']); dpk = max(dpk, m['duty_pk'])
+                    if m['post']:
+                        idc.append(sum(m['post']) / len(m['post']))
+                    fold += w0_['folds']; setb += w0_['setbacks']; Fm = max(Fm, w0_['F'])
+                    if bl['latch_t'] is not None and w0_['contact'] is not None:
+                        lat.append(bl['latch_t'] - w0_['contact'])
+                    elif bl['fault_t'] is not None:
+                        flt += 1
+                    else:
+                        nol += 1
+                lat.sort()
+                print(f"  {V:4} V power {p['hand_pwr']} ({rpm_of(tgt):4.0f} rpm), limit {lim:4.1f} A: latched {len(lat)} of {n}"
+                      + (f" at {1000 * lat[0]:5.0f}-{1000 * lat[-1]:5.0f} ms after contact" if lat else '')
+                      + f", faults {flt}, no latch {nol} | hand torque pk {Fm * 1e3:5.1f} mN m | Iph pk {ipk:5.2f} A, "
+                      f"duty pk {100 * dpk / q['duty_max']:3.0f} %, DC link in the stand {min(idc) if idc else 0:5.2f}-"
+                      f"{max(idc) if idc else 0:5.2f} A ({5 * (max(idc) if idc else 0):4.1f} mV at 5 mV/A) | fold frames "
+                      f"{fold}, set-backs {setb}", flush=True)
+    elif mode == 'docohold':
+        # «#3678» the hold at rest (frontHold(), SM_BRAKE), DERIVED: at rest the field stays at the stop angle; while
+        #  the halls read the rotor displaced (one tick or more) the duty rises from duty_min to HOLD_CEILING_PCT of
+        #  duty_max over HOLD_RISE_MS; HOLD_SLIP_TICKS (2) displaced hands off to the phase short. Stalled, so no
+        #  back-EMF: I = Va / R per phase, torque kt I sin(displacement, electrical)
+        print('-- docohold (DERIVED): torque at 60 deg electrical (one tick, the first displacement the halls see) and its '
+              'peak at 90 deg; the slip at 120 deg (2 ticks)')
+        kt = 1.5 * p['pp'] * ke_fit(p)
+        q65 = dict(Q); kt65 = 1.5 * q65['pp'] * ke_fit(q65)
+        for name, kt_, R, Vs, tick_deg, rated in (('Doco', kt, p['RL'], doco_rows(p), 15.0, DOCO_RATED_NM),
+                                                 ('6.5in', kt65, P['R'], (18.5,), 4.0, None)):
+            for V in Vs:
+                out = []
+                for duty, lab in ((1600, 'duty_min'), (int(0.10 * 27_648), 'ceiling 10 %')):
+                    Va = V * duty / (16 * 3068)
+                    I = Va / R
+                    out.append(f"{lab}: {I:5.2f} A, {kt_ * I * math.sin(math.radians(60)) * 1e3:6.1f} / {kt_ * I * 1e3:6.1f} "
+                               f"mN m" + (f" ({100 * kt_ * I / rated:3.0f} % of rated)" if rated else '')
+                               + f", copper {1.5 * I * I * R:5.2f} W")
+                print(f"  {name:5} {V:4} V (kt {kt_:.4f} N m/A; slip at {2 * tick_deg:4.0f} deg of shaft): " + ' | '.join(out))
     elif mode == 'wheelsup':
         q = dict(p); q.update(m=0.0, Iz=0.0, Tc=0.20, Vbus=18.5)
         print('-- wheels up (no platform, J 0.006, Tc 0.20, 18.5 V), schedule; manual 6.4: swing 178-399, err_pk 76-86 at 10/20e6')
