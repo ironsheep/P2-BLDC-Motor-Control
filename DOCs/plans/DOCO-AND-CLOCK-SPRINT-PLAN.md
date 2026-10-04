@@ -403,6 +403,66 @@ tool, once two motors are measured (ruling 2026-09-21).
 wheel at the 6.5″ session (wheels up) it reproduces the 6.5″'s shipped Z (−4°) and pair; a motor type with no record is
 refused.
 
+**Built («#3685», 2026-10-04): `src/util_adopt_motor.spin2`, TOOL_REV 1, record format 1, output format 1 (`MA-`).**
+- **Placement, and why.** A top a user compiles under their own `isp_bldc_motor_userconfig.spin2` (single-motor block;
+  `#DEFINE CFG_SINGLE_MOTOR` with the PNut-guarded `#PRAGMA EXPORTDEF`), run from the debug terminal. ADDING_MOTOR.md's
+  reader has their own motor, one board, their configuration file, pnut-ts and the debug terminal, and in general no
+  shaft encoder, so the tool measures only what the board sees (halls, DC link, the drive's counters) and needs no bench
+  file. The bench runs the same source: `tools/bench-run.sh doco-adopt-<voltage>` (Doco bench, `-D BENCH_DOCO` + the
+  voltage symbol) and `adopt-wheel` (the 6.5″ platform's RIGHT wheel, the bench statement's `RIGHT_*`, as `demo-single`);
+  both `-D BENCH_QUIET`, both take a clock NAME. The encoder judges the tool from outside, through the harness's
+  L-offscan and L-ladder; it is not a tool input. The reason is also recorded in the source header.
+- **What it generalises:** the offset-and-ceiling procedure only (ADDING_MOTOR.md steps 5 and 6's ceiling): per scan
+  speed (two, one octave apart) and sign, the offset walked in 5° steps outward from the driver's starting pair, a side
+  at a time from rest, to the motor's edge; a parabola to the DC link within ±20° of the lowest clean point (the scan's
+  fine window); Z and L from the two signs' minima (taken round the circle); Z's agreement across the speeds; then the
+  driver's own commutation restored and a ladder per sign to the duty reserve. Not carried: the floor (minimum
+  increment), the hall map, the coast, the misdial check, the stops, the attended legs — each needs the encoder or is
+  not part of adoption.
+- **The record** (`DAT { motor records }`, keyed by a `CON { record keys }` alias of the user's `MOTR_*`; 13 longs: key,
+  format, status, ticks/rev, rated mA, no-load mA, scan A, ladder A, slow rpm, fast rpm, ladder from / step / to rpm; an
+  `END_OF_RECORDS` row ends the table). **6.5″, RS_MEASURED:** 90; 5,000 (no vendor rating: twice it is the scans' 10 A
+  abort); 500 (pack current at the knee, manual §6.3); 4 / 4 A (over the 2.6 A DC link its scan read at the current wall);
+  33 / 65 rpm (49.5 / 97.5 ticks/s, the speeds Z was measured at, manual §4.2); 30 / 15 / 435 rpm (to 244e6, inside the
+  245e6 it followed smoothly). **DocoEng, RS_PROVISIONAL:** 24 (`DOCOENG_MOTOR.md`; checked by D1 L-hallmap's
+  self-check); 1,840 and 400
+  (sheet); 2 A scan (harness `TEST_PEAK_A`), 3 A ladder (`rowLadderA` at 11.1 V; set by D1 L-ladder); 560 / 1,120 rpm
+  (25 / 50 % of the 12 V ceiling, L-offscan's lower speeds; set by D1 L-offscan, its fits must resolve at both); 280 / 140
+  / 2,800 rpm (2,800 = PK-1's 419e6; set by D1 L-ladder's duty line). A record is refused, before anything starts, when
+  absent (`NO_RECORD`), of another format (`RECORD_FORMAT`), or when its ticks/rev differ from `hallTicInfoForMotor()`
+  (`GEOMETRY`); a plan the record cannot run (`RECORD_PLAN`) and an illegal configuration (`CONFIG`) likewise.
+- **§4.1 rows used:** `HALL_TICKS_PER_REV` (record), `RATED_MA` / `NO_LOAD_MA_MAX` (record; the abort, the wall floor,
+  the charge cap), `ABS_ABORT_MA` (2 × rated), `RUN_CHARGE_CAP_MAS` (a minute at rated + no-load × the estimated
+  run), `RUN_TIME_CAP_S` (3 × the estimate), `TEST_PEAK_A` / `TEST_CONT_A` and `rowLadderA` (record), the current-sense
+  scale through the detected board, the rest-zero band (the library's, per board), `PK1_CAP_INCR` (no scan speed or rung
+  past it), the ladder's fault rule (one edge ends a climb), the 1 s settle and 5 s window, `OFS_STEP_DEG`, the point
+  abort (`OFS_POINT_X100`, `_SAMPLES`, `OFS_CEIL_MA`, `OFS_POINT_FLOOR_MA`), `OFS_FIT_MIN_PTS`, `OFS_VERT_SE_MAX_X10`,
+  `DUTY_RESERVE_PM`, `FOLLOW_TOL_PM`, the direction naming by increment sign. Not used (encoder, attended or outside
+  adoption): the `ENC_*` rows, the hall-map rows, `KE_*` and the misdial rows, `DUTY_VOLT_DIV`, the min-increment rows,
+  the stops rows, the coast rows, `LEADMOVE_*`, `PASSPRB_*`, every 2c and 3686 row. `OFS_SPAN_DEG` ±30 becomes a walk to
+  the edge bounded at 90° (the scan's `HARD_LIMIT_DEG`), because a new motor's starting pair may sit far from its minimum.
+- **The stop condition (the edge),** one rule from both motors: WALL (the scan's point abort, relative to the side's
+  lowest clean point) and FAULT end a side at once; DROOP (following under 80 % on the halls, the scan's
+  `FOLLOW_DROOP_PCT`: the 6.5″'s measured torque wall, manual §6.2 — −2° of lead held 51 %, no fault) and HUNT (a held
+  pass in a window: the Doco's MODELED torque wall, P-S6 — PROVISIONAL, its count set by D1 L-offscan's held passes at
+  ±30°) end it after two in a row; before a side's first clean point, a DROOP/HUNT point drawing less current than the
+  one before does not count (the 2023 Doco pair may sit well ahead of the minimum, in the hunting region: desk model §1.2;
+  with every edge point counted, the model's side ends before it reaches the minimum). The ladder ends on DROOP,
+  HUNT, CAPPED (the 6.5″'s knee), FAULT, or BOUND at `PK1_CAP_INCR` (the Doco's fault-not-slip edge, F3). Per P12, D1
+  sets these values; none gates the algorithm.
+- **Guards:** start checks refusing; the record's test limit set and read back before driving; the rest zero in the
+  library's band; the absolute abort, the charge cap and the time cap every 5 ms; a fault recovered from rest (one that
+  will not clear ends the run); offsets restored and read back before the ladder; `stop()` on every way out.
+- **Desk model** (scratchpad `adopt_model.py`, reads the tool's source for its constants and records): 31 of 31
+  expectations — RECORD, FIT, Z, EDGE and CEILING each shown passing its correct case and failing (or refusing) a data
+  or logic mutation. It found two defects in the tool before any compile could: the fit's level term and the hunting
+  start. **The level-term defect is in the harness too:** `test_bench_single.spin2:5901` (`ofsFit()`) writes the third
+  minor as `S3·T0 − S1·T2` (correct: `S3·T0 − T1·S2`), so B1-OFSFIT's `rms_x10`, `vse_x10` and `resolved` are wrong
+  whenever the fitted points are not symmetric about the shipped offset; its vertex (from a and b) is right. Brought to
+  the arbiter; not changed here.
+- **Not yet verified:** D2 (the tool against D1's offsets and ceilings) and the 6.5″ session (the tool on one wheel) are
+  the verification. The tool has run on no motor.
+
 ## 9. Serial: tested on hardware
 
 **Starting point.** `pythonSrc/serial_certify.py` (1,146 lines; ten cells: R20-SER-ERRREPLY, -TIMEOUT, -VOLT, -FAULTRESP,

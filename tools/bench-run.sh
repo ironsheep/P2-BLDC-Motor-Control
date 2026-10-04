@@ -39,7 +39,8 @@
 # Usage:  tools/bench-run.sh <tier> [<clock>]
 #   <tier>      -- tier name, see usage() below.
 #   <clock>     -- optional, a clock NAME (clk-floor, clk-200, clk-270, clk-300, clk-350, clk-frac), for the tiers of
-#                  test_bench_dual, test_bench_t0 and the Doco harness test_bench_single only (task 3675). In a prebuilt
+#                  test_bench_dual, test_bench_t0, the Doco harness test_bench_single (task 3675) and the motor-adoption
+#                  tool util_adopt_motor (task 3685) only. In a prebuilt
 #                  package (tools/make-bench-pack.sh <tier>@<clock>) the name picks the binary built at that clock.
 #                  The Doco bench (-D BENCH_DOCO, doco-* tiers): one motor, one Rev A board, a TOLD voltage chosen by NAME in
 #                  the tier (doco_voltage() below); it is built as its own fixed statement, never the 6.5in one. Nothing numeric is ever typed at the bench (STEPHEN
@@ -183,7 +184,7 @@ usage() {
     #  visible reason.
     cat <<'EOF'
 Usage:  tools/bench-run.sh <tier> [<clock>]
-  <clock>     -- optional, for the tiers of test_bench_dual, test_bench_t0 and test_bench_single only: the clock the run is built at, by NAME
+  <clock>     -- optional, for the tiers of test_bench_dual, test_bench_t0, test_bench_single and util_adopt_motor only: the clock the run is built at, by NAME
                  (nothing numeric is typed). One of:
                    clk-floor  120 MHz  the lowest supported clock (PROVISIONAL: task 3683 rules it)
                    clk-200    200 MHz
@@ -269,6 +270,8 @@ Usage:  tools/bench-run.sh <tier> [<clock>]
                    single-heldpush-<voltage> the Doco harness's held stop, on a panel: the stopped motor holds the shaft and you turn it slowly by hand until the hold gives way, one way, then the other; at v12p0 and v24p0 only  [MOTOR CONNECTED, ENCODER COUPLED, ATTENDED: YOUR HAND ON THE SHAFT]
                    single-sag-<voltage>      OPTIONAL, ask first: the Doco harness's supply sag, on a panel: at the top speed you turn the bench supply down about 1 V a second until the speed is lost; at v22p2 and v18p5 only  [MOTOR CONNECTED, ENCODER COUPLED, ATTENDED: YOUR HAND ON THE SUPPLY]
                    single-pinch-<voltage>    OPTIONAL, ask first: the Doco harness's cloth pinch, on a panel: at the top speed you pinch the bare shaft end lightly with a cloth for 1 to 2 seconds; at v18p5 only (single-pinch-v18p5)  [MOTOR CONNECTED, ENCODER COUPLED, ATTENDED: A CLOTH ON THE SHAFT END]
+                   doco-adopt-<voltage>  the motor-adoption tool (util_adopt_motor.spin2) on the DOCO BENCH's one motor, as a user runs it: the timing (offset) scan at two speeds each way, then the speed ceiling each way, from the motor's record; the voltage told by NAME as doco-demo's is (-v7p4 ... -v24p0); takes a <clock> name; 15-30 minutes  [MOTOR CONNECTED, SHAFT FREE, UNATTENDED]
+                   adopt-wheel    the motor-adoption tool on the 6.5in platform's RIGHT wheel (the P16 board, 18.5 V), as a user runs it; takes a <clock> name; 15-30 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    demo-dual      the two-wheel release demo: wiring check, 1 ft forward, two 15 s steered drives, then each wheel alone 15 s at full power (PL-149), about 1.5 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
 
 Examples:
@@ -871,6 +874,23 @@ case "$TIER" in
                     EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_PINCH)
                     PRECONDITION="OPTIONAL -- RUN IT ONLY IF YOU AGREED TO IT ON THE RUN SHEET. THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, THE OTHER SHAFT END BARE AND REACHABLE -- ATTENDED AT THE PC: A PANEL OPENS AND YOU CLICK ITS BUTTONS (NO KEYS ARE READ). THE CLOTH PINCH. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); set the supply to that voltage before the run. ONE STEP: after START STEP the motor speeds up to this voltage's top speed (about 2,660 rpm) and runs 2 seconds untouched; when the green YOUR TURN banner shows, pinch the bare shaft end lightly with a cloth for 1 to 2 seconds, let go, and click DONE. You should feel a light drag and see no slowing; the panel shows the current rise and fall. STOP MOTOR on the panel stops it at any time. Under a minute"
                     ;;
+    # doco-adopt-<voltage> and adopt-wheel (task 3685, plan sec 8, util_adopt_motor.spin2 TOOL_REV 1) -- the motor-adoption tool,
+    #  the SAME source a user compiles under isp_bldc_motor_userconfig.spin2, here built under the bench's statement: on the Doco
+    #  bench (-D BENCH_DOCO and the voltage's symbol, as every Doco tier) and on the 6.5in platform's RIGHT wheel (the bench
+    #  statement's RIGHT_* values, as demo-single), both -D BENCH_QUIET for the motion harness's reason (nothing prints from the
+    #  front cog). The tool reads no encoder: on the Doco bench the harness's legs (single-offscan, single-ladder) are its
+    #  judge. Both take a clock NAME (plan sec 0.2: the 6.5in session runs the tool at the lowest supported clock and at 270 MHz).
+    doco-adopt-v7p4|doco-adopt-v11p1|doco-adopt-v12p0|doco-adopt-v14p8|doco-adopt-v18p5|doco-adopt-v22p2|doco-adopt-v24p0)
+                    BENCH_FILE="util_adopt_motor.spin2"
+                    DOCO_VNAME="${TIER#doco-adopt-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}")
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the motor-adoption tool, run as a user runs it (the encoder may stay coupled; the tool does not read it). THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. It finds the DocoEng motor's record first and starts nothing without one. The start checks pulse the motor leads with nothing able to move. THE TIMING SCAN: at 560 rpm and then at 1,120 rpm, each way, the motor runs while the tool shifts its timing 5 degrees at a time, each side from rest, holding each setting about 6 seconds, until the current climbs, the motor slows, hunts or faults; the motor may sound rougher or hunt near the ends, which is what is being found. Its own timing is put back. THE CEILING: each way, from rest the motor climbs from 280 rpm in 140 rpm steps, about 9 seconds a step, never past about 2,660 rpm, until its duty reaches the reserve or the motor slows, hunts or faults; then it stops. Under a 2 A test current limit (3 A for the climb). It stops itself on an over-current, a charge it did not expect, a fault that will not clear or its time cap. 15 to 30 minutes"
+                    ;;
+    adopt-wheel)    BENCH_FILE="util_adopt_motor.spin2"
+                    EXTRA_DEFS=(-D BENCH_QUIET)
+                    PRECONDITION="THE REV B PLATFORM, MOTORS CONNECTED, WHEELS UP, RIGHT WHEEL FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the motor-adoption tool on the RIGHT wheel (the P16 board), run as a user runs it; the left wheel is never started. It finds the 6.5in motor's record first and starts nothing without one. The start checks pulse the motor leads with nothing able to move. THE TIMING SCAN: at 33 rpm and then at 65 rpm, each way, the wheel turns while the tool shifts its timing 5 degrees at a time, each side from rest, holding each setting about 6 seconds, until the current climbs, the wheel slows or faults; its own timing is put back. THE CEILING: each way, from rest the wheel climbs from 30 rpm in 15 rpm steps, about 9 seconds a step, never past 435 rpm, until its duty reaches the reserve or the wheel slows or faults; then it stops. Under a 4 A test current limit; the 10 A abort applies. It stops itself on an over-current, a charge it did not expect, a fault that will not clear or its time cap. 15 to 30 minutes"
+                    ;;
     demo-rc)        BENCH_FILE="demo_dual_motor_rc.spin2"
                     PRECONDITION="ATTENDED -- YOU DRIVE IT WITH THE FLYSKY TRANSMITTER: the SBUS receiver wired to P58 and bound, the transmitter ON with swD (the kill switch) in its run position BEFORE the load. The two-wheel RC demo, as shipped: start checks, the wiring check (each wheel turns a little one way and back), then the sticks drive the platform and every event and stop is printed as it happens. Drive forward, reverse and both turns at low and full stick; flip swD to e-stop, then back to re-arm. It runs until you close the terminal. About 3 minutes, at your pace"
                     ;;
@@ -895,8 +915,8 @@ esac
 # tier's source is never patched, so a name beside it would run at the file's own clock while saying otherwise
 if [ -n "$CLOCK_NAME" ]; then
     case "$BENCH_FILE" in
-        test_bench_dual.spin2|test_bench_t0.spin2|test_bench_single.spin2) ;;   # test_bench_single: the Doco harness (task 3679)
-        *) die "tier '$TIER' (top $BENCH_FILE) takes no clock: a clock name is for the tiers of test_bench_dual.spin2, test_bench_t0.spin2 and the Doco harness test_bench_single.spin2" ;;
+        test_bench_dual.spin2|test_bench_t0.spin2|test_bench_single.spin2|util_adopt_motor.spin2) ;;   # test_bench_single: the Doco harness (task 3679); util_adopt_motor: the adoption tool (task 3685)
+        *) die "tier '$TIER' (top $BENCH_FILE) takes no clock: a clock name is for the tiers of test_bench_dual.spin2, test_bench_t0.spin2, the Doco harness test_bench_single.spin2 and the adoption tool util_adopt_motor.spin2" ;;
     esac
 fi
 # A prebuilt package and a pack build hold one binary per tier name, its clock built in: <tier>.bin. A tier built at a NAMED

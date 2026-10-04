@@ -1,0 +1,2012 @@
+'' =================================================================================================
+''
+''   File....... util_adopt_motor.spin2
+''   Purpose.... The motor-adoption tool: measure a motor's commutation offsets (the hall zero Z and the lead,
+''               from each direction's current minimum) and its speed ceiling (the duty reserve), from that
+''               motor's parameter record
+''   Authors.... Stephen M Moraco
+''               -- Copyright (c) 2026 Iron Sheep Productions, LLC
+''               -- see below for terms of use
+''   E-mail..... stephen@ironsheep.biz
+''   Started.... 04 Oct 2026
+''   Updated.... 04 Oct 2026
+''
+'' =================================================================================================
+
+{ WHAT IT DOES
+
+  ADDING_MOTOR.md steps 5 and 6, run for you: with your motor free to turn and nothing touching it, the tool
+   1. finds your motor's PARAMETER RECORD (DAT { motor records }, below) by the MOTOR_TYPE your configuration names,
+      and refuses -- before anything is started -- a motor type with no record, a record of another layout, or a
+      record whose hall ticks per revolution disagree with the driver's;
+   2. starts the motor with its start checks, under the record's test current limit, and reads the current sense's
+      rest zero;
+   3. THE OFFSETS (step 5): at the record's two scan speeds, one octave apart, for negative and then positive
+      increments, steps the commutation offset that direction uses 5 degrees at a time, outward from the pair the
+      driver starts with, one side at a time, each side from rest, until the motor reaches an edge (below); fits a
+      parabola to the DC-link current around the lowest point; and gives each direction's current minimum, their
+      midpoint Z (the hall zero) and half their difference L (the lead). Z must not move with speed: the tool
+      checks it does not;
+   4. puts back the commutation the driver started with;
+   5. THE CEILING (step 6): for each increment sign, climbs a ladder of speeds on that commutation until the duty
+      reaches 92.5 % of the drive's duty ceiling (7.5 % in hand) or an edge, fits the duty line, and gives the
+      increment at the reserve -- the number confgurePowerLimits() takes;
+   6. stops the motor and prints MA-RESULT: the pair to put in offsetsForMotor() and the ceiling to put in
+      confgurePowerLimits(), for the voltage you started it at.
+  Run it once: put the pair in, rebuild, and run it again. The second run measures the ceiling on YOUR pair, and its
+  minima should then sit at the pair it started from (MA-FIT from_start_x10 near 0).
+
+  WHERE IT RUNS, AND WHY HERE. It is a top-level program you compile under your own configuration
+  (isp_bldc_motor_userconfig.spin2, the single-motor block) and run from the debug terminal, because that is what the
+  reader of ADDING_MOTOR.md has: their own motor, one board, their configuration file, pnut-ts and the debug terminal --
+  and, in general, no shaft encoder. So it measures only what the board itself can see: the halls, the DC-link current
+  and the drive's own counters. Our bench runs this same source (tools/bench-run.sh doco-adopt-<voltage> on the Doco
+  bench, adopt-wheel on one 6.5in wheel); the bench's shaft encoder judges the tool there from outside, through the
+  bench's own measurement harness (test_bench_single.spin2). Nothing here needs the encoder, and no bench file is
+  needed to build it.
+
+  THE MOTOR RECORD (record format 1, RECORD_FORMAT). One record per motor type, REC_LONGS longs, in this order; the
+  table ends with a record whose key is END_OF_RECORDS:
+    key             the motor's name, from the list in isp_bldc_motor_userconfig.spin2 (an alias in CON { record keys })
+    format          RECORD_FORMAT: a record written for another layout is refused
+    status          RS_MEASURED (every number below measured on that motor), or RS_PROVISIONAL (some come from the data
+                    sheet or a model and are still to be measured: MA-RECORD and MA-RESULT say so)
+    ticks_rev       hall ticks per revolution, counted by hand (ADDING_MOTOR.md step 3); must equal the driver's own
+    rated_ma        the motor's rated current, mA: the absolute current abort is twice it
+    no_load_ma      the motor's no-load current, mA: the current wall's floor, and the charge allowance per second driven
+    scan_a          the test current limit for the offset scan, whole amps (peak and continuous)
+    ladder_a        the test current limit for the ceiling ladder, whole amps
+    slow_rpm        the slower offset-scan speed, rpm ...
+    fast_rpm        ... and the faster, about twice it: Z is measured at both and must agree
+    ladder_from_rpm the ladder's first rung, rpm ...
+    ladder_step_rpm ... the step between rungs ...
+    ladder_to_rpm   ... and the fastest rung it may ever command: the climb stops at the duty reserve or an edge first
+  To adopt a new motor, add its name to CON { record keys } and one record above the END_OF_RECORDS line, in this
+  layout, from its data sheet and step 3's count; mark it RS_PROVISIONAL until a run has confirmed it.
+
+  THE EDGE -- where a side of the offset scan, or the ladder's climb, stops. A motor tells the drive it is out of its
+  working range in different ways, and the tool stops on any of them:
+    WALL   the DC link stays over max(2.5 x the side's lowest clean point so far, no_load_ma) for 40 readings (200 ms),
+           or over 80 % of the absolute abort for 4: too much lead, the current explodes (the 6.5in's offset scans ended
+           there; the offset scan only -- on the ladder the absolute abort stands guard)
+    DROOP  the motor turns at under 80 % of the commanded speed, on the halls: too little lead, it cannot make the
+           torque and slows (the 6.5in's torque wall: it droops rather than faults)
+    HUNT   the drive held the field back (a held pass) while the rotor lagged: the DocoEng motor is predicted to hunt
+           before it slows, 20-30 degrees ahead of its minimum (from our desk model; not yet measured)
+    FAULT  the driver faulted (the DocoEng motor is predicted to fault, not slip, above an increment of 419e6)
+    CAPPED the duty hit its ceiling (the ladder only: the knee, past the reserve)
+  WALL and FAULT end a side at once; DROOP and HUNT after two points in a row (a single rough point does not). Until a
+  side has seen a clean point, a DROOP or HUNT point drawing less current than the one before does not count: the walk
+  is still coming down toward a minimum it has not reached, which it must be allowed to do when the driver's starting
+  pair sits in the hunting region. A ladder rung that DROOPs, HUNTs, CAPs or FAULTs ends the climb at once. No rung, and no scan speed, passes an increment
+  of PK1_CAP_INCR: above it one drive pass moves the field further than the driver's lag margin allows, so a
+  disturbance faults instead of slipping.
+
+  THE CHECKS -- each prints its verdict; none drives anything.
+    RECORD    PRECONDITION nothing started. BOUND a record whose key is MOTOR_TYPE, whose format is RECORD_FORMAT, and
+              whose ticks_rev equals hallTicInfoForMotor(). CORRECT CASE the 6.5in and the DocoEng records are found;
+              any other motor type is refused NO_RECORD. Rival: the driver's own refusal of an unknown motor (start()),
+              which would come later and name the motor, not the missing record.
+    FIT       per scan speed and direction. PRECONDITION at least FIT_MIN_PTS clean points (finished their window,
+              following within 3 %, no held pass, no re-sync) within FIT_HALF_DEG of the lowest. BOUND curvature above 0,
+              the vertex inside the points fitted, and the vertex's own standard error at most VERT_SE_MAX_X10 / 10
+              degrees. CORRECT CASE a basin like the 6.5in's (13.1 mV at its minimum, 12.7x that 30 degrees away)
+              resolves to within a degree of its lowest point. Unfixed value: the 2.5 degree bound, derived for the
+              DocoEng on Rev A's current resolution and not yet tried on a measured curve. Rival: a "minimum" pinned
+              against an edge with nothing measured beyond it -- refused by the inside-the-points rule.
+    Z         PRECONDITION both directions' fits resolved at both speeds. BOUND Z at the two speeds within
+              Z_AGREE_TOL_X10 / 10 degrees. CORRECT CASE the 6.5in's Z moved 0.2-0.55 degrees across a doubling of speed
+              while its lead moved 12 degrees. Unfixed value: 7.5 degrees, three of the fit's own standard errors
+              (2.5 degrees each way), until the two motors' runs show their spread. Rival: a lead that changes with
+              speed -- it cancels in the midpoint, so it cannot fail this check; a minimum found against an edge, or
+              the wrong minimum, can.
+    CEILING   per increment sign. PRECONDITION at least two clean rungs and a rising duty line. BOUND the climb ends on
+              the reserve -- a clean rung at DUTY_RESERVE_PM of the duty ceiling, the duty line's crossing then at or
+              below the fastest clean rung (bracketed) -- or on an edge or the field-step margin with a clean rung below
+              it; NOT FOUND when the rungs ran out first (ladder_to too low), the climb never drove, or no rung was
+              clean. The ceiling is the reserve crossing, or the fastest clean rung below whatever came first. CORRECT
+              CASE the 6.5in at 18.5 V: 165e6, where duty runs at 92-93 % of its ceiling. Unfixed value: the reserve,
+              925 per mille, the 6.5in's, carried to every motor. Rival: an edge before the reserve (the motor cannot
+              use the voltage it is given) -- MA-CEILING names it, and the line's own crossing prints beside it.
+
+  THE GUARDS, because nobody need watch it. Every 5 ms while the motor is driven:
+    - an absolute current abort at twice the record's rated current, on 4 readings in a row: the motor coasts and the
+      run ends;
+    - a charge cap: a minute at the rated current, plus the no-load current over the run's estimated driven time;
+    - a time cap: three times the run's estimated length;
+    - a driver fault is a finding: the motor is brought to rest, the fault cleared, and the scan or climb goes on from
+      rest; a fault that will not clear ends the run.
+  Before anything moves: start() with its start checks refusing (a disconnected lead, a hall fault, no board); the
+  record's test current limit set and read back (testSetCurrentLimits()); the current sense's rest zero inside the
+  driver's band for the board it detected; every scan speed and rung under PK1_CAP_INCR. At rest the shaft coasts. The
+  motor is stopped on every way out. PANIC: disconnect the supply.
+
+  WHAT IT PRINTS (record format FMT_VERSION). One line per record, tag first, then name,value pairs; every record
+  prints every field in the same order, NA where nothing was measured; at most 280 bytes. Directions are named by the
+  increment sign (NEG: offsetsForMotor()'s fwdDegrees; POS: its revDegrees), never "forward". Angles are electrical
+  degrees, _x10 fields tenths of a degree; currents mA of DC link; speeds rpm. Nothing prints while the motor turns.
+    MA-BANNER, MA-RECORD, MA-REFUSE, MA-PLAN, MA-START, MA-LIMIT, MA-ZERO      what was built, the record, the start
+    MA-POINT, MA-SIDE, MA-FIT, MA-PAIR, MA-ZCHECK, MA-RESTORE                  the offset scan
+    MA-RUNG, MA-CEILING                                                        the ceiling ladder
+    MA-RESULT, MA-END                                                          what to put in the driver; how it ended
+
+  HOW IT IS RUN. Name your motor in the single-motor block of isp_bldc_motor_userconfig.spin2 (MOTOR_TYPE,
+  ONLY_MOTOR_BASE, DRIVE_VOLTAGE, ONLY_BOARD_TYPE), then from src/:
+      pnut-ts -d util_adopt_motor.spin2
+      pnut-term-ts -r util_adopt_motor.bin
+  About 15-30 minutes per voltage, unattended.
+}
+
+' Select the single-motor configuration in isp_bldc_motor_userconfig.spin2 (a -D BENCH_CFG build uses the bench file instead)
+#DEFINE CFG_SINGLE_MOTOR
+#IFDEF __PNUT_TS__
+#PRAGMA EXPORTDEF CFG_SINGLE_MOTOR
+#ENDIF
+
+CON { timing }
+
+    CLK_FREQ = 270_000_000                                  ' tools/bench-run.sh sets this line to a clock chosen by NAME
+    _clkfreq = CLK_FREQ
+
+CON { tool identity }
+
+    TOOL_REV        = 1                                     ' this source's revision
+    FMT_VERSION     = 1                                     ' the MA- record format
+    RECORD_FORMAT   = 1                                     ' the motor record's layout (CON { the motor record })
+
+OBJ { the motor, its configuration, the record builder }
+
+#ifdef BENCH_CFG
+    user     : "isp_bldc_motor_userconfig_bench"            ' our bench's fixed statement (-D BENCH_CFG, tools/bench-run.sh)
+#else
+    user     : "isp_bldc_motor_userconfig"                  ' your configuration: the single-motor block
+#endif
+    wheel    : "isp_bldc_motor"                             ' the one motor
+    benchLog : "isp_bench_log"                              ' the record builder: one debug() line per record
+
+CON { the motor this tool measures }
+
+  ' Your build reads the single-motor block (ONLY_*). Our two benches: the Doco bench names one motor too; the 6.5in
+  '  platform is two wheels, so the tool drives its RIGHT wheel (the P16 board), as the single-motor demo does there.
+    #0, BUILD_USER, BUILD_DOCO_BENCH, BUILD_WHEEL_BENCH
+#ifdef BENCH_DOCO
+    MOTOR_BASE          = user.ONLY_MOTOR_BASE
+    MOTOR_BOARD_TYPE    = user.ONLY_BOARD_TYPE
+    BUILD_KIND          = BUILD_DOCO_BENCH
+#elseifdef BENCH_CFG
+    MOTOR_BASE          = user.RIGHT_MOTOR_BASE
+    MOTOR_BOARD_TYPE    = user.RIGHT_BOARD_TYPE
+    BUILD_KIND          = BUILD_WHEEL_BENCH
+#else
+    MOTOR_BASE          = user.ONLY_MOTOR_BASE
+    MOTOR_BOARD_TYPE    = user.ONLY_BOARD_TYPE
+    BUILD_KIND          = BUILD_USER
+#endif
+
+CON { the motor record -- layout, record format 1 }
+
+    #0, REC_KEY, REC_FORMAT, REC_STATUS, REC_TICKS_PER_REV, REC_RATED_MA, REC_NO_LOAD_MA, REC_SCAN_A, REC_LADDER_A, ...
+        REC_SLOW_RPM, REC_FAST_RPM, REC_LADDER_FROM_RPM, REC_LADDER_STEP_RPM, REC_LADDER_TO_RPM, REC_LONGS
+    #0, RS_MEASURED, RS_PROVISIONAL
+    END_OF_RECORDS      = -1                                ' the key of the record that ends the table
+    RECORDS_MAX         = 16                                ' the table walk's bound
+
+CON { record keys -- one per motor that has a record }
+
+    KEY_6_5_INCH        = user.MOTR_6_5_INCH
+    KEY_DOCO_4KRPM      = user.MOTR_DOCO_4KRPM
+
+CON { the procedure -- the same for every motor }
+
+  ' Readings and windows (the measurement harnesses' own: a reading every 5 ms; at each point or rung 1 s to settle,
+  '  then a 5 s window, which resolves a Rev A board's DC link to about 10 mA where one reading is +-600 mA)
+    SAMPLE_MS           = 5
+    ZERO_SAMPLES        = 200                               ' the rest zero: 200 readings, 1 s
+    ZERO_SPREAD_MIN_MV  = 1                                 ' a live current sense's readings differ
+    SETTLE_MS           = 1_000
+    WINDOW_MS           = 5_000
+    REST_MS             = 500                               ' at rest between drives
+    READY_TIMEOUT_MS    = 2_000
+    READY_POLL_MS       = 2
+    ARRIVE_MAX_MS       = 15_000                            ' a speed change's bound: the built-in ramp reaches any ceiling in 9 s
+    STOP_MAX_MS         = 15_000                            ' a stop's bound: the built-in ramp stops from any ceiling in 6 s
+    SAMPLES_PER_SEC     = 1_000 / SAMPLE_MS
+
+  ' The offset scan: 5 degree steps (both motors' scans), out to 90 degrees from the start pair at most; the fit window
+  '  20 degrees either side of the lowest clean point (the 6.5in scan's fine window)
+    OFS_STEP_DEG        = 5
+    OFS_SIDE_STEPS      = 18                                ' 18 x 5 = 90 degrees
+    OFS_SIDE_POINTS     = OFS_SIDE_STEPS + 1
+    OFS_POINTS          = 2 * OFS_SIDE_POINTS
+    FIT_HALF_DEG        = 20
+    FIT_MIN_PTS         = 5
+    VERT_SE_MAX_X10     = 25                                ' the vertex's standard error, tenths of a degree
+    Z_AGREE_TOL_X10     = 75                                ' Z at the two speeds, tenths of a degree
+
+  ' The edge (the header's THE EDGE)
+    WALL_REL_X100       = 250                               ' 2.5 x the side's first point ...
+    WALL_REL_SAMPLES    = 40                                ' ... for 200 ms
+    WALL_CEIL_PCT       = 80                                ' 80 % of the absolute abort ...
+    ABS_ABORT_SAMPLES   = 4                                 ' ... (and the abort itself) for 20 ms
+    DROOP_PM            = 800                               ' turning at under 80 % of the command
+    HUNT_HELD_MIN       = 1                                 ' a held pass in a window
+    EDGE_RUN            = 2                                 ' DROOP or HUNT points in a row that end a side
+    FOLLOW_TOL_PM       = 30                                ' a clean point or rung follows within 3 %
+
+  ' The ceiling: the 6.5in's duty reserve, 92.5 % of the duty ceiling; and the field-step margin no command passes
+    DUTY_RESERVE_PM     = 925
+    PK1_CAP_INCR        = 419_000_000
+    RUNGS_MAX           = 40
+
+  ' The guards
+    ABORT_X_RATED       = 2                                 ' the absolute abort: twice the rated current
+    CHARGE_RATED_S      = 60                                ' the charge cap's base: a minute at the rated current
+    TIME_FACTOR         = 3                                 ' the time cap: three times the estimated run
+    EST_CHANGE_S        = 10                                ' the estimate's allowance for a speed-up or a stop
+    EST_STEP_S          = 3                                 ' ... and for a step between rungs
+
+  ' Scales
+    PM                  = 1_000                             ' per mille
+    X10                 = 10
+    X100                = 100
+    TENTHS_PER_TURN     = wheel.TENTHS_PER_TURN             ' a turn of a commutation offset, tenths of a degree
+    F_2POW32            = 4294967296.0
+    SECS_PER_MIN        = 60
+
+CON { enums }
+
+    #0, SIGN_NEG, SIGN_POS
+    #0, SIDE_PLUS, SIDE_MINUS
+    #0, SPEED_SLOW, SPEED_FAST
+    SPEEDS              = 2
+    SIGNS               = 2
+
+  ' a point's or a rung's outcome
+    #0, PO_NOT_RUN, PO_SKIPPED, PO_CLEAN, PO_ROUGH, PO_DROOP, PO_HUNT, PO_CAPPED, PO_WALL, PO_FAULT, PO_STOPPED, ...
+        PO_START, PO_BOUND
+  ' why a side or a climb ended (PO_* where an edge ended it; these where nothing did)
+    END_LIMIT           = 100                               ' a side reached its 90 degrees
+    END_RESERVE         = 101                               ' a climb reached the duty reserve
+    END_TOP             = 102                               ' a climb ran its last rung below the reserve
+
+  ' a sampler reading's outcome
+    #0, GO_RUNNING, GO_FAULT, GO_OVER_CURRENT, GO_CHARGE_CAP, GO_TIME_CAP
+
+  ' waitPhase()'s conditions, and its outcome
+    #0, UNTIL_ARRIVED, UNTIL_STOPPED, UNTIL_ELAPSED
+    #0, RO_DONE, RO_TIMEOUT, RO_FAULT, RO_STOPPED, RO_REFUSED
+
+  ' why the run ended early or never started (the first cause is kept)
+    #0, AR_NONE, AR_NO_RECORD, AR_RECORD_FORMAT, AR_GEOMETRY, AR_RECORD_PLAN, AR_CONFIG, AR_START, AR_BOARD, ...
+        AR_LIMIT, AR_ZERO, AR_OVER_CURRENT, AR_CHARGE_CAP, AR_TIME_CAP, AR_FAULT_STUCK, AR_STOP_TIMEOUT, AR_RESTORE
+
+  ' a check's verdict
+    #0, VD_NA, VD_PASS, VD_FAIL
+
+  ' record field widths
+    LIM_TINY            = benchLog.LIM_TINY
+    LIM_SMALL           = benchLog.LIM_SMALL
+    LIM_MID             = benchLog.LIM_MID
+    LIM_BIG             = benchLog.LIM_BIG
+    TOKMAX              = 14                                ' the longest token any field prints
+
+DAT { motor records -- format 1: the layout is the CON block above, and the file's header says what each field means }
+
+  ' THE 6.5in HUB MOTOR. Every number measured on it.
+  '  ticks_rev 90: counted by hand, three turns (ADDING_MOTOR.md step 3).
+  '  rated_ma 5_000: no vendor rating is on record; twice it is the 10 A absolute abort every 6.5in offset scan ran under.
+  '  no_load_ma 500: the pack current of a lifted wheel at the duty knee, 175e6 at 18.5 V (the 6.5in technical manual 6.3).
+  '  scan_a / ladder_a 4: the least whole amp over the 2.6 A of DC link the 6.5in's offset scan read at its current wall,
+  '   so the limit leaves that wall a current wall.
+  '  slow_rpm 33 / fast_rpm 65: 49.5 and 97.5 hall ticks/s, the two speeds its hall zero (-4 degrees) was measured at.
+  '  ladder 30 .. 435 rpm in 15 rpm rungs: from under its 6 V ceiling (95 rpm) to 244e6 at 18.5 V, inside the 245e6 it
+  '   followed smoothly to, lifted (the manual 6.3); its 18.5 V reserve ceiling, 165e6, is 294 rpm.
+motorRecords    LONG    KEY_6_5_INCH, RECORD_FORMAT, RS_MEASURED
+                LONG    90, 5_000, 500, 4, 4
+                LONG    33, 65, 30, 15, 435
+  ' THE DocoEng 4k-rpm MOTOR. PROVISIONAL: from its data sheet (DOCs/DOCOMotor.pdf) and our desk model of it; each
+  '  number is set by measuring this motor against a shaft encoder (test_bench_single.spin2), as named.
+  '  ticks_rev 24: DOCOENG_MOTOR.md; checked by the hall-map leg's encoder check (1,440 counts per 24 ticks).
+  '  rated_ma 1_840 and no_load_ma 400: the data sheet (0.0625 N.m at 0.034 N.m/A; 0.4 A no-load).
+  '  scan_a 2: the least whole amp not under the rated 1.84 A; the model holds a firm stall to 2.1-2.9 A at it.
+  '  ladder_a 3: the least whole amp over the 2.57 A the model needs at 75 % of the 11.1 V ceiling. Set by the ladder leg.
+  '  slow_rpm 560 / fast_rpm 1_120: 25 % and 50 % of the 12 V ceiling (335e6), the offset-scan leg's two lower speeds.
+  '   Set by the offset-scan leg: its minimum must resolve at both.
+  '  ladder 280 .. 2_800 rpm in 140 rpm rungs: 2_800 rpm (419e6) is the field-step margin, which this motor reaches below
+  '   its reserve from 12 V up (the model puts 12 V's top, 2_238 rpm, at 71-76 % duty). Set by the ladder leg's duty line.
+                LONG    KEY_DOCO_4KRPM, RECORD_FORMAT, RS_PROVISIONAL
+                LONG    24, 1_840, 400, 2, 3
+                LONG    560, 1_120, 280, 140, 2_800
+  ' the end of the table: a new motor's record goes above this line
+                LONG    END_OF_RECORDS, 0, 0
+                LONG    0, 0, 0, 0, 0
+                LONG    0, 0, 0, 0, 0
+
+DAT { tokens }
+
+sNegTok         BYTE    "NEG", 0
+sPosTok         BYTE    "POS", 0
+sPlusTok        BYTE    "PLUS", 0
+sMinusTok       BYTE    "MINUS", 0
+sNaTok          BYTE    "NA", 0
+sPassTok        BYTE    "PASS", 0
+sFailTok        BYTE    "FAIL", 0
+sMeasuredTok    BYTE    "MEASURED", 0
+sProvisTok      BYTE    "PROVISIONAL", 0
+sFixedTok       BYTE    "FIXED", 0
+sSpeedTok       BYTE    "BY_SPEED", 0
+sRevATok        BYTE    "REV_A", 0
+sRevBTok        BYTE    "REV_B", 0
+sUnknownTok     BYTE    "UNKNOWN", 0
+sUserTok        BYTE    "USER", 0
+sDocoTok        BYTE    "DOCO_BENCH", 0
+sWheelTok       BYTE    "WHEEL_BENCH", 0
+sNotRunTok      BYTE    "NOT_RUN", 0
+sSkippedTok     BYTE    "SKIPPED", 0
+sCleanTok       BYTE    "CLEAN", 0
+sRoughTok       BYTE    "ROUGH", 0
+sDroopTok       BYTE    "DROOP", 0
+sHuntTok        BYTE    "HUNT", 0
+sCappedTok      BYTE    "CAPPED", 0
+sWallTok        BYTE    "WALL", 0
+sFaultTok       BYTE    "FAULT", 0
+sStoppedTok     BYTE    "STOPPED", 0
+sStartTok       BYTE    "START", 0
+sBoundTok       BYTE    "BOUND", 0
+sLimitTok       BYTE    "LIMIT", 0
+sReserveTok     BYTE    "RESERVE", 0
+sTopTok         BYTE    "TOP", 0
+sNoneTok        BYTE    "NONE", 0
+sNoRecordTok    BYTE    "NO_RECORD", 0
+sRecFormatTok   BYTE    "RECORD_FORMAT", 0
+sGeometryTok    BYTE    "GEOMETRY", 0
+sRecPlanTok     BYTE    "RECORD_PLAN", 0
+sConfigTok      BYTE    "CONFIG", 0
+sBoardTok       BYTE    "BOARD", 0
+sZeroTok        BYTE    "ZERO", 0
+sOverTok        BYTE    "OVER_CURRENT", 0
+sChargeTok      BYTE    "CHARGE_CAP", 0
+sTimeTok        BYTE    "TIME_CAP", 0
+sFaultStuckTok  BYTE    "FAULT_STUCK", 0
+sStopTimeTok    BYTE    "STOP_TIMEOUT", 0
+sRestoreTok     BYTE    "RESTORE", 0
+
+VAR { the record, the run, the guards }
+
+    LONG    rec[REC_LONGS]                                  ' the motor's record, copied from the table
+    LONG    bRecordFound                                    ' T/F: a usable record was found
+    LONG    eAbortReason                                    ' AR_*: why the run ended early (the first cause)
+    LONG    abortDetail                                     ' its detail
+    LONG    runStartMs                                      ' getms() at the start
+    LONG    nRungs                                          ' the ladder's rung count, from the record
+    LONG    estS                                            ' the run's estimated driven time, s
+    LONG    abortMa                                         ' the absolute abort, mA
+    LONG    wallCeilMa                                      ' the current wall's ceiling, mA
+    LONG    chargeCapSamples                                ' the charge cap, mA x readings (one reading is SAMPLE_MS)
+    LONG    timeCapMs                                       ' the time cap, ms
+    LONG    chargeSamples                                   ' the charge so far, mA x readings
+    LONG    peakMa                                          ' the highest DC link read, mA
+    LONG    overSamples                                     ' readings in a row at or over the absolute abort
+
+VAR { the motor as started }
+
+    LONG    eBoard                                          ' REV_A, REV_B or REV_Unknown
+    LONG    mvPerA                                          ' the current sense's scale for that board, mV per A
+    LONG    zeroMvX10                                       ' the rest zero, mV x 10
+    LONG    dutyMax                                         ' the drive's duty ceiling
+    LONG    toldMv                                          ' the voltage it was started at, mV
+    LONG    startFwd                                        ' the pair it started with: negative increments, degrees ...
+    LONG    startRev                                        ' ... positive increments
+    LONG    bStartBySpeed                                   ' T/F where T means the driver sets the pair by speed (the lead table)
+
+VAR { the sampler and its window }
+
+    LONG    smpPeriodCt, smpNextCt, smpCt, smpMs
+    LONG    smpSenseMv, smpDuty, smpState, bSmpFault, smpHeld, smpCapped, smpDrvIncr, smpPos
+    LONG    winN, winSenseSum, winDutySum, winPos0, winHeld0, winCap0, winCt0, winResync0
+    LONG    winDcMa, winDuty, winFolPm, winHeldD, winCapD, winResyncD
+
+VAR { the offset scan: the speed and sign under way, and each one's fit }
+
+    LONG    ptD[OFS_POINTS]                                 ' a point's degrees from the start pair
+    LONG    ptDeg[OFS_POINTS]                               ' the offset applied, degrees
+    LONG    ptOutcome[OFS_POINTS]                           ' PO_*
+    LONG    ptDcMa[OFS_POINTS]                              ' its DC link, mA
+    LONG    ptDuty[OFS_POINTS]                              ' its mean duty
+    LONG    ptFolPm[OFS_POINTS]                             ' its following, per mille
+    LONG    ptHeld[OFS_POINTS]                              ' its held passes
+    LONG    ptCapped[OFS_POINTS]                            ' its duty-capped passes
+    LONG    ptResyncs[OFS_POINTS]                           ' its re-synced faults
+    LONG    sideEnd[2]                                      ' each side's end: PO_* or END_LIMIT
+    LONG    bFitOk[SPEEDS * SIGNS]                          ' T/F: the fit resolved
+    LONG    fitAbsX10[SPEEDS * SIGNS]                       ' its minimum, absolute, tenths of a degree, -1_800 .. 1_800
+    LONG    fitFromX10[SPEEDS * SIGNS]                      ' its minimum from the start pair, tenths
+    LONG    fitSeX10[SPEEDS * SIGNS]                        ' the minimum's standard error, tenths
+    LONG    fitPts[SPEEDS * SIGNS]                          ' the points fitted
+    LONG    zX10[SPEEDS]                                    ' each speed's Z, tenths (when both signs resolved)
+    LONG    leadX10[SPEEDS]                                 ' each speed's lead, tenths
+    LONG    bPairOk[SPEEDS]                                 ' T/F: both signs resolved at the speed
+    LONG    eZVerdict                                       ' VD_*
+    LONG    bScanRan                                        ' T/F: the scan was entered
+
+VAR { the ceiling ladder: the sign under way, and each sign's ceiling }
+
+    LONG    rgIncr[RUNGS_MAX]                               ' a rung's increment, signed
+    LONG    rgOutcome[RUNGS_MAX]                            ' PO_*
+    LONG    rgDuty[RUNGS_MAX]                               ' its mean duty
+    LONG    rgFolPm[RUNGS_MAX]                              ' its following
+    LONG    rgDcMa[RUNGS_MAX]                               ' its DC link, mA
+    LONG    rgHeld[RUNGS_MAX]                               ' its held passes
+    LONG    rgCapped[RUNGS_MAX]                             ' its duty-capped passes
+    LONG    ceilEnd[SIGNS]                                  ' how the climb ended: PO_* or END_*
+    LONG    ceilIncr[SIGNS]                                 ' the sign's ceiling, increment magnitude (0: none)
+    LONG    resIncr[SIGNS]                                  ' the duty line's reserve increment (0: no line)
+    LONG    bResBracketed[SIGNS]                            ' T/F: the reserve lies at or below the fastest clean rung
+    LONG    topCleanIncr[SIGNS]                             ' the fastest clean rung, increment magnitude
+    LONG    cleanRungs[SIGNS]                               ' the clean rungs
+    LONG    bCeilFound[SIGNS]                               ' T/F: the climb gave a ceiling (the CEILING check)
+    LONG    bLadderRan                                      ' T/F: the ladder was entered
+
+PUB main() | bGoOn
+'' Adopt the configured motor: find its record, start it, scan its offsets, measure its ceiling, print the result.
+''
+
+' Local Variables:
+' @local bGoOn - T/F where T means nothing so far has ended the run
+
+    runStartMs := getms()
+    eAbortReason := AR_NONE
+    emitBanner()
+    bGoOn := bSelectRecord()                                ' before anything is started: a motor with no record is refused
+    if bGoOn
+        bGoOn := bPlanRun()
+    if bGoOn
+        bGoOn := bStartMotor()
+    if bGoOn
+        bGoOn := bMeasureZero()
+    if bGoOn
+        bGoOn := bRunScan()
+    if bGoOn
+        bGoOn := bRunLadder()
+    shutdown()                                              ' the motor stops on every way out
+    emitResult()
+    emitEnd()
+#ifdef BENCH_CFG
+    debug("DEBUG_END_SESSION")                              ' our bench's runner closes its terminal on this line
+#endif
+
+CON { --- the record, the plan, the start --- }
+
+PRI bSelectRecord() : bFound | idx, nKey, bEnded, nTicksLib
+' Find the record keyed by the configured MOTOR_TYPE and copy it; refuse (MA-REFUSE) a motor type with no record, a
+' record of another layout, or one whose hall ticks per revolution are not the driver's. Emits MA-RECORD. Nothing is
+' started.
+'
+' @returns bFound - T/F where T means the record is found and usable
+
+' Local Variables:
+' @local idx - a record in the table
+' @local nKey - its key
+' @local bEnded - T/F where T means the walk has found the record or the table's end
+' @local nTicksLib - the driver's hall ticks per revolution for the configured motor
+
+    bFound := FALSE
+    bEnded := FALSE
+    longfill(@rec, 0, REC_LONGS)
+    repeat idx from 0 to RECORDS_MAX - 1
+        if bEnded == FALSE
+            nKey := motorRecords[idx * REC_LONGS + REC_KEY]
+            if nKey == END_OF_RECORDS
+                bEnded := TRUE
+            elseif nKey == user.MOTOR_TYPE
+                longmove(@rec, @motorRecords[idx * REC_LONGS], REC_LONGS)
+                bFound := TRUE
+                bEnded := TRUE
+    _, nTicksLib := wheel.hallTicInfoForMotor()
+    emitRecord(bFound)
+    if bFound == FALSE
+        refuse(AR_NO_RECORD, user.MOTOR_TYPE)
+    elseif rec[REC_FORMAT] <> RECORD_FORMAT
+        bFound := FALSE
+        refuse(AR_RECORD_FORMAT, rec[REC_FORMAT])
+    elseif rec[REC_TICKS_PER_REV] <> nTicksLib
+        bFound := FALSE
+        refuse(AR_GEOMETRY, nTicksLib)
+    bRecordFound := bFound
+
+PRI bPlanRun() : bPlanned | nScanS, nLadderS
+' Check the record's plan can run (two scan speeds and every rung under the field-step margin, a ladder of 2 to
+' RUNGS_MAX rungs) and the configuration is legal; then derive the run's estimate and its guards from the record.
+' Emits MA-PLAN. Nothing is started.
+'
+' @returns bPlanned - T/F where T means the plan and the configuration are usable
+
+' Local Variables:
+' @local nScanS - the offset scan's estimated driven time at most, s
+' @local nLadderS - the ladder's, s
+
+    bPlanned := FALSE
+    nRungs := 0
+    if rec[REC_LADDER_STEP_RPM] > 0
+        nRungs := (rec[REC_LADDER_TO_RPM] - rec[REC_LADDER_FROM_RPM]) / rec[REC_LADDER_STEP_RPM] + 1
+    if (rec[REC_SLOW_RPM] < 1) or (rec[REC_FAST_RPM] <= rec[REC_SLOW_RPM]) or (incrForRpm(rec[REC_FAST_RPM]) > PK1_CAP_INCR)
+        refuse(AR_RECORD_PLAN, rec[REC_FAST_RPM])
+    elseif (nRungs < 2) or (nRungs > RUNGS_MAX) or (rec[REC_LADDER_FROM_RPM] < 1)
+        refuse(AR_RECORD_PLAN, nRungs)
+    elseif (rec[REC_RATED_MA] < 1) or (rec[REC_SCAN_A] < 1) or (rec[REC_LADDER_A] < 1)
+        refuse(AR_RECORD_PLAN, rec[REC_RATED_MA])
+    elseif wheel.validBasePinForChoice(MOTOR_BASE) == wheel.INVALID_PIN_BASE
+        refuse(AR_CONFIG, MOTOR_BASE)
+    elseif wheel.validVoltageForChoice(user.DRIVE_VOLTAGE) == wheel.INVALID_VOLTAGE
+        refuse(AR_CONFIG, user.DRIVE_VOLTAGE)
+    elseif wheel.validMotorForChoice(user.MOTOR_TYPE) == wheel.INVALID_MOTOR
+        refuse(AR_CONFIG, user.MOTOR_TYPE)
+    elseif wheel.validDetectModeForChoice(MOTOR_BOARD_TYPE) == wheel.INVALID_DET_MODE
+        refuse(AR_CONFIG, MOTOR_BOARD_TYPE)
+    else
+        bPlanned := TRUE
+    ' at most: every side walked to its 90 degrees, every rung climbed
+    nScanS := SPEEDS * SIGNS * 2 * (OFS_SIDE_POINTS * (SETTLE_MS + WINDOW_MS) / wheel.MS_PER_SEC + 2 * EST_CHANGE_S)
+    nLadderS := SIGNS * ((nRungs #> 0) * ((SETTLE_MS + WINDOW_MS) / wheel.MS_PER_SEC + EST_STEP_S) + 2 * EST_CHANGE_S)
+    estS := nScanS + nLadderS
+    abortMa := ABORT_X_RATED * rec[REC_RATED_MA]
+    wallCeilMa := abortMa * WALL_CEIL_PCT / X100
+    chargeCapSamples := (rec[REC_RATED_MA] * CHARGE_RATED_S + rec[REC_NO_LOAD_MA] * estS) * SAMPLES_PER_SEC
+    timeCapMs := TIME_FACTOR * estS * wheel.MS_PER_SEC
+    benchLog.begin(@"MA-PLAN")
+    benchLog.numField(@"est_s", estS, LIM_MID)
+    benchLog.numField(@"time_cap_s", timeCapMs / wheel.MS_PER_SEC, LIM_MID)
+    benchLog.numField(@"charge_cap_mas", chargeCapSamples / SAMPLES_PER_SEC, LIM_BIG)
+    benchLog.numField(@"abort_ma", abortMa, LIM_MID)
+    benchLog.numField(@"wall_ceil_ma", wallCeilMa, LIM_MID)
+    benchLog.numField(@"rungs", nRungs, LIM_TINY)
+    benchLog.numField(@"step_deg", OFS_STEP_DEG, LIM_TINY)
+    benchLog.numField(@"max_deg", OFS_SIDE_STEPS * OFS_STEP_DEG, LIM_TINY)
+    benchLog.numField(@"cap_incr", PK1_CAP_INCR, LIM_BIG)
+    benchLog.boolField(@"ok", bPlanned)
+    lineEmit()
+
+PRI bStartMotor() : bStarted | motorCog, eStartErr, nWaitStart, bReady, ePack, nPackMv
+' Start the motor with its start checks refusing, coasting at rest; wait until it is ready; read the board it detected,
+' the drive's duty ceiling, the voltage it was told and the commutation it starts with; put it under the scan's test
+' current limit. Emits MA-START (and MA-LIMIT). Nothing moves but the start checks' pulses.
+'
+' @returns bStarted - T/F where T means the motor is ready, its board known and its test limit in force
+
+' Local Variables:
+' @local motorCog - start()'s result: the driver's cog, or -1
+' @local eStartErr - getError() after a refused start, else NO_ERROR
+' @local nWaitStart - getms() when the ready wait began
+' @local bReady - T/F where T means isReady() came true in time
+' @local ePack - the pack sensor's status
+' @local nPackMv - its reading, mV
+
+    bStarted := FALSE
+    eStartErr := wheel.NO_ERROR
+    bReady := FALSE
+    wheel.setStartChecks(TRUE)
+    wheel.holdAtStop(FALSE)
+    benchLog.cogEventBegin()
+    motorCog := wheel.start(MOTOR_BASE, user.DRIVE_VOLTAGE, MOTOR_BOARD_TYPE)
+    benchLog.cogEventEnd()
+    if motorCog < 0
+        eStartErr := wheel.getError()
+    else
+        nWaitStart := getms()
+        repeat until wheel.isReady() or (getms() - nWaitStart >= READY_TIMEOUT_MS)
+            waitms(READY_POLL_MS)
+        bReady := wheel.isReady()
+    eBoard := wheel.getBoardType()
+    mvPerA := wheel.F_REV_B_RSENSE
+    if eBoard == wheel.REV_A
+        mvPerA := wheel.F_REV_A_RSENSE
+    _, _, _, dutyMax, _, _ := wheel.testGetDriveConstants()
+    _, toldMv := wheel.getDriveVoltage()
+    ePack, nPackMv := wheel.getPackVoltage()
+    startFwd, startRev := wheel.testGetFwdRevIndep()
+    bStartBySpeed, _ := wheel.testGetLead()
+    benchLog.begin(@"MA-START")
+    benchLog.numField(@"cog", motorCog, LIM_TINY)
+    benchLog.numField(@"err", eStartErr, LIM_SMALL)
+    benchLog.boolField(@"ready", bReady)
+    benchLog.tokenField(@"board", boardToken(eBoard), TOKMAX)
+    benchLog.numField(@"mv_per_a", mvPerA, LIM_SMALL)
+    benchLog.numField(@"told_mv", toldMv, LIM_MID)
+    benchLog.naNumField(@"pack_mv", nPackMv, LIM_MID, ePack == wheel.PACK_PRESENT)
+    benchLog.numField(@"fwd_deg", startFwd, LIM_SMALL)
+    benchLog.numField(@"rev_deg", startRev, LIM_SMALL)
+    benchLog.tokenField(@"lead", leadToken(bStartBySpeed), TOKMAX)
+    benchLog.numField(@"duty_max", dutyMax, LIM_MID)
+    benchLog.numField(@"clk_hz", clkfreq, LIM_BIG)
+    lineEmit()
+    if (motorCog < 0) or (bReady == FALSE)
+        setAbort(AR_START, eStartErr)
+    elseif eBoard == wheel.REV_Unknown
+        setAbort(AR_BOARD, eBoard)
+    else
+        bStarted := bSetLimit(rec[REC_SCAN_A])
+
+PRI bSetLimit(nAmps) : bSet | eLimErr, nPeakA, nContA
+' Put the motor under a test current limit of {nAmps}, peak and continuous, and read it back (at rest). Emits MA-LIMIT.
+' A limit not taken ends the run before anything moves.
+'
+' @param nAmps - the limit, whole amps
+' @returns bSet - T/F where T means it reads back as asked
+
+' Local Variables:
+' @local eLimErr - testSetCurrentLimits()'s result
+' @local nPeakA - the peak limit read back, A
+' @local nContA - the continuous limit read back, A
+
+    eLimErr := wheel.testSetCurrentLimits(nAmps, nAmps)
+    nPeakA, nContA, _, _, _ := wheel.testGetCurrentLimitState()
+    bSet := (eLimErr == wheel.NO_ERROR) and (nPeakA == nAmps) and (nContA == nAmps)
+    benchLog.begin(@"MA-LIMIT")
+    benchLog.numField(@"amps", nAmps, LIM_TINY)
+    benchLog.numField(@"err", eLimErr, LIM_SMALL)
+    benchLog.numField(@"peak_a", nPeakA, LIM_TINY)
+    benchLog.numField(@"cont_a", nContA, LIM_TINY)
+    benchLog.boolField(@"set", bSet)
+    lineEmit()
+    if bSet == FALSE
+        setAbort(AR_LIMIT, nPeakA)
+
+PRI bMeasureZero() : bHealthy | nSample, nSumMv, nMinMv, nMaxMv, nSenseMv, nLoMv, nHiMv
+' Read the current sense's rest zero with the bridge coasting: ZERO_SAMPLES readings SAMPLE_MS apart. It must be alive
+' (its readings differ) and inside the driver's own band for the board it detected, or no current guard could work.
+' Emits MA-ZERO.
+'
+' @returns bHealthy - T/F where T means the zero is alive and in its band
+
+' Local Variables:
+' @local nSample - the reading being taken
+' @local nSumMv - the readings' sum, mV
+' @local nMinMv - the lowest, mV
+' @local nMaxMv - the highest, mV
+' @local nSenseMv - one reading, mV
+' @local nLoMv - the band's low end, mV
+' @local nHiMv - its high end, mV
+
+    nSumMv := 0
+    nMinMv := posx
+    nMaxMv := negx
+    repeat nSample from 1 to ZERO_SAMPLES
+        _, _, nSenseMv, _, _, _, _, _ := wheel.testGetTelemetry()
+        nSumMv += nSenseMv
+        nMinMv <#= nSenseMv
+        nMaxMv #>= nSenseMv
+        waitms(SAMPLE_MS)
+    zeroMvX10 := divRound(nSumMv * X10, ZERO_SAMPLES)
+    nLoMv := wheel.REST_ZERO_MIN_MV
+    nHiMv := wheel.REST_ZERO_MAX_MV
+    if eBoard == wheel.REV_A
+        nLoMv := wheel.REST_ZERO_MIN_MV_REVA
+        nHiMv := wheel.REST_ZERO_MAX_MV_REVA
+    bHealthy := (nMaxMv - nMinMv >= ZERO_SPREAD_MIN_MV) and (zeroMvX10 >= nLoMv * X10) and (zeroMvX10 <= nHiMv * X10)
+    benchLog.begin(@"MA-ZERO")
+    benchLog.numField(@"zero_mv_x10", zeroMvX10, LIM_MID)
+    benchLog.numField(@"spread_mv", nMaxMv - nMinMv, LIM_SMALL)
+    benchLog.numField(@"band_lo_mv", nLoMv, LIM_SMALL)
+    benchLog.numField(@"band_hi_mv", nHiMv, LIM_SMALL)
+    benchLog.boolField(@"healthy", bHealthy)
+    lineEmit()
+    if bHealthy == FALSE
+        setAbort(AR_ZERO, zeroMvX10)
+
+PRI shutdown()
+' Stop the motor: safe whether or not it started, and on every way out.
+
+    benchLog.cogEventBegin()
+    wheel.stop()
+
+CON { --- the offset scan --- }
+
+PRI bRunScan() : bGoOn | eSpeed, eSign, bRestored
+' The offset scan: at each scan speed, negative then positive increments (bScanSpeedSign()); then the commutation the
+' driver started with put back, whatever ended the scan; then each speed's pair and the Z check.
+'
+' @returns bGoOn - T/F where T means nothing ended the run and the commutation is back as it started
+
+' Local Variables:
+' @local eSpeed - SPEED_SLOW or SPEED_FAST
+' @local eSign - SIGN_NEG or SIGN_POS
+' @local bRestored - T/F where T means the starting commutation is back
+
+    bGoOn := TRUE
+    bScanRan := TRUE
+    repeat eSpeed from SPEED_SLOW to SPEED_FAST
+        repeat eSign from SIGN_NEG to SIGN_POS
+            bFitOk[eSpeed * SIGNS + eSign] := FALSE
+            if bGoOn
+                bGoOn := bScanSpeedSign(eSpeed, eSign)
+    bRestored := bRestoreCommutation()
+    bGoOn := bGoOn and bRestored
+    pairsAndZ()
+
+PRI bScanSpeedSign(eSpeed, eSign) : bGoOn | nIncr, slotIdx, eSide, spIdx
+' One speed and one increment sign: both sides of the start pair (bScanSide()), then at rest every point's record, the
+' fit (fitScan()) and MA-FIT.
+'
+' @param eSpeed - SPEED_SLOW or SPEED_FAST
+' @param eSign - SIGN_NEG or SIGN_POS
+' @returns bGoOn - T/F where T means nothing ended the run
+
+' Local Variables:
+' @local nIncr - the speed's increment, signed
+' @local slotIdx - a point's slot
+' @local eSide - SIDE_PLUS or SIDE_MINUS
+' @local spIdx - the speed and sign's fit slot
+
+    bGoOn := TRUE
+    spIdx := eSpeed * SIGNS + eSign
+    nIncr := incrForRpm(rec[REC_SLOW_RPM + eSpeed])
+    if eSign == SIGN_NEG
+        nIncr := -nIncr
+    repeat slotIdx from 0 to OFS_POINTS - 1
+        ptOutcome[slotIdx] := PO_NOT_RUN
+        ptD[slotIdx] := 0
+        ptDeg[slotIdx] := 0
+    repeat eSide from SIDE_PLUS to SIDE_MINUS
+        sideEnd[eSide] := PO_NOT_RUN
+        if bGoOn
+            bGoOn := bScanSide(eSign, eSide, nIncr)
+    repeat slotIdx from 0 to OFS_POINTS - 1
+        if ptOutcome[slotIdx] <> PO_NOT_RUN
+            emitPoint(eSpeed, eSign, slotIdx)
+    repeat eSide from SIDE_PLUS to SIDE_MINUS
+        emitSide(eSpeed, eSign, eSide)
+    fitScan(spIdx)
+    emitFit(eSpeed, eSign, spIdx)
+
+PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa, nRefMa, nPrevMa, bSeenClean, bEnded, bResting, nEdgeRun, ePo
+' One side of the start pair at one speed: at rest the start pair, from rest to the speed, then each point outward (the
+' start pair first), the offset changed while driven by one step; a WALL or a FAULT ends the side at once, EDGE_RUN
+' DROOP or HUNT points in a row end it, and its 90 degrees end it. Until the side has seen a CLEAN point, a DROOP or
+' HUNT point drawing less current than the point before it does not count toward the run (it restarts it): the walk is
+' still coming down toward a minimum it has not reached, as it must when a driver's start pair sits in the hunting
+' region. The current wall's relative threshold follows the lowest CLEAN or ROUGH point so far (until the first, only the
+' wall's ceiling applies, as the 6.5in scan did). Then stopped and, at rest, the start pair again.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param eSide - SIDE_PLUS or SIDE_MINUS
+' @param nIncr - the speed's increment, signed
+' @returns bGoOn - T/F where T means nothing ended the run
+
+' Local Variables:
+' @local eUp - the way up's outcome, RO_*
+' @local stepIdx - the point within the side, 0 = the start pair
+' @local slotIdx - its slot
+' @local nD - its degrees from the start pair
+' @local nLimitMa - the current wall's relative threshold, mA (0, none, until a reference is measured)
+' @local nRefMa - the lowest CLEAN or ROUGH point's DC link so far, mA (posx until one)
+' @local nPrevMa - the previous point's DC link, mA
+' @local bSeenClean - T/F where T means the side has measured a CLEAN point
+' @local bEnded - T/F where T means the side has ended
+' @local bResting - T/F where T means the motor already rests (a refusal or a fault's recovery left it there)
+' @local nEdgeRun - DROOP or HUNT points in a row that count
+' @local ePo - a point's outcome
+
+    bGoOn := TRUE
+    bEnded := FALSE
+    bResting := FALSE
+    bSeenClean := FALSE
+    nEdgeRun := 0
+    nLimitMa := 0
+    nRefMa := posx
+    nPrevMa := 0
+    applyOffset(eSign, 0)
+    sampleBegin()
+    eUp := driveTo(nIncr)
+    if eUp == RO_REFUSED
+        sideEnd[eSide] := PO_START
+        bEnded := TRUE
+        bResting := TRUE
+    elseif eUp == RO_FAULT
+        sideEnd[eSide] := PO_START
+        bEnded := TRUE
+        bResting := TRUE
+        bGoOn := bFaultRecover()
+    elseif eUp == RO_STOPPED
+        bGoOn := FALSE
+    repeat stepIdx from 0 to OFS_SIDE_STEPS
+        slotIdx := eSide * OFS_SIDE_POINTS + stepIdx
+        nD := stepIdx * OFS_STEP_DEG
+        if eSide == SIDE_MINUS
+            nD := -nD
+        ptD[slotIdx] := nD
+        if bGoOn and (bEnded == FALSE)
+            ptDeg[slotIdx] := applyOffset(eSign, nD)
+            ePo := measurePoint(slotIdx, nIncr, nLimitMa)
+            ptOutcome[slotIdx] := ePo
+            if (ePo == PO_DROOP) or (ePo == PO_HUNT)
+                if bSeenClean or (stepIdx == 0) or (ptDcMa[slotIdx] >= nPrevMa)
+                    nEdgeRun++
+                else
+                    nEdgeRun := 0                           ' still coming down toward a minimum not yet reached
+            else
+                nEdgeRun := 0
+            if ePo == PO_CLEAN
+                bSeenClean := TRUE
+            if (ePo == PO_CLEAN) or (ePo == PO_ROUGH)
+                nRefMa <#= ptDcMa[slotIdx]
+                nLimitMa := ((nRefMa #> 0) * WALL_REL_X100 / X100 #> rec[REC_NO_LOAD_MA]) <# wallCeilMa
+            nPrevMa := ptDcMa[slotIdx]
+            if (ePo == PO_WALL) or (nEdgeRun >= EDGE_RUN)
+                sideEnd[eSide] := ePo
+                bEnded := TRUE
+            elseif ePo == PO_FAULT
+                sideEnd[eSide] := ePo
+                bEnded := TRUE
+                bResting := TRUE
+                bGoOn := bFaultRecover()
+            elseif ePo == PO_STOPPED
+                bGoOn := FALSE
+        elseif bGoOn
+            ptOutcome[slotIdx] := PO_SKIPPED
+    if bGoOn and (bEnded == FALSE)
+        sideEnd[eSide] := END_LIMIT
+    if bGoOn and (bResting == FALSE)
+        bGoOn := bStopAndRest()
+    applyOffset(eSign, 0)
+
+PRI measurePoint(slotIdx, nIncr, nLimitMa) : ePo | eRo, nNetMa, nOver, nCeil, nStartMs, eOutcome
+' One point, its offset just applied: SETTLE_MS, then a WINDOW_MS window with the current wall watched at each reading;
+' then the point's readings kept and its outcome classified (classify()).
+'
+' @param slotIdx - the point's slot
+' @param nIncr - the speed's increment, signed
+' @param nLimitMa - the current wall's relative threshold, mA (0: none yet, the wall's ceiling only)
+' @returns ePo - PO_CLEAN, PO_ROUGH, PO_DROOP, PO_HUNT, PO_WALL, PO_FAULT or PO_STOPPED
+
+' Local Variables:
+' @local eRo - the settle's outcome
+' @local nNetMa - a reading's DC link, mA
+' @local nOver - readings in a row over the relative threshold
+' @local nCeil - readings in a row over the wall's ceiling
+' @local nStartMs - the window's start, getms()
+' @local eOutcome - a reading's outcome
+
+    ePo := PO_CLEAN
+    nOver := 0
+    nCeil := 0
+    windowClear()
+    eRo := waitPhase(UNTIL_ELAPSED, 0, SETTLE_MS)
+    if eRo == RO_FAULT
+        ePo := PO_FAULT
+    elseif eRo == RO_STOPPED
+        ePo := PO_STOPPED
+    else
+        windowBegin()
+        nStartMs := smpMs
+        repeat
+            eOutcome := sampleNext()
+            windowAdd()
+            if eOutcome == GO_FAULT
+                ePo := PO_FAULT
+                quit
+            if bGuardStops(eOutcome)
+                ePo := PO_STOPPED
+                quit
+            nNetMa := netMilliamps(smpSenseMv)
+            nCeil := (nNetMa >= wallCeilMa) ? nCeil + 1 : 0
+            nOver := ((nLimitMa > 0) and (nNetMa > nLimitMa)) ? nOver + 1 : 0
+            if (nCeil >= ABS_ABORT_SAMPLES) or (nOver >= WALL_REL_SAMPLES)
+                ePo := PO_WALL
+                quit
+            if smpMs - nStartMs >= WINDOW_MS
+                quit
+        windowEnd(nIncr)
+    ptDcMa[slotIdx] := winDcMa
+    ptDuty[slotIdx] := winDuty
+    ptFolPm[slotIdx] := winFolPm
+    ptHeld[slotIdx] := winHeldD
+    ptCapped[slotIdx] := winCapD
+    ptResyncs[slotIdx] := winResyncD
+    if ePo == PO_CLEAN
+        ePo := classify(FALSE)
+
+PRI classify(bLadder) : ePo
+' A window that finished: DROOP under DROOP_PM of the command; HUNT with HUNT_HELD_MIN held passes; on the ladder,
+' CAPPED with a duty-capped pass; CLEAN following within FOLLOW_TOL_PM with no re-sync; else ROUGH.
+'
+' @param bLadder - T/F where T means a ladder rung (a capped pass is an edge there)
+' @returns ePo - PO_DROOP, PO_HUNT, PO_CAPPED, PO_CLEAN or PO_ROUGH
+
+    if winFolPm < DROOP_PM
+        ePo := PO_DROOP
+    elseif winHeldD >= HUNT_HELD_MIN
+        ePo := PO_HUNT
+    elseif bLadder and (winCapD > 0)
+        ePo := PO_CAPPED
+    elseif (abs(winFolPm - PM) <= FOLLOW_TOL_PM) and (winResyncD == 0) and (winCapD == 0)
+        ePo := PO_CLEAN
+    else
+        ePo := PO_ROUGH
+
+PRI applyOffset(eSign, nD) : nApplied | nFwd, nRev
+' Set the offset {eSign} uses to the start pair's plus {nD} degrees, the other sign's left at the start pair (the driver
+' applies its NEG offset to negative increments and its POS offset to positive ones), and read back what it applies.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param nD - degrees from the start pair
+' @returns nApplied - the offset that sign now uses, degrees (0..359)
+
+' Local Variables:
+' @local nFwd - the pair read back: negative increments
+' @local nRev - positive increments
+
+    if eSign == SIGN_NEG
+        wheel.testSetFwdRevIndep(startFwd + nD, startRev)
+    else
+        wheel.testSetFwdRevIndep(startFwd, startRev + nD)
+    nFwd, nRev := wheel.testGetFwdRevIndep()
+    nApplied := nRev
+    if eSign == SIGN_NEG
+        nApplied := nFwd
+
+PRI bRestoreCommutation() : bRestored | nFwd, nRev
+' Put back the commutation the driver started with: the start pair, and the speed-set lead where the driver uses one;
+' read the pair back. A fixed pair that does not read back ends the run (the ceiling must be measured on it). Emits
+' MA-RESTORE.
+'
+' @returns bRestored - T/F where T means the starting commutation is back
+
+' Local Variables:
+' @local nFwd - the pair read back: negative increments
+' @local nRev - positive increments
+
+    wheel.testSetFwdRevIndep(startFwd, startRev)
+    nFwd, nRev := wheel.testGetFwdRevIndep()
+    bRestored := (nFwd == startFwd) and (nRev == startRev)
+    if bStartBySpeed
+        bRestored := bRestored and (wheel.testSetLeadScheduled(TRUE) == wheel.NO_ERROR)
+    benchLog.begin(@"MA-RESTORE")
+    benchLog.numField(@"fwd_deg", nFwd, LIM_SMALL)
+    benchLog.numField(@"rev_deg", nRev, LIM_SMALL)
+    benchLog.tokenField(@"lead", leadToken(bStartBySpeed), TOKMAX)
+    benchLog.boolField(@"restored", bRestored)
+    lineEmit()
+    if bRestored == FALSE
+        setAbort(AR_RESTORE, nFwd)
+
+PRI fitScan(spIdx) | slotIdx, nLowD, nLowMa, nLoD, nHiD, nPts, fU, fY, fS0, fS1, fS2, fS3, fS4, fT0, fT1, fT2, fDet, fA, fB, fC, fSsr, fResVar, fCaa, fCbb, fCab, fVert, fVse, nVertX10, nVseX10
+' The current minimum of one speed and sign: the parabola y = a u^2 + b u + c, u = degrees from the start pair / 10, y the
+' DC link, by least squares over the clean points within FIT_HALF_DEG of the lowest clean one; its vertex -b / 2a, and
+' the vertex's standard error by the delta method through the inverse normal matrix. RESOLVED with FIT_MIN_PTS points,
+' a above 0, the vertex inside the points fitted, and its standard error at most VERT_SE_MAX_X10.
+'
+' @param spIdx - the speed and sign's fit slot
+
+' Local Variables:
+' @local slotIdx - a point's slot
+' @local nLowD - the lowest clean point's degrees from the start pair
+' @local nLowMa - its DC link, mA
+' @local nLoD - the fitted points' smallest degrees
+' @local nHiD - their largest
+' @local nPts - the points fitted
+' @local fU - a point's u
+' @local fY - its DC link
+' @local fS0 - float sum of u^0
+' @local fS1 - sum of u
+' @local fS2 - sum of u^2
+' @local fS3 - sum of u^3
+' @local fS4 - sum of u^4
+' @local fT0 - sum of y
+' @local fT1 - sum of y u
+' @local fT2 - sum of y u^2
+' @local fDet - the normal matrix's determinant
+' @local fA - the curvature
+' @local fB - the slope at the start pair
+' @local fC - the level there
+' @local fSsr - the sum of squared residuals
+' @local fResVar - the residual variance
+' @local fCaa - the inverse matrix's (a, a) element
+' @local fCbb - its (b, b) element
+' @local fCab - its (a, b) element
+' @local fVert - the vertex, u
+' @local fVse - its variance, u^2
+' @local nVertX10 - the vertex, tenths of a degree from the start pair
+' @local nVseX10 - its standard error, tenths
+
+    bFitOk[spIdx] := FALSE
+    fitFromX10[spIdx] := 0
+    fitAbsX10[spIdx] := 0
+    fitSeX10[spIdx] := LIM_SMALL
+    nLowMa := posx
+    nLowD := 0
+    repeat slotIdx from 0 to OFS_POINTS - 1
+        if (ptOutcome[slotIdx] == PO_CLEAN) and (ptDcMa[slotIdx] < nLowMa)
+            nLowMa := ptDcMa[slotIdx]
+            nLowD := ptD[slotIdx]
+    nPts := 0
+    nLoD := posx
+    nHiD := negx
+    fS0 := fS1 := fS2 := fS3 := fS4 := fT0 := fT1 := fT2 := 0.0
+    repeat slotIdx from 0 to OFS_POINTS - 1
+        if (ptOutcome[slotIdx] == PO_CLEAN) and (abs(ptD[slotIdx] - nLowD) <= FIT_HALF_DEG)
+            nPts++
+            nLoD <#= ptD[slotIdx]
+            nHiD #>= ptD[slotIdx]
+            fU := float(ptD[slotIdx]) /. 10.0
+            fY := float(ptDcMa[slotIdx])
+            fS0 := fS0 +. 1.0
+            fS1 := fS1 +. fU
+            fS2 := fS2 +. fU *. fU
+            fS3 := fS3 +. fU *. fU *. fU
+            fS4 := fS4 +. fU *. fU *. fU *. fU
+            fT0 := fT0 +. fY
+            fT1 := fT1 +. fY *. fU
+            fT2 := fT2 +. fY *. fU *. fU
+    fitPts[spIdx] := nPts
+    if nPts >= FIT_MIN_PTS
+        fDet := fS4 *. (fS2 *. fS0 -. fS1 *. fS1) -. fS3 *. (fS3 *. fS0 -. fS1 *. fS2) +. fS2 *. (fS3 *. fS1 -. fS2 *. fS2)
+        if fabs(fDet) >. 0.000001
+            fA := (fT2 *. (fS2 *. fS0 -. fS1 *. fS1) -. fS3 *. (fT1 *. fS0 -. fS1 *. fT0) +. fS2 *. (fT1 *. fS1 -. fS2 *. fT0)) /. fDet
+            fB := (fS4 *. (fT1 *. fS0 -. fT0 *. fS1) -. fT2 *. (fS3 *. fS0 -. fS1 *. fS2) +. fS2 *. (fS3 *. fT0 -. fT1 *. fS2)) /. fDet
+            fC := (fS4 *. (fS2 *. fT0 -. fS1 *. fT1) -. fS3 *. (fS3 *. fT0 -. fT1 *. fS2) +. fT2 *. (fS3 *. fS1 -. fS2 *. fS2)) /. fDet
+            fSsr := 0.0
+            repeat slotIdx from 0 to OFS_POINTS - 1
+                if (ptOutcome[slotIdx] == PO_CLEAN) and (abs(ptD[slotIdx] - nLowD) <= FIT_HALF_DEG)
+                    fU := float(ptD[slotIdx]) /. 10.0
+                    fY := float(ptDcMa[slotIdx]) -. (fA *. fU *. fU +. fB *. fU +. fC)
+                    fSsr := fSsr +. fY *. fY
+            fResVar := fSsr /. float(nPts - 3)
+            fCaa := (fS2 *. fS0 -. fS1 *. fS1) /. fDet
+            fCbb := (fS4 *. fS0 -. fS2 *. fS2) /. fDet
+            fCab := -.(fS3 *. fS0 -. fS1 *. fS2) /. fDet
+            if fA >. 0.0
+                fVert := -.fB /. (2.0 *. fA)
+                nVertX10 := clampedRound(fVert *. 100.0, LIM_SMALL)
+                ' the delta method through v = -b / 2a: dv/db = -1 / 2a, dv/da = b / 2a^2
+                fVse := fResVar /. (4.0 *. fA *. fA) *. (fCbb +. (fB /. fA) *. (fB /. fA) *. fCaa -. 2.0 *. (fB /. fA) *. fCab)
+                if fVse <. 0.0
+                    fVse := 0.0
+                nVseX10 := clampedRound(fsqrt(fVse) *. 100.0, LIM_SMALL)
+                fitFromX10[spIdx] := nVertX10
+                fitSeX10[spIdx] := nVseX10
+                bFitOk[spIdx] := (nVseX10 <= VERT_SE_MAX_X10) and (nVertX10 >= nLoD * X10) and (nVertX10 <= nHiD * X10)
+    fitAbsX10[spIdx] := wrapSigned(startOffset(spIdx // SIGNS) * X10 + fitFromX10[spIdx], TENTHS_PER_TURN)
+
+PRI startOffset(eSign) : nDeg
+' The start pair's offset for {eSign}, degrees.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @returns nDeg - startFwd for SIGN_NEG, else startRev
+
+    nDeg := startRev
+    if eSign == SIGN_NEG
+        nDeg := startFwd
+
+PRI pairsAndZ() | eSpeed, spNeg, spPos, nDiff
+' At the scan's end: per speed, MA-PAIR -- each direction's minimum, half their difference (the lead, L) and their
+' midpoint (the hall zero, Z), when both resolved, taken round the circle so a pair either side of 0 or 180 degrees
+' cannot alias; then the Z check across the two speeds (MA-ZCHECK).
+
+' Local Variables:
+' @local eSpeed - a speed
+' @local spNeg - its NEG fit slot
+' @local spPos - its POS fit slot
+' @local nDiff - Z at the fast speed less Z at the slow, tenths
+
+    repeat eSpeed from SPEED_SLOW to SPEED_FAST
+        spNeg := eSpeed * SIGNS + SIGN_NEG
+        spPos := eSpeed * SIGNS + SIGN_POS
+        bPairOk[eSpeed] := bFitOk[spNeg] and bFitOk[spPos]
+        leadX10[eSpeed] := wrapSigned(fitAbsX10[spNeg] - fitAbsX10[spPos], TENTHS_PER_TURN) / 2
+        zX10[eSpeed] := wrapSigned(fitAbsX10[spPos] + leadX10[eSpeed], TENTHS_PER_TURN)
+        benchLog.begin(@"MA-PAIR")
+        benchLog.numField(@"rpm", rec[REC_SLOW_RPM + eSpeed], LIM_MID)
+        benchLog.boolField(@"resolved", bPairOk[eSpeed])
+        benchLog.naNumField(@"fwd_deg", degreesOf(fitAbsX10[spNeg]), LIM_SMALL, bFitOk[spNeg])
+        benchLog.naNumField(@"rev_deg", degreesOf(fitAbsX10[spPos]), LIM_SMALL, bFitOk[spPos])
+        benchLog.naNumField(@"fwd_x10", fitAbsX10[spNeg], LIM_SMALL, bFitOk[spNeg])
+        benchLog.naNumField(@"rev_x10", fitAbsX10[spPos], LIM_SMALL, bFitOk[spPos])
+        benchLog.naNumField(@"z_x10", zX10[eSpeed], LIM_SMALL, bPairOk[eSpeed])
+        benchLog.naNumField(@"lead_x10", leadX10[eSpeed], LIM_SMALL, bPairOk[eSpeed])
+        lineEmit()
+    eZVerdict := VD_NA
+    nDiff := 0
+    if bPairOk[SPEED_SLOW] and bPairOk[SPEED_FAST]
+        nDiff := wrapSigned(zX10[SPEED_FAST] - zX10[SPEED_SLOW], TENTHS_PER_TURN)
+        eZVerdict := VD_FAIL
+        if abs(nDiff) <= Z_AGREE_TOL_X10
+            eZVerdict := VD_PASS
+    benchLog.begin(@"MA-ZCHECK")
+    benchLog.tokenField(@"verdict", verdictToken(eZVerdict), TOKMAX)
+    benchLog.naNumField(@"z_slow_x10", zX10[SPEED_SLOW], LIM_SMALL, bPairOk[SPEED_SLOW])
+    benchLog.naNumField(@"z_fast_x10", zX10[SPEED_FAST], LIM_SMALL, bPairOk[SPEED_FAST])
+    benchLog.naNumField(@"diff_x10", nDiff, LIM_SMALL, eZVerdict <> VD_NA)
+    benchLog.numField(@"tol_x10", Z_AGREE_TOL_X10, LIM_SMALL)
+    lineEmit()
+
+PRI degreesOf(nTenths) : nDeg
+' A signed angle in tenths of a degree as whole degrees 0..359, rounded: the form offsetsForMotor() returns.
+'
+' @param nTenths - the angle, tenths of a degree, either sign
+' @returns nDeg - whole degrees, 0..359
+
+    nDeg := wrapPositive(divRound(nTenths, X10), TENTHS_PER_TURN / X10)
+
+CON { --- the ceiling ladder --- }
+
+PRI bRunLadder() : bGoOn | eSign
+' The ceiling: under the record's ladder test limit, each sign NEG then POS, a climb (bClimb()) on the commutation the
+' driver started with; then the scan's limit again.
+'
+' @returns bGoOn - T/F where T means nothing ended the run
+
+' Local Variables:
+' @local eSign - SIGN_NEG or SIGN_POS
+
+    bLadderRan := TRUE
+    repeat eSign from SIGN_NEG to SIGN_POS
+        ceilEnd[eSign] := PO_NOT_RUN
+        ceilIncr[eSign] := 0
+        resIncr[eSign] := 0
+        bResBracketed[eSign] := FALSE
+        topCleanIncr[eSign] := 0
+        cleanRungs[eSign] := 0
+        bCeilFound[eSign] := FALSE
+    bGoOn := bSetLimit(rec[REC_LADDER_A])
+    repeat eSign from SIGN_NEG to SIGN_POS
+        if bGoOn
+            bGoOn := bClimb(eSign)
+    if bGoOn
+        bGoOn := bSetLimit(rec[REC_SCAN_A])
+
+PRI bClimb(eSign) : bGoOn | rungIdx, nIncr, eRo, ePo, bEnded, bResting
+' One sign's climb: from rest to the first rung, then a step to each next one; at each, SETTLE_MS and a WINDOW_MS window;
+' the climb ends at the first rung whose duty reaches the reserve (clean), at an edge (DROOP, HUNT, CAPPED, FAULT, or a
+' drive refused), at a rung the field-step margin forbids (BOUND), or after its last rung (TOP). A ROUGH rung (following
+' 3-20 % off, or a re-sync) is left out of the duty line and the climb goes on. Then stopped, and at rest the rungs'
+' records, the duty line (ceilingFor()) and MA-CEILING.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @returns bGoOn - T/F where T means nothing ended the run
+
+' Local Variables:
+' @local rungIdx - a rung
+' @local nIncr - its increment, signed
+' @local eRo - its arrival's outcome
+' @local ePo - its outcome
+' @local bEnded - T/F where T means the climb has ended
+' @local bResting - T/F where T means the motor already rests
+
+    bGoOn := TRUE
+    bEnded := FALSE
+    bResting := FALSE
+    ceilEnd[eSign] := END_TOP
+    repeat rungIdx from 0 to RUNGS_MAX - 1
+        rgOutcome[rungIdx] := PO_NOT_RUN
+        rgIncr[rungIdx] := 0
+    sampleBegin()
+    repeat rungIdx from 0 to nRungs - 1
+        nIncr := incrForRpm(rec[REC_LADDER_FROM_RPM] + rungIdx * rec[REC_LADDER_STEP_RPM])
+        if eSign == SIGN_NEG
+            nIncr := -nIncr
+        rgIncr[rungIdx] := nIncr
+        if bGoOn and (bEnded == FALSE)
+            if abs(nIncr) > PK1_CAP_INCR
+                rgOutcome[rungIdx] := PO_BOUND
+                ceilEnd[eSign] := PO_BOUND
+                bEnded := TRUE
+            else
+                eRo := driveTo(nIncr)
+                if eRo == RO_REFUSED
+                    ePo := PO_START
+                    bResting := TRUE
+                elseif eRo == RO_FAULT
+                    ePo := PO_FAULT
+                elseif eRo == RO_STOPPED
+                    ePo := PO_STOPPED
+                else
+                    ePo := measureRung(rungIdx, nIncr)
+                rgOutcome[rungIdx] := ePo
+                if ePo == PO_STOPPED
+                    bGoOn := FALSE
+                    bEnded := TRUE
+                elseif ePo == PO_FAULT
+                    ceilEnd[eSign] := ePo
+                    bEnded := TRUE
+                    bResting := TRUE
+                    bGoOn := bFaultRecover()
+                elseif (ePo == PO_CLEAN) and (rgDuty[rungIdx] * PM >= dutyMax * DUTY_RESERVE_PM)
+                    ceilEnd[eSign] := END_RESERVE
+                    bEnded := TRUE
+                elseif (ePo <> PO_CLEAN) and (ePo <> PO_ROUGH)
+                    ceilEnd[eSign] := ePo
+                    bEnded := TRUE
+        elseif bGoOn
+            rgOutcome[rungIdx] := PO_SKIPPED
+    if bGoOn and (bResting == FALSE)
+        bGoOn := bStopAndRest()
+    repeat rungIdx from 0 to nRungs - 1
+        if rgOutcome[rungIdx] <> PO_NOT_RUN
+            emitRung(eSign, rungIdx)
+    ceilingFor(eSign)
+    emitCeiling(eSign)
+
+PRI measureRung(rungIdx, nIncr) : ePo | eRo
+' One rung, arrived (or not in its bound: measured anyway, following says how far short): SETTLE_MS, then a WINDOW_MS
+' window, the rung's readings kept and its outcome classified, a duty-capped pass an edge here.
+'
+' @param rungIdx - the rung
+' @param nIncr - its increment, signed
+' @returns ePo - PO_CLEAN, PO_ROUGH, PO_DROOP, PO_HUNT, PO_CAPPED, PO_FAULT or PO_STOPPED
+
+' Local Variables:
+' @local eRo - the settle's and the window's outcome
+
+    ePo := PO_CLEAN
+    windowClear()
+    eRo := waitPhase(UNTIL_ELAPSED, 0, SETTLE_MS)
+    if eRo == RO_DONE
+        windowBegin()
+        eRo := waitPhaseWin(WINDOW_MS)
+        windowEnd(nIncr)
+    if eRo == RO_FAULT
+        ePo := PO_FAULT
+    elseif eRo == RO_STOPPED
+        ePo := PO_STOPPED
+    else
+        ePo := classify(TRUE)
+    rgDuty[rungIdx] := winDuty
+    rgFolPm[rungIdx] := winFolPm
+    rgDcMa[rungIdx] := winDcMa
+    rgHeld[rungIdx] := winHeldD
+    rgCapped[rungIdx] := winCapD
+
+PRI ceilingFor(eSign) | rungIdx, nPts, nTop, fSx, fSy, fMx, fMy, fSxx, fSxy, fX, fY, fB, fA, fRes
+' The sign's ceiling: the duty line -- least squares of the mean duty against the increment over the clean rungs -- and
+' the increment where it reaches DUTY_RESERVE_PM of the duty ceiling; bracketed when that is at or below the fastest
+' clean rung. The ceiling is the reserve increment where the climb reached it, else the lesser of it and the fastest
+' clean rung (an edge or the field-step margin came first). FOUND (the CEILING check) unless the rungs ran out below the
+' reserve (ladder_to too low), the climb never drove, or no rung was clean.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+
+' Local Variables:
+' @local rungIdx - a rung
+' @local nPts - the clean rungs
+' @local nTop - the fastest clean rung, increment magnitude
+' @local fSx - float sum of the increments
+' @local fSy - float sum of the duties
+' @local fMx - their mean increment
+' @local fMy - their mean duty
+' @local fSxx - sum of squared increment deviations
+' @local fSxy - sum of increment x duty deviations
+' @local fX - one rung's deviation
+' @local fY - its duty's
+' @local fB - the slope, duty per increment
+' @local fA - the intercept, duty
+' @local fRes - the reserve increment
+
+    nPts := 0
+    nTop := 0
+    fSx := fSy := 0.0
+    repeat rungIdx from 0 to nRungs - 1
+        if rgOutcome[rungIdx] == PO_CLEAN
+            nPts++
+            nTop #>= abs(rgIncr[rungIdx])
+            fSx := fSx +. float(abs(rgIncr[rungIdx]))
+            fSy := fSy +. float(rgDuty[rungIdx])
+    cleanRungs[eSign] := nPts
+    topCleanIncr[eSign] := nTop
+    if nPts >= 2
+        fMx := fSx /. float(nPts)
+        fMy := fSy /. float(nPts)
+        fSxx := fSxy := 0.0
+        repeat rungIdx from 0 to nRungs - 1
+            if rgOutcome[rungIdx] == PO_CLEAN
+                fX := float(abs(rgIncr[rungIdx])) -. fMx
+                fY := float(rgDuty[rungIdx]) -. fMy
+                fSxx := fSxx +. fX *. fX
+                fSxy := fSxy +. fX *. fY
+        if fSxx >. 0.0
+            fB := fSxy /. fSxx
+            fA := fMy -. fB *. fMx
+            if fB >. 0.0
+                fRes := (float(dutyMax) *. float(DUTY_RESERVE_PM) /. float(PM) -. fA) /. fB
+                if fRes >. float(PK1_CAP_INCR)
+                    fRes := float(PK1_CAP_INCR)
+                if fRes <. 0.0
+                    fRes := 0.0
+                resIncr[eSign] := round(fRes)
+                bResBracketed[eSign] := (resIncr[eSign] <= nTop)
+    ceilIncr[eSign] := resIncr[eSign]
+    if (ceilEnd[eSign] <> END_RESERVE) and ((resIncr[eSign] == 0) or (nTop < resIncr[eSign]))
+        ceilIncr[eSign] := nTop
+    bCeilFound[eSign] := (ceilIncr[eSign] > 0) and (ceilEnd[eSign] <> END_TOP) and (ceilEnd[eSign] <> PO_START) and (ceilEnd[eSign] <> PO_STOPPED)
+
+CON { --- the drive: commands, the sampler, the window, recovery --- }
+
+PRI driveTo(nIncr) : eRo
+' Command the increment {nIncr} and wait, guarded, until the drive reads AT_SPEED at it, at most ARRIVE_MAX_MS.
+'
+' @param nIncr - the increment, signed
+' @returns eRo - RO_DONE (arrived), RO_TIMEOUT (not in its bound), RO_FAULT, RO_STOPPED or RO_REFUSED (a latched protective stop, cleared)
+
+    if wheel.testDriveAtMotorIncrement(nIncr) <> wheel.NO_ERROR
+        eRo := RO_REFUSED
+        clearProtect()
+    else
+        eRo := waitPhase(UNTIL_ARRIVED, nIncr, ARRIVE_MAX_MS)
+
+PRI bStopAndRest() : bGoOn | eRo
+' Stop the motor on the built-in ramp (a protective stop already latched has stopped it: cleared first), wait, guarded,
+' until it reads STOPPED, then REST_MS. A fault on the way down is cleared; a stop that never comes ends the run.
+'
+' @returns bGoOn - T/F where T means the motor rests and may be driven
+
+' Local Variables:
+' @local eRo - the wait's outcome
+
+    bGoOn := TRUE
+    if clearProtect() == wheel.NO_ERROR
+        if wheel.testDriveAtMotorIncrement(0) <> wheel.NO_ERROR
+            wheel.stopMotor()
+    eRo := waitPhase(UNTIL_STOPPED, 0, STOP_MAX_MS)
+    if eRo == RO_FAULT
+        bGoOn := bFaultRecover()
+    elseif eRo == RO_STOPPED
+        bGoOn := FALSE
+    elseif eRo == RO_TIMEOUT
+        coastNow()
+        setAbort(AR_STOP_TIMEOUT, smpState)
+        bGoOn := FALSE
+    else
+        waitms(REST_MS)
+
+PRI bFaultRecover() : bGoOn | nStartMs, eOutcome
+' After a fault: wait, guarded, until the drive rests (a re-synced fault ramps down; a hard one sits FAULTED), at most
+' STOP_MAX_MS; then testResetFault() and a latched protective stop cleared; then REST_MS. A fault that will not clear
+' ends the run.
+'
+' @returns bGoOn - T/F where T means the motor is at rest and may be driven
+
+' Local Variables:
+' @local nStartMs - getms() when the wait began
+' @local eOutcome - a reading's outcome (GO_FAULT is the fault being recovered: ignored)
+
+    bGoOn := TRUE
+    nStartMs := getms()
+    repeat
+        eOutcome := sampleNext()
+        if bGuardStops(eOutcome)
+            bGoOn := FALSE
+            quit
+        if (smpState == wheel.DCS_STOPPED) or (smpState == wheel.DCS_FAULTED) or (getms() - nStartMs >= STOP_MAX_MS)
+            quit
+    if bGoOn
+        bGoOn := (wheel.testResetFault() == wheel.NO_ERROR)
+        clearProtect()
+        if bGoOn
+            waitms(REST_MS)
+        else
+            coastNow()
+            setAbort(AR_FAULT_STUCK, smpState)
+
+PRI clearProtect() : eProt
+' Clear a latched protective stop (a drive it refuses would leave the tool unable to drive), returning its cause.
+'
+' @returns eProt - the cause latched; NO_ERROR when none
+
+    eProt := wheel.getProtectiveStop()
+    if eProt <> wheel.NO_ERROR
+        wheel.clearProtectiveStop()
+
+PRI coastNow()
+' Coast the motor at once by stopping its driver: every guard that ends the run comes through here.
+
+    benchLog.cogEventBegin()
+    wheel.stop()
+
+PRI sampleBegin()
+' Start the sampler: its first reading SAMPLE_MS from now, the abort's run of readings cleared.
+
+    smpPeriodCt := clkfreq / wheel.MS_PER_SEC * SAMPLE_MS
+    smpNextCt := getct() + smpPeriodCt
+    overSamples := 0
+
+PRI sampleNext() : eOutcome
+' Wait for the next reading's time (a busy wait on getct(): no waitct() can wrap), read the drive, and judge the guards
+' (judgeGuards()). A reading more than a period late is taken at once and the cadence re-anchored.
+'
+' @returns eOutcome - GO_RUNNING; GO_FAULT (a finding); or the guard's GO_* that ends the run
+
+    repeat until getct() - smpNextCt >= 0
+    if getct() - smpNextCt >= smpPeriodCt
+        smpNextCt := getct()
+    smpNextCt += smpPeriodCt
+    smpCt := getct()
+    smpMs := getms()
+    smpDuty, _, smpSenseMv, _, _, _, smpState, bSmpFault := wheel.testGetTelemetry()
+    smpHeld, smpCapped, smpDrvIncr, smpPos := wheel.testGetDriveHealth()
+    eOutcome := judgeGuards()
+
+PRI judgeGuards() : eOutcome | nNetMa
+' Integrate the charge and judge every run-ending guard from the latest reading -- the absolute abort, the charge cap,
+' the time cap -- then the fault, a finding.
+'
+' @returns eOutcome - GO_RUNNING, GO_FAULT, or the GO_* that ends the run
+
+' Local Variables:
+' @local nNetMa - the reading net of the rest zero, mA
+
+    eOutcome := GO_RUNNING
+    nNetMa := netMilliamps(smpSenseMv)
+    chargeSamples += nNetMa
+    peakMa #>= nNetMa
+    overSamples := (nNetMa >= abortMa) ? overSamples + 1 : 0
+    if overSamples >= ABS_ABORT_SAMPLES
+        eOutcome := GO_OVER_CURRENT
+    elseif chargeSamples >= chargeCapSamples
+        eOutcome := GO_CHARGE_CAP
+    elseif getms() - runStartMs >= timeCapMs
+        eOutcome := GO_TIME_CAP
+    elseif bSmpFault
+        eOutcome := GO_FAULT
+
+PRI bGuardStops(eOutcome) : bStops
+' Whether a reading's outcome ends the run -- anything but GO_RUNNING and GO_FAULT -- and, when it does, coast the
+' motor at once and record why.
+'
+' @param eOutcome - sampleNext()'s outcome
+' @returns bStops - T/F where T means the run ends now
+
+    bStops := (eOutcome <> GO_RUNNING) and (eOutcome <> GO_FAULT)
+    if bStops
+        coastNow()
+        case eOutcome
+            GO_OVER_CURRENT:    setAbort(AR_OVER_CURRENT, peakMa)
+            GO_CHARGE_CAP:      setAbort(AR_CHARGE_CAP, chargeSamples / SAMPLES_PER_SEC)
+            other:              setAbort(AR_TIME_CAP, (getms() - runStartMs) / wheel.MS_PER_SEC)
+
+PRI waitPhase(eUntil, nTarget, nBoundMs) : eRo | nStartMs, eOutcome, bHeld
+' Take readings until the condition {eUntil} holds, the driver faults, a guard ends the run, or {nBoundMs} passes.
+'
+' @param eUntil - UNTIL_ARRIVED, UNTIL_STOPPED or UNTIL_ELAPSED
+' @param nTarget - UNTIL_ARRIVED's increment, signed; unused otherwise
+' @param nBoundMs - the bound, ms (UNTIL_ELAPSED: the phase's length)
+' @returns eRo - RO_DONE (UNTIL_ELAPSED: the time passed), RO_TIMEOUT, RO_FAULT or RO_STOPPED
+
+' Local Variables:
+' @local nStartMs - getms() at the call
+' @local eOutcome - a reading's outcome
+' @local bHeld - T/F where T means the condition holds at this reading
+
+    nStartMs := getms()
+    eRo := RO_TIMEOUT
+    repeat
+        eOutcome := sampleNext()
+        if eOutcome == GO_FAULT
+            eRo := RO_FAULT
+            quit
+        if bGuardStops(eOutcome)
+            eRo := RO_STOPPED
+            quit
+        bHeld := FALSE
+        if eUntil == UNTIL_ARRIVED
+            bHeld := (smpState == wheel.DCS_AT_SPEED) and (smpDrvIncr == nTarget)
+        elseif eUntil == UNTIL_STOPPED
+            bHeld := (smpState == wheel.DCS_STOPPED)
+        if bHeld
+            eRo := RO_DONE
+            quit
+        if smpMs - nStartMs >= nBoundMs
+            if eUntil == UNTIL_ELAPSED
+                eRo := RO_DONE
+            quit
+
+PRI waitPhaseWin(nLenMs) : eRo | nStartMs, eOutcome
+' Take readings for {nLenMs}, each added to the open window.
+'
+' @param nLenMs - the window's length, ms
+' @returns eRo - RO_DONE, RO_FAULT or RO_STOPPED
+
+' Local Variables:
+' @local nStartMs - the window's start, getms()
+' @local eOutcome - a reading's outcome
+
+    eRo := RO_DONE
+    nStartMs := smpMs
+    repeat
+        eOutcome := sampleNext()
+        windowAdd()
+        if eOutcome == GO_FAULT
+            eRo := RO_FAULT
+            quit
+        if bGuardStops(eOutcome)
+            eRo := RO_STOPPED
+            quit
+        if smpMs - nStartMs >= nLenMs
+            quit
+
+PRI windowClear()
+' Empty the window's results: a point or rung that ends before its window keeps zeros.
+
+    winN := winSenseSum := winDutySum := 0
+    winDcMa := winDuty := winFolPm := winHeldD := winCapD := winResyncD := 0
+
+PRI windowBegin()
+' Open a measuring window at the latest reading: its counters and its hall position, and empty sums.
+
+    windowClear()
+    winPos0 := smpPos
+    winHeld0 := smpHeld
+    winCap0 := smpCapped
+    winCt0 := smpCt
+    _, _, winResync0 := wheel.testGetFaultResponse()
+
+PRI windowAdd()
+' Add the latest reading to the open window.
+
+    winN++
+    winSenseSum += smpSenseMv
+    winDutySum += smpDuty
+
+PRI windowEnd(nIncr) | nResync, nDct, fCmdTps, fMeasTps
+' Close the window: the DC link's mean through the board's scale, the mean duty, the held and capped passes and the
+' re-synced faults over it, and the following -- the halls' speed over the window against the speed {nIncr} commands
+' (|incr| x 6 hall ticks per 2^32 x the drive's pass rate), per mille.
+'
+' @param nIncr - the increment commanded, signed
+
+' Local Variables:
+' @local nResync - the re-synced faults since start, now
+' @local nDct - the window's clocks (at most 5 s: under a signed getct() difference at 350 MHz)
+' @local fCmdTps - the commanded hall ticks per second
+' @local fMeasTps - the measured hall ticks per second
+
+    _, _, nResync := wheel.testGetFaultResponse()
+    winResyncD := nResync - winResync0
+    winHeldD := smpHeld - winHeld0
+    winCapD := smpCapped - winCap0
+    winDcMa := 0
+    winDuty := 0
+    if winN > 0
+        winDcMa := divRound((divRound(winSenseSum * X100, winN) - zeroMvX10 * X10) * X10, mvPerA #> 1)
+        winDuty := divRound(winDutySum, winN)
+    winFolPm := 0
+    nDct := smpCt - winCt0
+    fCmdTps := float(abs(nIncr)) *. float(wheel.HALL_TICKS_PER_CYCLE * wheel.PWM_RATE_IN_HZ) /. (float(wheel.DRIVE_PASS_FRAMES) *. F_2POW32)
+    if (nDct > 0) and (fCmdTps >. 0.0)
+        fMeasTps := float(abs(smpPos - winPos0)) *. float(clkfreq) /. float(nDct)
+        winFolPm := clampedRound(fMeasTps /. fCmdTps *. float(PM), LIM_MID)
+
+PRI netMilliamps(nSenseMv) : nNetMa
+' A current-sense reading net of the rest zero, in mA of DC link through the detected board's scale.
+'
+' @param nSenseMv - the reading, mV
+' @returns nNetMa - the net current, mA
+
+    nNetMa := divRound((nSenseMv * X10 - zeroMvX10) * X100, mvPerA #> 1)
+
+PRI incrForRpm(nRpm) : nIncr
+' The drive law inverted: the increment for {nRpm} on this motor (ticks_rev hall ticks a revolution, 6 a cycle, 2^32 a
+' cycle, the drive's pass rate).
+'
+' @param nRpm - rpm, at least 0
+' @returns nIncr - the increment, positive
+
+    nIncr := muldiv64(nRpm * rec[REC_TICKS_PER_REV] * wheel.DRIVE_PASS_FRAMES * 2, $8000_0000, SECS_PER_MIN * wheel.HALL_TICKS_PER_CYCLE * wheel.PWM_RATE_IN_HZ)
+
+PRI rpmX10ForIncr(nIncr) : nRpmX10
+' The drive law: an increment's speed on this motor, tenths of an rpm.
+'
+' @param nIncr - the increment, either sign
+' @returns nRpmX10 - tenths of an rpm
+
+    nRpmX10 := clampedRound(float(abs(nIncr)) *. float(SECS_PER_MIN * X10 * wheel.HALL_TICKS_PER_CYCLE * wheel.PWM_RATE_IN_HZ) /. (float(rec[REC_TICKS_PER_REV] * wheel.DRIVE_PASS_FRAMES) *. F_2POW32), LIM_MID)
+
+CON { --- arithmetic --- }
+
+PRI divRound(nNumerator, nDenominator) : nQuotient
+' {nNumerator} / {nDenominator} rounded half away from zero ("/" truncates toward zero).
+'
+' @param nNumerator - any value
+' @param nDenominator - above 0
+' @returns nQuotient - the rounded quotient
+
+    if nNumerator >= 0
+        nQuotient := (nNumerator + nDenominator / 2) / nDenominator
+    else
+        nQuotient := (nNumerator - nDenominator / 2) / nDenominator
+
+PRI wrapPositive(nValue, nModulus) : nWrapped
+' {nValue} modulo {nModulus} in 0 .. nModulus - 1 ("//" keeps the dividend's sign).
+'
+' @param nValue - any value
+' @param nModulus - the modulus, above 0
+' @returns nWrapped - the value in 0 .. nModulus - 1
+
+    nWrapped := nValue // nModulus
+    if nWrapped < 0
+        nWrapped += nModulus
+
+PRI wrapSigned(nValue, nModulus) : nWrapped
+' {nValue} modulo {nModulus} in -nModulus / 2 .. nModulus / 2.
+'
+' @param nValue - any value
+' @param nModulus - the modulus, above 0
+' @returns nWrapped - the value in -nModulus / 2 .. nModulus / 2
+
+    nWrapped := wrapPositive(nValue, nModulus)
+    if nWrapped > nModulus / 2
+        nWrapped -= nModulus
+
+PRI clampedRound(fValue, nLimit) : nValue
+' A float rounded to the nearest integer, clamped to +-{nLimit} first (round() of a float past a long is undefined).
+'
+' @param fValue - the float
+' @param nLimit - the clamp, above 0
+' @returns nValue - the rounded, clamped value
+
+    nValue := nLimit
+    if fValue <. float(nLimit)
+        nValue := -nLimit
+        if fValue >. float(-nLimit)
+            nValue := round(fValue)
+
+PRI setAbort(eReason, nDetail)
+' Record why the run ended early: the first cause is kept.
+'
+' @param eReason - AR_*
+' @param nDetail - its detail
+
+    if eAbortReason == AR_NONE
+        eAbortReason := eReason
+        abortDetail := nDetail
+
+PRI refuse(eReason, nDetail)
+' Refuse the run before anything is started: record why and emit MA-REFUSE.
+'
+' @param eReason - AR_*
+' @param nDetail - its detail (the motor type, the record's format, the driver's ticks, a count)
+
+    setAbort(eReason, nDetail)
+    benchLog.begin(@"MA-REFUSE")
+    benchLog.tokenField(@"reason", abortToken(eReason), TOKMAX)
+    benchLog.numField(@"detail", nDetail, LIM_BIG)
+    benchLog.numField(@"motor_type", user.MOTOR_TYPE, LIM_TINY)
+    lineEmit()
+
+CON { --- records --- }
+
+PRI emitBanner()
+' Emit MA-BANNER: the tool, its formats, what it was built for, the clock.
+
+    benchLog.begin(@"MA-BANNER")
+    benchLog.numField(@"tool_rev", TOOL_REV, LIM_TINY)
+    benchLog.numField(@"fmt", FMT_VERSION, LIM_TINY)
+    benchLog.numField(@"record_fmt", RECORD_FORMAT, LIM_TINY)
+    benchLog.tokenField(@"build", buildToken(), TOKMAX)
+    benchLog.numField(@"clk_hz", clkfreq, LIM_BIG)
+    lineEmit()
+
+PRI emitRecord(bFound)
+' Emit MA-RECORD: the record found for the configured motor type, every field; NA throughout when there is none.
+'
+' @param bFound - T/F where T means a record was found
+
+    benchLog.begin(@"MA-RECORD")
+    benchLog.boolField(@"found", bFound)
+    benchLog.numField(@"motor_type", user.MOTOR_TYPE, LIM_TINY)
+    benchLog.naNumField(@"format", rec[REC_FORMAT], LIM_TINY, bFound)
+    if bFound
+        benchLog.tokenField(@"status", statusToken(rec[REC_STATUS]), TOKMAX)
+    else
+        benchLog.textField(@"status", @sNaTok)
+    benchLog.naNumField(@"ticks_rev", rec[REC_TICKS_PER_REV], LIM_SMALL, bFound)
+    benchLog.naNumField(@"rated_ma", rec[REC_RATED_MA], LIM_MID, bFound)
+    benchLog.naNumField(@"no_load_ma", rec[REC_NO_LOAD_MA], LIM_MID, bFound)
+    benchLog.naNumField(@"scan_a", rec[REC_SCAN_A], LIM_TINY, bFound)
+    benchLog.naNumField(@"ladder_a", rec[REC_LADDER_A], LIM_TINY, bFound)
+    benchLog.naNumField(@"slow_rpm", rec[REC_SLOW_RPM], LIM_MID, bFound)
+    benchLog.naNumField(@"fast_rpm", rec[REC_FAST_RPM], LIM_MID, bFound)
+    benchLog.naNumField(@"ladder_from_rpm", rec[REC_LADDER_FROM_RPM], LIM_MID, bFound)
+    benchLog.naNumField(@"ladder_step_rpm", rec[REC_LADDER_STEP_RPM], LIM_MID, bFound)
+    benchLog.naNumField(@"ladder_to_rpm", rec[REC_LADDER_TO_RPM], LIM_MID, bFound)
+    lineEmit()
+
+PRI emitPoint(eSpeed, eSign, slotIdx)
+' Emit MA-POINT: one offset-scan point. At rest.
+'
+' @param eSpeed - SPEED_SLOW or SPEED_FAST
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param slotIdx - the point's slot
+
+    benchLog.begin(@"MA-POINT")
+    benchLog.numField(@"rpm", rec[REC_SLOW_RPM + eSpeed], LIM_MID)
+    benchLog.tokenField(@"sign", signToken(eSign), TOKMAX)
+    benchLog.tokenField(@"side", sideToken(slotIdx / OFS_SIDE_POINTS), TOKMAX)
+    benchLog.numField(@"d", ptD[slotIdx], LIM_TINY)
+    benchLog.numField(@"deg", ptDeg[slotIdx], LIM_TINY)
+    benchLog.tokenField(@"outcome", outcomeToken(ptOutcome[slotIdx]), TOKMAX)
+    benchLog.numField(@"dc_ma", ptDcMa[slotIdx], LIM_MID)
+    benchLog.numField(@"duty", ptDuty[slotIdx], LIM_MID)
+    benchLog.numField(@"fol_pm", ptFolPm[slotIdx], LIM_MID)
+    benchLog.numField(@"held", ptHeld[slotIdx], LIM_MID)
+    benchLog.numField(@"capped", ptCapped[slotIdx], LIM_MID)
+    benchLog.numField(@"resyncs", ptResyncs[slotIdx], LIM_SMALL)
+    lineEmit()
+
+PRI emitSide(eSpeed, eSign, eSide) | slotIdx, nRun
+' Emit MA-SIDE: how one side of the scan ended, and the points it ran.
+'
+' @param eSpeed - SPEED_SLOW or SPEED_FAST
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param eSide - SIDE_PLUS or SIDE_MINUS
+
+' Local Variables:
+' @local slotIdx - a point's slot
+' @local nRun - the side's points that ran
+
+    nRun := 0
+    repeat slotIdx from eSide * OFS_SIDE_POINTS to eSide * OFS_SIDE_POINTS + OFS_SIDE_STEPS
+        if (ptOutcome[slotIdx] <> PO_NOT_RUN) and (ptOutcome[slotIdx] <> PO_SKIPPED)
+            nRun++
+    benchLog.begin(@"MA-SIDE")
+    benchLog.numField(@"rpm", rec[REC_SLOW_RPM + eSpeed], LIM_MID)
+    benchLog.tokenField(@"sign", signToken(eSign), TOKMAX)
+    benchLog.tokenField(@"side", sideToken(eSide), TOKMAX)
+    benchLog.tokenField(@"end", outcomeToken(sideEnd[eSide]), TOKMAX)
+    benchLog.numField(@"points", nRun, LIM_TINY)
+    lineEmit()
+
+PRI emitFit(eSpeed, eSign, spIdx)
+' Emit MA-FIT: one speed and sign's current minimum -- resolved or not, from the start pair and absolute, its error.
+'
+' @param eSpeed - SPEED_SLOW or SPEED_FAST
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param spIdx - the fit slot
+
+    benchLog.begin(@"MA-FIT")
+    benchLog.numField(@"rpm", rec[REC_SLOW_RPM + eSpeed], LIM_MID)
+    benchLog.tokenField(@"sign", signToken(eSign), TOKMAX)
+    benchLog.boolField(@"resolved", bFitOk[spIdx])
+    benchLog.numField(@"pts", fitPts[spIdx], LIM_TINY)
+    benchLog.numField(@"start_deg", startOffset(eSign), LIM_SMALL)
+    benchLog.numField(@"from_start_x10", fitFromX10[spIdx], LIM_SMALL)
+    benchLog.numField(@"deg_x10", fitAbsX10[spIdx], LIM_SMALL)
+    benchLog.numField(@"se_x10", fitSeX10[spIdx], LIM_SMALL)
+    benchLog.numField(@"se_max_x10", VERT_SE_MAX_X10, LIM_SMALL)
+    lineEmit()
+
+PRI emitRung(eSign, rungIdx)
+' Emit MA-RUNG: one ladder rung. At rest.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param rungIdx - the rung
+
+    benchLog.begin(@"MA-RUNG")
+    benchLog.tokenField(@"sign", signToken(eSign), TOKMAX)
+    benchLog.numField(@"rpm_x10", rpmX10ForIncr(rgIncr[rungIdx]), LIM_MID)
+    benchLog.numField(@"incr", rgIncr[rungIdx], LIM_BIG)
+    benchLog.tokenField(@"outcome", outcomeToken(rgOutcome[rungIdx]), TOKMAX)
+    benchLog.numField(@"duty", rgDuty[rungIdx], LIM_MID)
+    benchLog.numField(@"duty_pm", divRound(rgDuty[rungIdx] * PM, dutyMax #> 1), LIM_MID)
+    benchLog.numField(@"fol_pm", rgFolPm[rungIdx], LIM_MID)
+    benchLog.numField(@"dc_ma", rgDcMa[rungIdx], LIM_MID)
+    benchLog.numField(@"held", rgHeld[rungIdx], LIM_MID)
+    benchLog.numField(@"capped", rgCapped[rungIdx], LIM_MID)
+    lineEmit()
+
+PRI emitCeiling(eSign)
+' Emit MA-CEILING: one sign's climb -- how it ended, its duty line's reserve increment, whether that is bracketed, and the
+' ceiling.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+
+    benchLog.begin(@"MA-CEILING")
+    benchLog.tokenField(@"sign", signToken(eSign), TOKMAX)
+    benchLog.tokenField(@"end", outcomeToken(ceilEnd[eSign]), TOKMAX)
+    benchLog.boolField(@"found", bCeilFound[eSign])
+    benchLog.numField(@"clean", cleanRungs[eSign], LIM_TINY)
+    benchLog.naNumField(@"reserve_incr", resIncr[eSign], LIM_BIG, resIncr[eSign] > 0)
+    benchLog.boolField(@"bracketed", bResBracketed[eSign])
+    benchLog.numField(@"top_clean_incr", topCleanIncr[eSign], LIM_BIG)
+    benchLog.naNumField(@"ceil_incr", ceilIncr[eSign], LIM_BIG, ceilIncr[eSign] > 0)
+    benchLog.naNumField(@"ceil_rpm_x10", rpmX10ForIncr(ceilIncr[eSign]), LIM_MID, ceilIncr[eSign] > 0)
+    benchLog.numField(@"reserve_pm", DUTY_RESERVE_PM, LIM_SMALL)
+    benchLog.numField(@"duty_max", dutyMax, LIM_MID)
+    lineEmit()
+
+PRI emitResult() | nCeil, bCeil, bZ
+' Emit MA-RESULT: what to put in the driver for this motor at this voltage -- the pair at each scan speed (for
+' offsetsForMotor()), Z and its check, and the ceiling (for confgurePowerLimits(): the lesser of the two signs', found
+' when both signs found one; how each climb ended is in its MA-CEILING).
+
+' Local Variables:
+' @local nCeil - the ceiling, increment magnitude
+' @local bCeil - T/F where T means both signs found a ceiling
+' @local bZ - T/F where T means at least one speed's pair resolved
+
+    bCeil := bLadderRan and bCeilFound[SIGN_NEG] and bCeilFound[SIGN_POS]
+    nCeil := ceilIncr[SIGN_NEG] <# ceilIncr[SIGN_POS]
+    bZ := bScanRan and (bPairOk[SPEED_SLOW] or bPairOk[SPEED_FAST])
+    benchLog.begin(@"MA-RESULT")
+    if bRecordFound
+        benchLog.tokenField(@"record", statusToken(rec[REC_STATUS]), TOKMAX)
+    else
+        benchLog.textField(@"record", @sNaTok)
+    benchLog.naNumField(@"told_mv", toldMv, LIM_MID, toldMv > 0)
+    benchLog.naNumField(@"z_x10", (bPairOk[SPEED_SLOW] ? zX10[SPEED_SLOW] : zX10[SPEED_FAST]), LIM_SMALL, bZ)
+    benchLog.tokenField(@"z_check", verdictToken(eZVerdict), TOKMAX)
+    benchLog.naNumField(@"slow_fwd_deg", degreesOf(fitAbsX10[SPEED_SLOW * SIGNS + SIGN_NEG]), LIM_SMALL, bScanRan and bPairOk[SPEED_SLOW])
+    benchLog.naNumField(@"slow_rev_deg", degreesOf(fitAbsX10[SPEED_SLOW * SIGNS + SIGN_POS]), LIM_SMALL, bScanRan and bPairOk[SPEED_SLOW])
+    benchLog.naNumField(@"fast_fwd_deg", degreesOf(fitAbsX10[SPEED_FAST * SIGNS + SIGN_NEG]), LIM_SMALL, bScanRan and bPairOk[SPEED_FAST])
+    benchLog.naNumField(@"fast_rev_deg", degreesOf(fitAbsX10[SPEED_FAST * SIGNS + SIGN_POS]), LIM_SMALL, bScanRan and bPairOk[SPEED_FAST])
+    benchLog.tokenField(@"ceil_lead", leadToken(bStartBySpeed), TOKMAX)
+    benchLog.boolField(@"ceil_found", bCeil)
+    benchLog.naNumField(@"ceil_incr", nCeil, LIM_BIG, bLadderRan and (nCeil > 0))
+    benchLog.naNumField(@"ceil_rpm_x10", rpmX10ForIncr(nCeil), LIM_MID, bLadderRan and (nCeil > 0))
+    lineEmit()
+
+PRI emitEnd()
+' Emit MA-END: why the run ended (NONE: it ran to the end), its length, its charge and its peak current.
+
+    benchLog.begin(@"MA-END")
+    benchLog.tokenField(@"stopped", abortToken(eAbortReason), TOKMAX)
+    benchLog.numField(@"detail", abortDetail, LIM_BIG)
+    benchLog.numField(@"run_s", (getms() - runStartMs) / wheel.MS_PER_SEC, LIM_MID)
+    benchLog.numField(@"charge_mas", chargeSamples / SAMPLES_PER_SEC, LIM_BIG)
+    benchLog.numField(@"peak_ma", peakMa, LIM_MID)
+    lineEmit()
+
+PRI lineEmit()
+' Emit the assembled record: the one debug() statement every record goes through.
+
+    debug(zstr_(benchLog.pLine()))
+
+CON { --- tokens --- }
+
+PRI signToken(eSign) : pToken
+' The token for an increment sign.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @returns pToken - NEG or POS
+
+    pToken := @sPosTok
+    if eSign == SIGN_NEG
+        pToken := @sNegTok
+
+PRI sideToken(eSide) : pToken
+' The token for a side of the start pair.
+'
+' @param eSide - SIDE_PLUS or SIDE_MINUS
+' @returns pToken - PLUS or MINUS
+
+    pToken := @sMinusTok
+    if eSide == SIDE_PLUS
+        pToken := @sPlusTok
+
+PRI leadToken(bBySpeed) : pToken
+' The token for how the driver sets the pair.
+'
+' @param bBySpeed - T/F where T means by speed (the lead table)
+' @returns pToken - BY_SPEED or FIXED
+
+    pToken := @sFixedTok
+    if bBySpeed
+        pToken := @sSpeedTok
+
+PRI statusToken(eStatus) : pToken
+' The token for a record's status.
+'
+' @param eStatus - RS_MEASURED or RS_PROVISIONAL
+' @returns pToken - MEASURED, PROVISIONAL, or NA for anything else
+
+    case eStatus
+        RS_MEASURED:    pToken := @sMeasuredTok
+        RS_PROVISIONAL: pToken := @sProvisTok
+        other:          pToken := @sNaTok
+
+PRI verdictToken(eVerdict) : pToken
+' The token for a check's verdict.
+'
+' @param eVerdict - VD_*
+' @returns pToken - PASS, FAIL or NA
+
+    case eVerdict
+        VD_PASS:        pToken := @sPassTok
+        VD_FAIL:        pToken := @sFailTok
+        other:          pToken := @sNaTok
+
+PRI boardToken(eRevision) : pToken
+' The token for a board revision.
+'
+' @param eRevision - REV_A, REV_B or REV_Unknown
+' @returns pToken - REV_A, REV_B or UNKNOWN
+
+    case eRevision
+        wheel.REV_A:    pToken := @sRevATok
+        wheel.REV_B:    pToken := @sRevBTok
+        other:          pToken := @sUnknownTok
+
+PRI buildToken() : pToken
+' The token for what this image was built for.
+'
+' @returns pToken - USER, DOCO_BENCH or WHEEL_BENCH
+
+    case BUILD_KIND
+        BUILD_DOCO_BENCH:   pToken := @sDocoTok
+        BUILD_WHEEL_BENCH:  pToken := @sWheelTok
+        other:              pToken := @sUserTok
+
+PRI outcomeToken(eOutcome) : pToken
+' The token for a point's or rung's outcome, or a side's or climb's end.
+'
+' @param eOutcome - PO_* or END_*
+' @returns pToken - its token; NA for anything else
+
+    case eOutcome
+        PO_NOT_RUN:     pToken := @sNotRunTok
+        PO_SKIPPED:     pToken := @sSkippedTok
+        PO_CLEAN:       pToken := @sCleanTok
+        PO_ROUGH:       pToken := @sRoughTok
+        PO_DROOP:       pToken := @sDroopTok
+        PO_HUNT:        pToken := @sHuntTok
+        PO_CAPPED:      pToken := @sCappedTok
+        PO_WALL:        pToken := @sWallTok
+        PO_FAULT:       pToken := @sFaultTok
+        PO_STOPPED:     pToken := @sStoppedTok
+        PO_START:       pToken := @sStartTok
+        PO_BOUND:       pToken := @sBoundTok
+        END_LIMIT:      pToken := @sLimitTok
+        END_RESERVE:    pToken := @sReserveTok
+        END_TOP:        pToken := @sTopTok
+        other:          pToken := @sNaTok
+
+PRI abortToken(eReason) : pToken
+' The token for why the run ended early, or was refused.
+'
+' @param eReason - AR_*
+' @returns pToken - its token; NA for anything else
+
+    case eReason
+        AR_NONE:            pToken := @sNoneTok
+        AR_NO_RECORD:       pToken := @sNoRecordTok
+        AR_RECORD_FORMAT:   pToken := @sRecFormatTok
+        AR_GEOMETRY:        pToken := @sGeometryTok
+        AR_RECORD_PLAN:     pToken := @sRecPlanTok
+        AR_CONFIG:          pToken := @sConfigTok
+        AR_START:           pToken := @sStartTok
+        AR_BOARD:           pToken := @sBoardTok
+        AR_LIMIT:           pToken := @sLimitTok
+        AR_ZERO:            pToken := @sZeroTok
+        AR_OVER_CURRENT:    pToken := @sOverTok
+        AR_CHARGE_CAP:      pToken := @sChargeTok
+        AR_TIME_CAP:        pToken := @sTimeTok
+        AR_FAULT_STUCK:     pToken := @sFaultStuckTok
+        AR_STOP_TIMEOUT:    pToken := @sStopTimeTok
+        AR_RESTORE:         pToken := @sRestoreTok
+        other:              pToken := @sNaTok
+
+CON { license }
+{{
+
+ -------------------------------------------------------------------------------------------------
+  MIT License
+
+  Copyright (c) 2026 Iron Sheep Productions, LLC
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+ =================================================================================================
+}}

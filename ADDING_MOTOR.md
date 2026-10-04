@@ -42,7 +42,8 @@ each one is compiled in:
 **What you need.**
 
 - **A Rev B 64010 board**, if you can. Finding the commutation means finding a current *minimum*, and Rev B
-  reads current at 150 mV/A against Rev A's 5 mV/A. The hall zero (step 5a) can be measured on either.
+  reads current at 150 mV/A against Rev A's 5 mV/A. The hall zero can also be measured cold, from the
+  motor's back-EMF, on either (step 5).
 - **The motor free to turn**: wheel lifted, or shaft unloaded, and clamped so it cannot walk.
 - **The P2 at 270 MHz**, as every demo runs.
 - **The debug terminal**, since these steps read the driver through `debug()` output.
@@ -217,40 +218,96 @@ times** the current, and it is circulating current that does no work and only he
 [TECHNIQUES §1.3–§1.5](TECHNIQUES.md#13-find-the-hall-zero-from-the-two-directions-current-minima) before
 you start.
 
-**Start safely.** Begin at a low speed, with a current limit you are comfortable with, and expect some
-offsets to fault. That is how the edges of the usable window show up.
+**The motor-adoption tool does this step for you.** `src/util_adopt_motor.spin2` is a program you compile
+under your own configuration and run from the debug terminal. It runs unattended, with the motor free to turn,
+and needs nothing beyond what this page already asks for: no meter and no shaft encoder. It measures what the
+board itself can see: the halls, the current, and the drive's own counters. It also measures the speed ceiling
+that step 6 asks for.
 
-### 5a — The hall zero (Z)
+What it does, at each of two speeds one octave apart and for each direction:
 
-**Measure** where the hall pattern's zero sits against true electrical zero. There are two independent
-ways, and you should use both:
+1. It steps the commutation offset that direction uses 5° at a time, outward from the pair your driver starts
+   with, one side at a time, each side from rest.
+2. It ends a side at the motor's **edge**: the current climbs (too much lead), the motor slows or hunts (too
+   little lead), or the driver faults.
+3. It fits a curve to the current around its lowest point and takes each direction's **current minimum**.
 
-- **From the two current minima.** At one moderate speed, sweep the offset in each direction and record net
-  current at each step. Z is the midpoint of the two directions' minima. Repeat at twice the speed: **Z must
-  not move with speed**, and if it does, something in the measurement is wrong.
-  `src/test_bench_scan.spin2` does this unattended.
-- **Cold, from back-EMF.** Coast the bridge and turn the shaft by hand in both directions. The phase voltages
-  are the motor's own waves, fixed to the magnets. This needs no current resolution, so it works on a Rev A
-  board too. The `dual-align` tier of `src/test_bench_dual.spin2` does this.
+The midpoint of the two directions' minima is the hall zero **Z**, and half their difference is the lead
+**L** ([TECHNIQUES §1.3](TECHNIQUES.md#13-find-the-hall-zero-from-the-two-directions-current-minima)).
+**Z must not move with speed**: the tool measures it at both speeds and checks that the two agree within
+7.5°. If they do not, something in the measurement is wrong.
 
-**Worked example.** Z = −4° on the 6.5″ motor: −3.8° and −4.0° by the minima, −3.31° and −3.25° cold.
+It protects the motor on its own. `start()` runs its start checks, and the tool stops before driving if one
+fails. The motor runs under your record's test current limit. The tool aborts on a current over twice the rated
+current, and it has a charge cap and a time cap. A driver fault is cleared and the scan goes on from rest, and
+the motor is stopped on every way out. To stop it at once, disconnect the supply.
 
-### 5b — The lead (L), at several speeds
+### 5a — Give the tool your motor's record
 
-**Measure** how far ahead of the rotor the field should sit, at three or four speeds one octave apart.
-Record the region where current stays low, not only the single lowest point, and pick a value inside it.
+The tool reads a **parameter record** for your motor, found by the `MOTOR_TYPE` your configuration names.
+Before anything moves, it refuses a motor type that has no record. It also refuses a record whose hall ticks
+per revolution are not what you put in `hallTicInfoForMotor()` (step 3).
 
-**Worked example.** On the 6.5″ motor the best lead **falls** with speed, from about 20° at a crawl to 5–8°
-from a quarter of top speed upward. That is the opposite of the textbook model, so measure it.
+At the top of `util_adopt_motor.spin2`, add your name to `CON { record keys }`:
 
-### 5c — Put it in the driver
+```spin2
+    KEY_6_5_INCH        = user.MOTR_6_5_INCH
+    KEY_DOCO_4KRPM      = user.MOTR_DOCO_4KRPM
+    KEY_YOUR_MOTOR      = user.{YOUR_NEW_MOTOR_IDENTIFER}
+```
+
+Then add one record to `DAT { motor records }`, above the line that ends the table. Use the same layout as the
+two already there; the file's header describes every field.
+
+| Field | What to put | 6.5″ / DocoEng |
+| ----- | ----------- | -------------- |
+| key | the `KEY_` name you just added | |
+| format | `RECORD_FORMAT` | |
+| status | `RS_PROVISIONAL` until a run has confirmed the record, then `RS_MEASURED` | measured / provisional |
+| ticks per revolution | your count from step 3 | 90 / 24 |
+| rated current, mA | the data sheet's; with none, half the current you would abort a run at | 5,000 (no rating on record) / 1,840 |
+| no-load current, mA | the data sheet's, or what the unloaded motor draws near its top speed | 500 / 400 |
+| scan current limit, whole A | the least whole amp at or above the rated current; with no rating, above what the motor draws at its offset edges | 4 / 2 |
+| ladder current limit, whole A | the scan's, or more if the top speeds need it | 4 / 3 |
+| slow and fast scan speeds, rpm | a slow, steady speed, then twice it | 33, 65 / 560, 1,120 |
+| ladder from, step, to, rpm | from below the slowest top speed you expect, in steps, to past the fastest (at most 40 rungs) | 30, 15, 435 / 280, 140, 2,800 |
+
+The scan starts from the pair that `offsetsForMotor()` returns for your motor, so give your motor a case
+there first (5b shows where). Any pair on which the motor turns at the slow scan speed will do. Both of our
+motors were first driven on a pair with Z = 0 and a lead of 43–53°.
+
+Then select your motor in the single-motor block of `isp_bldc_motor_userconfig.spin2` (`MOTOR_TYPE`,
+`ONLY_MOTOR_BASE`, `DRIVE_VOLTAGE`, `ONLY_BOARD_TYPE`). The tool selects the single-motor configuration
+itself, as the demos do; with PNut, select it as [DEVELOP.md](DEVELOP.md#building-with-pnut) describes.
+Compile it with debug enabled and run it with the debug terminal open. From `src/`, for example:
+
+```
+pnut-ts -d util_adopt_motor.spin2
+pnut-term-ts -r util_adopt_motor.bin
+```
+
+A run takes 15–30 minutes at one supply voltage. Every line it prints starts `MA-`; the file's header
+describes each record.
+
+### 5b — Read the result and put it in the driver
+
+The last two lines are `MA-RESULT` and `MA-END`. `MA-END` reads `stopped,NONE` when the run finished, and
+otherwise names what ended it. In `MA-RESULT`:
+
+- `slow_fwd_deg`, `slow_rev_deg` and `fast_fwd_deg`, `fast_rev_deg` are the pair at each scan speed, in the
+  form `offsetsForMotor()` returns. `fwdDegrees` serves negative increments and `revDegrees` positive ones.
+- `z_x10` is Z in tenths of a degree, and `z_check` reads `PASS` when the two speeds' Z agree.
+- `ceil_incr`, with `ceil_found` reading `TRUE`, is the speed ceiling at this voltage, for step 6.
+
+`NA` means not measured. Where a result is `NA`, the lines above it say why. `MA-FIT` shows which direction
+did not resolve: it had too few clean points, or its minimum was against an edge with nothing measured
+beyond it. `MA-SIDE` shows how each side ended, and `MA-CEILING` how each climb ended.
 
 With the **fixed-pair model**, the pair is `Z + L` for negative increments and `Z − L` for positive ones,
 using the L of the speed you will run at most:
 
 ```spin2
-    ' configure our offsets for specific motor
-    fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE)
+    fwdDegrees, revDegrees := offsetsForMotor(user.MOTOR_TYPE, eMotorVoltage)
 ```
 
 Add a case for your motor to **`offsetsForMotor()`**, returning `fwdDegrees` and `revDegrees`. The DocoEng
@@ -258,8 +315,23 @@ case shows how to vary the pair by supply voltage and board revision; note that 
 zero, which is only right if the motor's Z is 0. Build the pair from Z and L, as the 6.5″ case does, so an
 asymmetric pair can be expressed.
 
-If the lead you measured changes a lot with speed, that is the case for the second model: note it when you
-share your results.
+If the lead changes a lot between the two speeds (compare the two `lead_x10` values in `MA-PAIR`), that is the
+case for the second model: note it when you share your results.
+
+### 5c — Run it again, on your pair
+
+Rebuild and run the tool again. This time it starts from your pair, so each direction's minimum should sit
+within a degree or two of it (`from_start_x10` in `MA-FIT`). The ceiling it reports is now measured on your
+pair: that is the number step 6 asks for. Repeat at each supply voltage you will use.
+
+**Worked example.** Z = −4° on the 6.5″ motor: −3.8° and −4.0° by the minima, −3.31° and −3.25° cold. Its
+best lead **falls** with speed, from about 20° at a crawl to 5–8° from a quarter of top speed upward. That is
+the opposite of the textbook model, so measure it.
+
+**A second, independent way to find Z: cold, from back-EMF.** Coast the bridge and turn the shaft by hand in
+both directions. The phase voltages are the motor's own waves, fixed to the magnets. This needs no current
+resolution, so it works on a Rev A board too. On our bench the `dual-align` tier of
+`src/test_bench_dual.spin2` does this (see *About the bench programs* at the end of this page).
 
 **If it is wrong:** at worst the motor won't turn or faults at once. More often it runs, drawing one or two
 orders of magnitude more current than it needs, or more in one direction than the other. If a two-wheel
@@ -332,6 +404,7 @@ so we can keep growing the set of motors this driver supports.
 | `init()`, angle table | your case (step 4) |
 | `deltaTableForMotor()` | your case (step 4) |
 | `bHallDeltaTablesValid()` | the loop's range, to your name (step 4) |
+| `util_adopt_motor.spin2`, `CON { record keys }` and `DAT { motor records }` | your key and your record (step 5) |
 | `offsetsForMotor()` | your commutation pair (step 5) |
 | `powerTableIndex()` | your voltages (step 6) |
 | `confgurePowerLimits()` | your ceiling and floor per voltage (step 6) |
