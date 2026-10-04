@@ -13,12 +13,26 @@ The new Motor we've added:
 | Category | Value | Description |
 | --- | --- | --- |
 | **-- docoEng.com 4k RPM 24v motor --** || the new Parallax small motor
-| Hall Tics per Revolution | 24 ticks | 
-| Degrees per hall tick | 15 degrees
-| Ticks per hall-cycle | 6 ticks | positive power (ticks rising): 1-5-4-6-2-3</br>negative power (ticks falling): 1-3-2-6-4-5
-| Hall-cycles per Revolution | 4 hall-cycles |
-| Degrees per Hall-cycle | 90 degrees |
-| Magnets	| 8 poles |
+| Hall Tics per Revolution | 24 ticks | verified on our hardware (turned by hand, against a shaft encoder)
+| Degrees per hall tick | 15 degrees | on average; the six hall sectors are not equal: on our motor they measure 13.5° to 16.7°, and each repeats every turn
+| Ticks per hall-cycle | 6 ticks | positive power (ticks rising): 1-5-4-6-2-3</br>negative power (ticks falling): 1-3-2-6-4-5</br>the falling order verified on our hardware
+| Hall-cycles per Revolution | 4 hall-cycles | verified on our hardware
+| Degrees per Hall-cycle | 90 degrees | verified on our hardware
+| Magnets	| 8 poles | verified on our hardware (4 pole pairs)
+| **-- from the maker's data sheet --** || [DOCOMotor.pdf](./DOCs/DOCOMotor.pdf)
+| Nominal voltage | 24 V DC |
+| Phase-to-phase resistance | 1.8 Ω |
+| No-load speed | 6,800 RPM ±10% | at 24 V
+| No-load current | 0.4 A max |
+| Rated speed | 4,000 RPM ±10% |
+| Rated torque | 0.0625 N·m | about 1.84 A, by the torque constant
+| Output power | 26 W |
+| Back-EMF constant | 3.53 V per 1,000 RPM |
+| Torque constant | 0.034 N·m/A |
+| Insulation class | B |
+| Rotation | clockwise, viewed from the output shaft |
+| Hall sensor supply | +5 to +20 V DC | three sensors, Hu Hv Hw, on the yellow, green and blue leads
+| Shaft | 5 mm, out of both ends |
 
 ## Cabling of new Motor
 
@@ -31,7 +45,7 @@ We're adding the DocoEng.com BLDC motor - 4,000 RPM, 24V to the driver. The moto
 | Yellow | Hall U | adapt Yellow | Hall IN: U
 | Green | Hall V | adapt Green  | Hall IN: V
 | Blue | Hall W | adapt Orange  | Hall IN: W
-| Black | Ground | adapt Brown  | Hall IN: +v
+| Black | Ground | adapt Brown  | Hall IN: GND
 | **Motor Drive Wires** | | *- 20 AWG wires -*
 | Yellow | Phase U | -no adapter- | Motor out U
 | Green | Phase V | -no adapter- | Motor out V

@@ -16,7 +16,7 @@ property this page asks you to measure is measured there, with the numbers we go
 | Category                   | 6.5″ hub motor (`MOTR_6_5_INCH`) | DocoEng 4k RPM 24 V (`MOTR_DOCO_4KRPM`) |
 | -------------------------- | -------------------------------- | --------------------------------------- |
 | Hall ticks per revolution  | 90                               | 24                                      |
-| Degrees per hall tick      | 4°                               | 15°                                     |
+| Degrees per hall tick      | 4°                               | 15° on average (sectors 13.5°–16.7°)    |
 | Ticks per hall cycle       | 6                                | 6                                       |
 | Hall cycles per revolution | 15                               | 4                                       |
 | Degrees per hall cycle     | 24°                              | 90°                                     |

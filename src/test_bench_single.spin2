@@ -47,7 +47,17 @@
 ''               R23-SGL-HANDTICKS (24 ticks a turn), -HANDDIR (the hall and encoder signs tie), -HANDSEQ (the halls'
 ''               documented order); and, in the same run's L-wiring, R23-SGL-NOWHEEL (a distance method refuses with no wheel
 ''               and nothing moves). One tier: single-recheck-<voltage>
+''               04 Oct 2026 -- task 3693 (SRC_REV 9, fmt 8): the D1a evaluation's five harness fixes (DOCs/analyses/bench/
+''               2026-10-04/D1A-RECHECK-EVALUATION.md). D1A-4 HANDSEQ judges each hall transition against the way the
+''               ENCODER moved since the edge before, not the turn's net (a legal rock-back no longer FAILs); D1A-2 the told
+''               direction is known (HAND_TOLD_TICK_SIGN -1: HANDDIR judges it); D1A-6 B1-UI no longer logs the last screen's
+''               click again on a screen with no press ("repeat from 0 to -1" runs twice; B1-HTEDGE had the same defect with
+''               no edge); D1A-7 runIdleMs counts the time waited, not the leg twice over (idle_ms 120,005 for 67 s);
+''               D1A-5 R23-SGL-SECTOR judges each hall code's width against its own mean (repeatability), not against an
+''               equal 60 counts, and records the six widths per set and direction (new B1-CODEW; B1-SECT worst_dev_x10 and
+''               worst_slot are now grid_dev_x10 and grid_slot)
 ''
+
 '' =================================================================================================
 
 { WHY THIS RUN
@@ -199,8 +209,8 @@ CON { timing }
 
 CON { build identity }
 
-    SRC_REV     = 8                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 7                                         ' B1- record-format version (7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
+    SRC_REV     = 9                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 8                                         ' B1- record-format version (8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
 
 CON { the bench this image is built for }
 
@@ -571,12 +581,14 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     HAND_MAX_EDGES          = 192                                       ' edges kept for B1-HTEDGE (8 revolutions); more are counted, not kept
   ' The direction he is TOLD: clockwise, looking at the ENCODER end of the shaft (the end the encoder is bolted to: the one
   '  end the bench shows him and he can find). 6.5in: T0_12_TOLD_CCW FALSE, clockwise from the hub. THE TIE TO THE HALLS'
-  '  SIGN IS NOT YET KNOWN: neither the DocoEng sheet nor DOCOENG_MOTOR.md says which way positive power turns the shaft,
-  '  so HAND_TOLD_TICK_SIGN (+1 rising / -1 falling) is not claimed until D1a's own turn has measured it. While
-  '  HAND_TOLD_SIGN_KNOWN is FALSE, R23-SGL-HANDDIR ties the halls' sign to the encoder's and records the told way beside it
-  '  (B1-HTURN2 told_cw, hall_sign); the evaluation sets both and the motor documentation says it
-    HAND_TOLD_SIGN_KNOWN   = FALSE
-    HAND_TOLD_TICK_SIGN    = 0
+  '  SIGN was not known before D1a (neither the DocoEng sheet nor DOCOENG_MOTOR.md says which way positive power turns the
+  '  shaft); D1a's own turn measured it (below). While HAND_TOLD_SIGN_KNOWN is FALSE, R23-SGL-HANDDIR ties the halls' sign
+  '  to the encoder's and records the told way beside it (B1-HTURN2 told_cw, hall_sign)
+    '  MEASURED (D1a, DOCs/analyses/bench/2026-10-04/debug_261004-153141.log, 2026-10-04): B1-HTURN2 hall_sign,-1,
+    '  enc_sign,-1, told CW_FROM_ENCODER_END: clockwise from the encoder end counts the halls DOWN, so both are set and
+    '  R23-SGL-HANDDIR judges the told leg too (told +1 FAILs that log)
+    HAND_TOLD_SIGN_KNOWN   = TRUE
+    HAND_TOLD_TICK_SIGN    = -1
   ' R23-SGL-NOWHEEL's distance, in inches (any distance of at least 1 reaches the wheel check first: ticksForDistance())
     NOWHEEL_PROBE_IN       = 1
     NOWHEEL_SETTLE_MS      = 500                                        ' the shaft is watched this long after the refusal
@@ -740,6 +752,8 @@ CON { run sequencing enums }
     #0, SET_NEG_SLOW, SET_POS_SLOW, SET_NEG_FAST, SET_POS_FAST
     SET_COUNT  = SET_POS_FAST + 1
     SET_CELLS  = SET_COUNT * HALL_TICKS_PER_REV             ' one accumulator per set per sector slot
+    CODE_SLOTS = 8                                          ' one width accumulator per set per hall code (indexed by the code, 1..6 used)
+    CODE_W_CELLS = SET_COUNT * CODE_SLOTS
 
   ' A set is its rung and its sign: SET_* = rung x SIGN_COUNT + sign, so the slow rung's two sets come first.
   '  RUNG_SLOW / RUNG_FAST - HALLMAP_SLOW_TPS / HALLMAP_FAST_TPS
@@ -935,29 +949,48 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     ENCCHK_LO_COUNTS = 0
 
     ' R23-SGL-SECTOR, crit SECTOR_DEV_X10, units CNT_X10 (tenths of a count: tenths of an ELECTRICAL degree on this motor),
-    '  one instance per set: the worst |width - 60 counts| of the 24 hall sectors of a revolution. A width is the difference
-    '  of two adjacent boundary positions, each the mean of that boundary's edges over the set's SECTOR_REVS revolutions.
+    '  one instance per set: REPEATABILITY, the worst wander of the six hall codes' sector widths. A width is the encoder's
+    '  counts from one hall edge to the next, held at the code the first entered; each code's widths (4 a revolution, over the
+    '  set's SECTOR_REVS revolutions) are judged against THAT CODE'S OWN MEAN: wander = the furthest any of them lies from it.
+    '  Redefined 2026-10-04 (D1a evaluation, finding D1A-5): the first definition (worst |width - 60|) assumed equal sectors,
+    '  and the Doco's are not -- the hall sensors sit a little off their spacing: D1a's hand turn measured code 1 56.2,
+    '  2 59.8, 3 65.7, 4 66.9, 5 57.6, 6 54.2 counts (13.5 to 16.7 degrees), the same codes wide and narrow on every cycle. A
+    '  fixed placement offset is a property of the motor, not a fault; a width that WANDERS is a fault. The six mean widths
+    '  (and min, max) are recorded per set and direction (B1-CODEW) so D1b's evaluation can compare the directions: a
+    '  hysteresis moves a line's two edges together, a placement offset is the same both ways. B1-SLOT's 24 widths and
+    '  B1-SECT's grid_dev_x10 (the old reading) are recorded, not judged.
     ' PRECONDITION: the set completed SECTOR_REVS revolutions in encoder-checked bursts; otherwise NOMEAS. That excludes a
     '  set with a LOST edge, which is ENCCHK's negative; this cell's own negatives (a displaced sensor, a glitching sensor,
     '  a sensor more than half a sector off) leave a whole-revolution span exact, so the exclusion cannot hide them. A
     '  slot holding other than one edge per revolution, a slot that saw two boundaries, or two adjacent slots whose
-    '  boundaries do not step by one, is NOT excluded: the set reads SECTOR_BROKEN_X10 and FAILs. The drive cannot move a
-    '  hall boundary.
-    ' BOUND: 0 .. SECTOR_TOL_X10 (60: 6 counts = 6 electrical degrees = 1.5 mechanical). DERIVED, PROVISIONAL (arbiter):
-    '  the driver places the field from the hall sector and one offset for all six (BLDC-COMMUTATION-PRINCIPLES.md), so a
-    '  boundary off the equal grid by d places that sector's field d off; at 6 degrees torque per amp falls 1 - cos 6 =
-    '  0.55 %, inside the 1-3 % residual the misdial check allows (analysis sec 8, L2) and far inside the +-15 degree basin
-    '  where the current minimum is flat to a few percent. A width off by w moves at least one of its two boundaries.
-    ' CORRECT CASE: equal sectors read 600 x10 per sector, +-10 x10 for the count's own quantum at the two ends (the latched
-    '  count is whole, and every crossing of one boundary one way latches the same count, so averaging does not remove it;
-    '  the PASM capture adds under 0.1 x10) -> dev 0..10 -> (phase 1 wrote +-0.4 here, leaving the quantum out; 2a corrects it)
-    '  PASS. Negative: one sensor 8 counts from its place reads widths 520 and 680 -> dev 80 -> FAIL; a sensor 40 counts off
-    '  puts its edges in the neighbouring slot -> SECTOR_BROKEN_X10 -> FAIL.
-    '  No unfixed code exists (a first measurement of the motor); the negatives are the desk mutations (python model).
+    '  boundaries do not step by one, is NOT excluded: the set reads SECTOR_BROKEN_X10 and FAILs; nor is a code whose widths
+    '  are not all measured (4 a revolution: a missed hall edge leaves a transition skipped and its widths out). The drive
+    '  cannot move a hall boundary.
+    ' BOUND: 0 .. SECTOR_TOL_X10 (60: 6 counts). DERIVED, PROVISIONAL (arbiter): the within-code scatter of D1a's hand turn
+    '  (77 edges, 2026-10-04 15:31; desk model, 12-13 widths a code): the furthest width from its code's mean is 3.3, 3.2,
+    '  2.7, 4.1, 2.5 and 3.2 counts (codes 1 to 6: 33, 32, 27, 41, 25, 32 x10), worst 4.1. That scatter holds the count's own quantum
+    '  (+-1 at each end of a width) and the sensors' switch-point noise, at a hand's uneven speed. The driven crawl is steadier
+    '  but runs 4.6 times (24 ticks/s: 1,440 counts/s) to 18 times (96: 5,760) the hand's mean 313 counts/s, and the part of the
+    '  scatter that is a hall delay times speed is not measured here (the log has no driven run); the margin for it is 1.5 x
+    '  the worst seen, 4.1 x 1.5 = 6.15, so 6 counts (60 x10) -- the equal-grid cell's own number, kept so this cell cannot FAIL
+    '  a sector the earlier bound passed. B1-CODEW's min / max at each rung measures the crawl's real scatter for D1b's
+    '  evaluation, which retunes it. A sensor placement the drive can live with is the drive's question (D1b's offset scan),
+    '  not this cell's.
+    ' CORRECT CASE: D1a's measured widths (code 1 56.3, 2 59.8, 3 65.7, 4 66.9, 5 57.5, 6 54.2, min..max 51..71) read wander
+    '  41 x10 (worst code 4) -> PASS, though the old cell read 110 x10 on a single width (69 on the means) and FAILed it. A
+    '  motor with exactly equal sectors reads 10 x10 (the quantum) -> PASS. Negative: a hall edge displaced on alternate
+    '  revolutions by 12 counts (3 degrees mechanical) reads 63 .. 87 x10 depending on its duty -> FAIL; by 8 or 10 counts on
+    '  one revolution in four reads 47 and 52 -> PASS (this cell is blind to a small, rare wander: it asks for 12 counts at any
+    '  duty, 8 at half); a missed edge (a code one width short) -> SECTOR_BROKEN_X10 -> FAIL; a sensor 40 counts off puts its edges
+    '  in the neighbouring slot -> SECTOR_BROKEN_X10 -> FAIL. A fixed placement offset (any, with the sector still in
+    '  its slot) wanders 0 -> PASS.
+    '  No unfixed code exists (a first measurement of the motor); the negatives are the desk mutations (python model,
+    '  this log's widths as the correct case).
     '  Rival: a timing error that DIFFERS BETWEEN SENSORS (unequal hall IC delays) also makes unequal widths, and grows
     '  with speed where geometry does not: B1-SPDCMP's max_wdiff_x10 (the same sector's width at the two rungs) separates
-    '  them -- MODELED, a sensor displaced 8 counts reads 0 there, a sensor lagging 8 counts more at the fast rung reads 80.
-    '  A timing error COMMON to the three sensors shifts every edge alike: widths unchanged, the zero moves (z_diff_x10).
+    '  them, and so do B1-CODEW's means at the two rungs. A timing error COMMON to the three sensors shifts every edge alike:
+    '  widths unchanged, the zero moves (z_diff_x10). Hysteresis (the two directions' edges differ) shows as different
+    '  B1-CODEW means in the two signs.
     SECTOR_LO_X10     = 0
     SECTOR_TOL_X10    = 60
     SECTOR_BROKEN_X10 = 9_999                               ' a map whose slots are not one boundary each: not a width
@@ -1330,8 +1363,8 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     '  are dead or skip still has its turn counted and reads 0 or low -- a measured FAIL, not an exclusion. Only a turn
     '  too short to judge, or a ring that lost edges (the drain every HAND_POLL_MS did not keep up), is excluded.
     ' BOUND: HALL_TICKS_PER_REV x 100 -/+ HANDTICKS_TOL_X100 (2,400 -/+ 13). DERIVED: the two edges latch the encoder at
-    '  their own hall boundaries, each within SECTOR_TOL_X10 / 10 counts of its place on the equal grid (R23-SGL-SECTOR's
-    '  bound, 6) and one count of the latch's quantum, so the span is the sectors x 60 counts -/+ 2 x 7 = 14 counts; the span
+    '  their own hall boundaries, each within 6 counts of its place on the equal grid (the first R23-SGL-SECTOR's bound; D1a
+    '  measured this motor's edges within 4.0 of it, 6.9 between the two furthest, desk model) and one count of the latch's quantum, so the span is the sectors x 60 counts -/+ 2 x 7 = 14 counts; the span
     '  is at least the two revolutions less one sector at each end, 2,760 counts, so the ratio is off by at most
     '  2,400 x 14 / 2,760 = 12.2 x100, rounded up to 13. 6.5in: T0-12's 90 hall transitions a revolution, "expect_90",
     '  by eye (the halls alone, no encoder).
@@ -1347,7 +1380,7 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     '  to edge; a bound of +-5 FAILS a correct motor in 135 of 2,000 trials -- why 13.
     '  Rival: a coupling that slips between the shaft and the encoder reads high (fewer counts for the same ticks); the
     '  hall map's R23-SGL-ENCCHK over two driven revolutions (the same two counters) tells it apart from a hall fault.
-    HANDTICKS_EDGE_ERR_COUNTS = SECTOR_TOL_X10 / X10 + 1                                ' 7: one edge's place on the grid
+    HANDTICKS_EDGE_ERR_COUNTS = 7                                                       ' one edge's place on the grid (was SECTOR_TOL_X10 / X10 + 1: the cell's tolerance, no longer a grid bound)
     HANDTICKS_MIN_SPAN        = HAND_TURN_MIN_COUNTS - 2 * ENC_COUNTS_PER_TICK          ' 2,760
     HANDTICKS_TOL_X100        = (HALL_TICKS_PER_REV * X100 * 2 * HANDTICKS_EDGE_ERR_COUNTS + HANDTICKS_MIN_SPAN - 1) / HANDTICKS_MIN_SPAN   ' 13
     HANDTICKS_LO_X100         = HALL_TICKS_PER_REV * X100 - HANDTICKS_TOL_X100
@@ -1376,22 +1409,29 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     TIE_OK = 1
 
     ' R23-SGL-HANDSEQ (L-handturn), crit SEQ_IN_ORDER, units BOOL01, one instance MOTOR: 1 when every hall transition seen
-    '  follows DOCOENG_MOTOR.md's order for the way the halls counted -- 1-5-4-6-2-3 for rising ticks (positive power),
-    '  1-3-2-6-4-5 for falling (negative power; the driver's deltas4k reads old 1 -> new 5 as +1 and 1 -> 3 as -1, the same
-    '  two orders) -- none skipped, none illegal (%000, %111), none against the counted direction, at least HALL_TICKS_PER_REV
-    '  edges seen (a revolution of them); else 0. The direction counted is the sign of the net ticks (rising when 0). B1-HTURN
-    '  carries the counts that fail it (bad, against) and B1-HTEDGE every transition with its two codes and the encoder count.
+    '  is the next code in DOCOENG_MOTOR.md's order for the way the ENCODER moved at that step -- 1-5-4-6-2-3 for rising
+    '  ticks (the count going up; positive power), 1-3-2-6-4-5 for falling (the count going down; the driver's deltas4k reads
+    '  old 1 -> new 5 as +1 and 1 -> 3 as -1, the same two orders) -- none skipped, none illegal (%000, %111), none whose
+    '  direction disagrees with the encoder's move since the edge before (0 counts: either way), at least HALL_TICKS_PER_REV
+    '  edges seen (a revolution of them); else 0. Each transition is judged on its own (D1a evaluation 2026-10-04: judged
+    '  against the turn's net direction, the hand's legal rock-back FAILed, edge 51 of the log). B1-HTURN carries the counts
+    '  that fail it (bad, against) and B1-HTEDGE every transition with its two codes and the encoder count.
     ' PRECONDITION: as HANDTICKS's. THE EXCLUSION CHECK: a hall line that is stuck or open skips and shows illegal codes
     '  over a turn the encoder saw -- this cell's negative (0) -- and is not excluded; only a short turn or a lost edge is.
     ' BOUND: SEQ_OK .. SEQ_OK (1).
-    ' CORRECT CASE: 72 transitions of a three turn hand turn, every one the next code in the documented order -> 1 -> PASS.
-    '  Broken: every third transition skipped (23 bad edges) -> 0; one hall line inverted (48 illegal or skipped edges)
-    '  -> 0; a hand that rocked back across a boundary (one tick against the count) -> 0 -- each FAIL. A hall
-    '  line PAIR swapped reads the cycle backwards, which this cell PASSES (the order is the documented falling one) and
-    '  R23-SGL-HANDDIR FAILS; a rotation of the three lines leaves the cycle unchanged and PASSES both (the driver's
-    '  tables do not care which line is which). UNFIXED: none (a first measurement); DOCOENG_MOTOR.md states the orders.
-    '  Rival: a hand that rocks back across one boundary (not a hall fault): the encoder's count at each edge in B1-HTEDGE
-    '  runs back by under a sector at the against-edge; a hall fault does not move the encoder back.
+    ' CORRECT CASE: 72 transitions of a three turn hand turn, every one the next code in the documented order for the
+    '  way the encoder moved -> 1 -> PASS; and a hand that rocks back across one boundary and forward again (one reverse
+    '  transition, its encoder move the other way, then the forward one) -> 1 -> PASS. D1a's log (2026-10-04 15:31): 77
+    '  edges, 76 forward and the rock-back's 5 -> 4 (encoder +9) -> 4 -> 5: judged this way, against 0 -> PASS (judged on
+    '  the net, against 1 -> FAIL, the finding). Broken: every third transition skipped (23 bad edges) -> 0; one hall line
+    '  inverted (48 illegal or skipped edges) -> 0; a hall line PAIR swapped (the cycle runs the other way while the
+    '  encoder counts the way it did: every edge disagrees) -> 0 -- each FAIL; and a forward edge whose encoder move is
+    '  the other way (a hall that ticks the wrong way for the count) -> 0. A rotation of the three lines leaves the cycle
+    '  unchanged and PASSES (the driver's tables do not care which line is which). UNFIXED: none (a first measurement);
+    '  DOCOENG_MOTOR.md states the orders. Desk model: the log's 77 B1-HTEDGE records re-judged edge by
+    '  edge (verdict above) and each broken value applied to them.
+    '  Rival: a hand that rocks back across one boundary (not a hall fault): the encoder's count at its edges runs the other
+    '  way and the hall order follows it; a hall fault does not make the encoder move the other way.
     SEQ_OK = 1
 
     ' R23-SGL-NOWHEEL (L-wiring, in the recheck tier only), crit REFUSED_NOMOVE, units BOOL01, one instance MOTOR: 1 when,
@@ -1962,6 +2002,8 @@ VAR { the hall map, per set }
     LONG    slotKind[SET_CELLS]                             ' the hall boundary (0..5) the slot's first edge crossed
     LONG    slotMisfit[SET_CELLS]                           ' edges in the slot that crossed another boundary
     LONG    setWidthX10[SET_CELLS]                          ' each slot's width to the next, counts x10
+    LONG    codeWSum[CODE_W_CELLS], codeWN[CODE_W_CELLS]    ' R23-SGL-SECTOR: the sum and number of the widths of the sector a hall code is held over, counts
+    LONG    codeWMin[CODE_W_CELLS], codeWMax[CODE_W_CELLS]  ' and the narrowest and widest of them, counts
     LONG    zFirst[SET_COUNT]                               ' the set's first edge's zero estimate, counts (0..359)
     LONG    zSumDev[SET_COUNT]                              ' the sum of every later estimate's offset from it, unwrapped
     LONG    zCount[SET_COUNT]
@@ -1971,7 +2013,7 @@ VAR { the hall map, per set }
     LONG    setEncDevWorst[SET_COUNT]                       ' R23-SGL-ENCCHK: the worst burst
     LONG    setBurstsChecked[SET_COUNT]
     LONG    setBurstsMapped[SET_COUNT]
-    LONG    setSectDevX10[SET_COUNT]                        ' R23-SGL-SECTOR: the worst sector, or SECTOR_BROKEN_X10
+    LONG    setSectDevX10[SET_COUNT]                        ' R23-SGL-SECTOR: the worst code's width wander, or SECTOR_BROKEN_X10
     LONG    bSetFinished[SET_COUNT]
 
 VAR { phase 2a: the row, the drive's constants, the sampler }
@@ -2061,7 +2103,7 @@ VAR { task 3686: the public start path, L-wiring's walk, R23-SGL-TOPSPD }
 VAR { task 3692: L-handturn -- the last run's readings and the cells' feeds, and R23-SGL-NOWHEEL's }
 
     LONG    htRun, bHtByDone                                ' the run (1-based), and T/F where T means his DONE ended it (else the bound)
-    LONG    htEdges, htRise, htFall, htBad, htAgainst       ' hall edges captured; rising, falling and skipped/illegal ones; edges against the counted way
+    LONG    htEdges, htRise, htFall, htBad, htAgainst       ' hall edges captured; rising, falling and skipped/illegal ones; edges against the encoder's move since the edge before
     LONG    htTicksAll, htTicksAfter                        ' the signed net ticks of every edge, and of every edge after the first
     LONG    htEncFirst, htEncLast, htEncSpan                ' the encoder's count latched at the first and last edge, and between them
     LONG    htEncNet, htLost, htTurnsX1000                  ' the encoder's net count over the step, edges lost, whole turns x1000
@@ -2844,14 +2886,18 @@ PRI spanTicks() : nTicks | edgeIdx, nTick
         nTick, _ := classifyEdge(edgeCodes[edgeIdx])
         nTicks += nTick
 
-PRI accumulateBurst(setIdx) | edgeIdx, nTick, nBoundary, nPos, nRel, cellIdx, nZ, nOffset
+PRI accumulateBurst(setIdx) | edgeIdx, nTick, nBoundary, nPos, nRel, cellIdx, nZ, nOffset, nTickNext, nWidth, wCell
 ' Map the burst's edges 0 .. BURST_MAP_EDGES - 1 (one per boundary per revolution) into the set: each edge's position
-' within the revolution, past the leg's base, into its sector slot; and each edge's estimate of the hall zero.
+' within the revolution, past the leg's base, into its sector slot; and each edge's estimate of the hall zero. Then each
+' sector's width (this edge to the next, counts) into the accumulator of the hall code it is held at.
 '
 ' @param setIdx - SET_*
 
 ' Local Variables:
 ' @local edgeIdx - the edge
+' @local nTickNext - the next edge's tick
+' @local nWidth - the sector's width from this edge to the next, counts
+' @local wCell - its hall code's accumulator in the set
 ' @local nTick - its tick (TICK_BAD: not mapped)
 ' @local nBoundary - the hall boundary it crossed, 0..5
 ' @local nPos - its encoder count
@@ -2887,12 +2933,28 @@ PRI accumulateBurst(setIdx) | edgeIdx, nTick, nBoundary, nPos, nRel, cellIdx, nZ
                 nOffset += ENC_COUNTS_PER_ECYCLE
             zSumDev[setIdx] += nOffset
             zCount[setIdx]++
+    repeat edgeIdx from 0 to BURST_MAP_EDGES - 1            ' R23-SGL-SECTOR: the sector between this edge and the next, held
+        nTick, _ := classifyEdge(edgeCodes[edgeIdx])        '  at the code this edge entered; two good edges of one direction
+        nTickNext, _ := classifyEdge(edgeCodes[edgeIdx + 1])
+        if (nTick <> TICK_BAD) and (nTick == nTickNext)
+            nWidth := abs(edgeEnc[edgeIdx + 1] - edgeEnc[edgeIdx])
+            wCell := setIdx * CODE_SLOTS + (edgeCodes[edgeIdx] & CODE_MASK)
+            if codeWN[wCell] == 0
+                codeWMin[wCell] := nWidth
+                codeWMax[wCell] := nWidth
+            else
+                codeWMin[wCell] <#= nWidth
+                codeWMax[wCell] #>= nWidth
+            codeWSum[wCell] += nWidth
+            codeWN[wCell]++
 
-PRI finishSet(setIdx) | slotIdx, cellIdx, nextCell, nExpected, bBroken, nWorstX10, nWorstSlot, nBadSlots, nWidthX10, nDevX10
+PRI finishSet(setIdx) | slotIdx, cellIdx, nextCell, nExpected, bBroken, nWorstX10, nWorstSlot, nBadSlots, nWidthX10, nDevX10, nCode, wCell, nMeanX10, nWanderX10, nWorstRepX10
 ' Reduce a set: every slot must hold one edge per revolution of one boundary, the boundaries stepping by one around the
-' revolution; each sector's width is the next slot's mean less its own; the worst |width - 60| is the set's SECTOR
-' reading (SECTOR_BROKEN_X10 when a slot breaks the rule); the hall zero is the mean of every edge's estimate. Emits a
-' B1-SLOT per slot and the set's B1-SECT.
+' revolution; each sector's width is the next slot's mean less its own (B1-SLOT; the worst |width - 60| from the equal
+' grid is recorded, not judged); each hall code's widths are then judged against that code's own mean -- the worst
+' wander is the set's SECTOR reading (SECTOR_BROKEN_X10 when a slot breaks the rule or a code's widths are not all
+' measured), with a B1-CODEW per code (mean, min, max); the hall zero is the mean of every edge's estimate. Emits the
+' set's B1-SLOT, B1-CODEW and B1-SECT.
 '
 ' @param setIdx - SET_*
 
@@ -2907,8 +2969,14 @@ PRI finishSet(setIdx) | slotIdx, cellIdx, nextCell, nExpected, bBroken, nWorstX1
 ' @local nBadSlots - slots that broke the rule
 ' @local nWidthX10 - one slot's width, counts x10
 ' @local nDevX10 - |nWidthX10 - 600|
+' @local nCode - a hall code, 1..6
+' @local wCell - its width accumulator in the set
+' @local nMeanX10 - the mean of its widths, counts x10
+' @local nWanderX10 - the furthest any of its widths lies from that mean, counts x10
+' @local nWorstRepX10 - the worst nWanderX10 of the six codes
 
     nExpected := setBurstsMapped[setIdx] * BURST_REVS
+    nWorstRepX10 := 0
     bBroken := FALSE
     nBadSlots := 0
     nWorstX10 := 0
@@ -2934,7 +3002,25 @@ PRI finishSet(setIdx) | slotIdx, cellIdx, nextCell, nExpected, bBroken, nWorstX1
             nWorstX10 := nDevX10
             nWorstSlot := slotIdx
         emitSlot(setIdx, slotIdx, cellIdx, nWidthX10)
-    setSectDevX10[setIdx] := bBroken ? SECTOR_BROKEN_X10 : nWorstX10
+    nWorstRepX10 := 0                                       ' R23-SGL-SECTOR: each code's widths against that code's own mean
+    repeat nCode from 1 to HALL_ORDER_LEN
+        wCell := setIdx * CODE_SLOTS + nCode
+        if codeWN[wCell] <> nExpected * HALL_TICKS_PER_REV / HALL_ORDER_LEN         ' a missed edge leaves a width unmeasured
+            bBroken := TRUE
+        nMeanX10 := divRound(codeWSum[wCell] * X10, codeWN[wCell] #> 1)
+        nWanderX10 := (codeWMax[wCell] * X10 - nMeanX10) #> (nMeanX10 - codeWMin[wCell] * X10)
+        nWorstRepX10 #>= nWanderX10
+        benchLog.begin(@"B1-CODEW")
+        benchLog.tokenField(@"set", setToken(setIdx), TOKMAX_SET)
+        benchLog.tokenField(@"dir", directionToken(setTicks[setIdx]), TOKMAX_DIR)
+        benchLog.numField(@"code", nCode, LIM_TINY)
+        benchLog.numField(@"n", codeWN[wCell], LIM_SMALL)
+        benchLog.numField(@"mean_x10", nMeanX10, LIM_SMALL)
+        benchLog.numField(@"min", codeWMin[wCell], LIM_SMALL)
+        benchLog.numField(@"max", codeWMax[wCell], LIM_SMALL)
+        benchLog.numField(@"wander_x10", nWanderX10, LIM_SMALL)
+        lineEmit()
+    setSectDevX10[setIdx] := bBroken ? SECTOR_BROKEN_X10 : nWorstRepX10
     setZx10[setIdx] := wrapPositive(zFirst[setIdx] * X10 + divRound(zSumDev[setIdx] * X10, zCount[setIdx] #> 1), ENC_COUNTS_PER_ECYCLE * X10)
     bSetFinished[setIdx] := TRUE
     benchLog.begin(@"B1-SECT")
@@ -2943,8 +3029,8 @@ PRI finishSet(setIdx) | slotIdx, cellIdx, nextCell, nExpected, bBroken, nWorstX1
     benchLog.numField(@"revs", nExpected, LIM_TINY)
     benchLog.numField(@"bad_slots", nBadSlots, LIM_TINY)
     benchLog.numField(@"bad_edges", setBadEdges[setIdx], LIM_SMALL)
-    benchLog.numField(@"worst_dev_x10", nWorstX10, LIM_SMALL)
-    benchLog.numField(@"worst_slot", nWorstSlot, LIM_TINY)
+    benchLog.numField(@"grid_dev_x10", nWorstX10, LIM_SMALL)
+    benchLog.numField(@"grid_slot", nWorstSlot, LIM_TINY)
     benchLog.numField(@"sector_dev_x10", setSectDevX10[setIdx], LIM_SMALL)
     benchLog.numField(@"z_x10", setZx10[setIdx], LIM_SMALL)
     benchLog.numField(@"z_edges", zCount[setIdx], LIM_SMALL)
@@ -2974,6 +3060,11 @@ PRI clearHallMap() | cellIdx, setIdx
         slotKind[cellIdx] := NO_BOUNDARY
         slotMisfit[cellIdx] := 0
         setWidthX10[cellIdx] := 0
+    repeat cellIdx from 0 to CODE_W_CELLS - 1
+        codeWSum[cellIdx] := 0
+        codeWN[cellIdx] := 0
+        codeWMin[cellIdx] := 0
+        codeWMax[cellIdx] := 0
     repeat setIdx from 0 to SET_COUNT - 1
         zFirst[setIdx] := 0
         zSumDev[setIdx] := 0
@@ -6234,19 +6325,20 @@ PRI sgEmitScreen(seqNum, runNum, pPhase0, pPhase1, nSt0, nSt1, nMs) | idx, pIn
     benchLog.numField(@"ms", nMs, LIM_BIG)
     benchLog.numField(@"presses", sgInputN, LIM_SMALL)
     lineEmit()
-    repeat idx from 0 to (sgInputN <# SG_INPUT_MAX) - 1
-        pIn := @sgInputs[idx * SG_INPUT_LONGS]
-        benchLog.begin(@"B1-UI")
-        benchLog.tokenField(@"leg", sgLegToken, TOKMAX_LEG)
-        benchLog.numField(@"step", seqNum, LIM_TINY)
-        benchLog.numField(@"run", runNum, LIM_TINY)
-        benchLog.tokenField(@"phase", pPhase1, TOKMAX_PH)
-        benchLog.numField(@"press", idx + 1, LIM_TINY)
-        benchLog.numField(@"x", long[pIn][0], LIM_SMALL)
-        benchLog.numField(@"y", long[pIn][1], LIM_SMALL)
-        benchLog.tokenField(@"hit", hitToken(long[pIn][2]), TOKMAX_BT)
-        benchLog.numField(@"at_ms", long[pIn][3], LIM_BIG)
-        lineEmit()
+    if sgInputN > 0                                         ' "repeat from 0 to -1" runs TWICE in Spin2: with no press it
+        repeat idx from 0 to (sgInputN <# SG_INPUT_MAX) - 1 '  logged the last screen's click again (D1A-6, 2026-10-04)
+            pIn := @sgInputs[idx * SG_INPUT_LONGS]
+            benchLog.begin(@"B1-UI")
+            benchLog.tokenField(@"leg", sgLegToken, TOKMAX_LEG)
+            benchLog.numField(@"step", seqNum, LIM_TINY)
+            benchLog.numField(@"run", runNum, LIM_TINY)
+            benchLog.tokenField(@"phase", pPhase1, TOKMAX_PH)
+            benchLog.numField(@"press", idx + 1, LIM_TINY)
+            benchLog.numField(@"x", long[pIn][0], LIM_SMALL)
+            benchLog.numField(@"y", long[pIn][1], LIM_SMALL)
+            benchLog.tokenField(@"hit", hitToken(long[pIn][2]), TOKMAX_BT)
+            benchLog.numField(@"at_ms", long[pIn][3], LIM_BIG)
+            lineEmit()
     sgInputN := 0
 
 PRI sgScreenPtr(stepId, ePhase) : pScreen
@@ -6692,22 +6784,22 @@ PRI hitToken(nHit) : pToken
 CON { --- task 3692: L-handturn (plan sec 10 step 1), the hand turn with the motor UNPOWERED, attended --- }
 
 #ifdef SINGLE_PART_HANDTURN
-PRI bRunHandTurn() : bCompleted | eEncErr, nStartMs
+PRI bRunHandTurn() : bCompleted | eEncErr
 ' L-handturn (task 3692, T0-12's hand-rotation anchor mirrored): with the board read and NO DRIVER STARTED -- the motor
 ' object's start() is not called, the bridge pins stay as the harness left them, the hall pins are only read -- start the
 ' encoder reader (pins only: its capture cog latches the count at every hall edge), run the one step on the panel
 ' (bRunAttended(): INTRO, ACT, RESULT), stop the reader, and show the wiring screen that stays up while the motor is
 ' started and checkWiring() turns it a little. The encoder is started again by bStartEncoder() afterwards, from count 0.
-' The whole leg is the operator's time, not an unwatched motor's: runIdleMs takes it. Cog 0.
+' The leg's time is the operator's, not an unwatched motor's: runIdleMs takes it -- each screen he waits on adds its own
+' (sgUiWait(), no job) and the turn step adds its own (wkTurnStep(), a job), each once (before SRC_REV 9 this routine
+' added the whole leg again on top: idle_ms 120,005 over 67 s of screens). Cog 0.
 '
 ' @returns bCompleted - T/F where T means nothing ended the run
 
 ' Local Variables:
 ' @local eEncErr - enc.start()'s result
-' @local nStartMs - getms() when the leg began
 
     bCompleted := FALSE
-    nStartMs := getms()
     htRun := 0
     bHtEnough := FALSE
     benchLog.cogEventBegin()
@@ -6722,7 +6814,6 @@ PRI bRunHandTurn() : bCompleted | eEncErr, nStartMs
             sgEmitScreen(0, 0, @sPhWiring, @sPhWiring, SG_ST_WIRING, SG_ST_WIRING, 0)
     else
         setAbort(AR_ENC_START, eEncErr)
-    runIdleMs += getms() - nStartMs
 
 PRI wkTurnStep() | nEnc0, nLost0, nStartMs, nAbsEnc, bEnded
 ' The hand turn (the measure cog): empty the capture ring, then until his DONE (or HAND_TURN_MAX_MS) take every captured hall
@@ -6743,6 +6834,7 @@ PRI wkTurnStep() | nEnc0, nLost0, nStartMs, nAbsEnc, bEnded
     htRise := 0
     htFall := 0
     htBad := 0
+    htAgainst := 0
     htTicksAll := 0
     htTicksAfter := 0
     htEncFirst := 0
@@ -6776,13 +6868,16 @@ PRI wkTurnStep() | nEnc0, nLost0, nStartMs, nAbsEnc, bEnded
             waitms(HAND_POLL_MS)
     waitms(STOP_SETTLE_MS)                                  ' the last edges of a hand that just let go
     takeTurnEdges()
+    runIdleMs += getms() - nStartMs                         ' the whole step waited on his hand (cog 0 adds only no-job screens)
     turnResult(nEnc0, nLost0)
 
-PRI takeTurnEdges() | bTaken, nEnc, nCode, nPrev, nCodes, nTick
+PRI takeTurnEdges() | bTaken, nEnc, nCode, nPrev, nCodes, nTick, nMove
 ' Take every captured hall edge waiting in the encoder's ring into the turn's counts: the first HAND_MAX_EDGES are kept (the
 ' latched count and both codes), every one is classified by this harness's own order table (classifyEdge(): a rising, a
 ' falling or a bad transition) and the signed ticks summed -- over all of them, and over all but the first (whose own
-' boundary starts the span the cell reads).
+' boundary starts the span the cell reads). Every classified edge after the first is also judged against the way the
+' ENCODER moved between it and the edge before (htAgainst): a rise with the count going up and a fall with it going
+' down are in step; a hand rocking back across one boundary is, at each of its edges, in step with its own move.
 
 ' Local Variables:
 ' @local bTaken - T/F where T means takeEdge() returned an edge
@@ -6791,6 +6886,7 @@ PRI takeTurnEdges() | bTaken, nEnc, nCode, nPrev, nCodes, nTick
 ' @local nPrev - its hall code before
 ' @local nCodes - the new code | the previous one << CODE_PREV_SHIFT
 ' @local nTick - its tick: TICK_RISE, TICK_FALL or TICK_BAD
+' @local nMove - the encoder's count at this edge less its count at the edge before
 
     repeat
         bTaken, nEnc, nCode, nPrev, _ := enc.takeEdge()
@@ -6798,6 +6894,10 @@ PRI takeTurnEdges() | bTaken, nEnc, nCode, nPrev, nCodes, nTick
             quit
         nCodes := (nCode & CODE_MASK) | ((nPrev & CODE_MASK) << CODE_PREV_SHIFT)
         nTick, _ := classifyEdge(nCodes)
+        if (htEdges > 0) and (nTick <> TICK_BAD)                ' R23-SGL-HANDSEQ: each transition against the way the
+            nMove := nEnc - htEncLast                           '  encoder moved since the last edge (0: no way to tell)
+            if (nMove <> 0) and (signum(nMove) <> nTick)
+                htAgainst++
         if htEdges < HAND_MAX_EDGES
             htEdgeEnc[htEdges] := nEnc
             htEdgeCodes[htEdges] := nCodes
@@ -6816,7 +6916,7 @@ PRI takeTurnEdges() | bTaken, nEnc, nCode, nPrev, nCodes, nTick
 PRI turnResult(nEnc0, nLost0)
 ' The turn's readings and the three cells' feeds, from what takeTurnEdges() took: the encoder's net count and the span between
 ' the first and last edge, the whole turns, the hall ticks per encoder revolution x100 (HANDTICKS), the two nets' signs
-' (HANDDIR), the edges against the counted way (HANDSEQ), whether the turn is long enough to judge, and the RESULT phrase
+' (HANDDIR), whether the turn is long enough to judge, and the RESULT phrase
 ' and its two readings (hall ticks a turn x10, encoder turns x10).
 '
 ' @param nEnc0 - the encoder's count when the step began
@@ -6831,7 +6931,6 @@ PRI turnResult(nEnc0, nLost0)
         htTprX100 := muldiv64(abs(htTicksAfter), ENC_COUNTS_PER_REV * X100, abs(htEncSpan))
     htHallSign := signum(htTicksAll)
     htEncSign := signum(htEncNet)
-    htAgainst := (htTicksAll >= 0) ? htFall : htRise
     bHtEnough := (abs(htEncNet) >= HAND_TURN_MIN_COUNTS) and (htLost == 0)
     wkRes1 := htTprX100 / X10
     wkRes2 := htTurnsX1000 / (PM / X10)
@@ -6867,7 +6966,7 @@ PRI handDirValue() : nOk
 
 PRI handSeqValue() : nOk
 ' R23-SGL-HANDSEQ's reading: SEQ_OK when at least HALL_TICKS_PER_REV edges were seen and none was skipped, illegal or
-' against the counted direction; else 0.
+' against the way the encoder moved at that edge (takeTurnEdges()); else 0.
 '
 ' @returns nOk - SEQ_OK or 0
 
@@ -6920,17 +7019,18 @@ PRI emitTurnStep(seqNum, runNum) | idx, nCodes, nTick
     benchLog.boolField(@"dir_ok", handDirValue() == TIE_OK)
     benchLog.boolField(@"seq_ok", handSeqValue() == SEQ_OK)
     lineEmit()
-    repeat idx from 0 to (htEdges <# HAND_MAX_EDGES) - 1
-        nCodes := htEdgeCodes[idx]
-        nTick, _ := classifyEdge(nCodes)
-        benchLog.begin(@"B1-HTEDGE")
-        benchLog.numField(@"run", runNum, LIM_TINY)
-        benchLog.numField(@"seq", idx + 1, LIM_SMALL)
-        benchLog.numField(@"code", nCodes & CODE_MASK, LIM_TINY)
-        benchLog.numField(@"prev", (nCodes >> CODE_PREV_SHIFT) & CODE_MASK, LIM_TINY)
-        benchLog.numField(@"tick", nTick, LIM_TINY)
-        benchLog.numField(@"enc", htEdgeEnc[idx], LIM_MID)
-        lineEmit()
+    if htEdges > 0                                          ' (a zero count of "repeat from 0 to -1" would run twice)
+        repeat idx from 0 to (htEdges <# HAND_MAX_EDGES) - 1
+            nCodes := htEdgeCodes[idx]
+            nTick, _ := classifyEdge(nCodes)
+            benchLog.begin(@"B1-HTEDGE")
+            benchLog.numField(@"run", runNum, LIM_TINY)
+            benchLog.numField(@"seq", idx + 1, LIM_SMALL)
+            benchLog.numField(@"code", nCodes & CODE_MASK, LIM_TINY)
+            benchLog.numField(@"prev", (nCodes >> CODE_PREV_SHIFT) & CODE_MASK, LIM_TINY)
+            benchLog.numField(@"tick", nTick, LIM_TINY)
+            benchLog.numField(@"enc", htEdgeEnc[idx], LIM_MID)
+            lineEmit()
 #endif
 
 CON { --- L-handload (the analysis's L5): the hand load at low speed, attended --- }
