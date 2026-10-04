@@ -736,6 +736,11 @@ threshold in normal use, or a user report of the platform running short of its c
 
 ### PL-103 -- the ALIGN band is sized from motion when the bias read lands on a coasting wheel
 
+> **Status (2026-10-04):** FIXED IN THE TREE; certified by the next hand run. `test_bench_dual.spin2` SRC_REV 85
+> (task «#3694»): a bias read is still only when no phase strays more than `ALIGN_BIAS_STRAY_MAX_MV` (8 mV), and the
+> band is sized from the leg's quietest hall-still read when none passes (`alignApplyBias()`); `BM-AGUIDE` gains
+> `stray_mV`. The Doco's align leg (`test_bench_single.spin2` L-align) inherits it.
+>
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (alignment tier instrument)
 
 **Found 2026-09-22, Visit 7c pass 2** ([evaluation](analyses/bench/2026-09-22/VISIT-7C-PASS2-EVALUATION.md)

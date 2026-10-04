@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Generate the DEBUG PLOT assets for src/test_bench_single.spin2's attended hand tests on the Doco bench (window
 sgpanel): the hand load at low speed (-D SINGLE_PART_HANDLOAD, tiers single-handload-v12p0 / -v24p0), the held stop
-pushed by hand (-D SINGLE_PART_HELDPUSH, single-heldpush-v12p0 / -v24p0) -- task 3679 phase 2c; and the hand turn with the
-motor UNPOWERED (-D SINGLE_PART_HANDTURN, tier single-recheck-v12p0) -- task 3692, D1a. The supply sag and the
+pushed by hand (-D SINGLE_PART_HELDPUSH, single-heldpush-v12p0 / -v24p0) -- task 3679 phase 2c; the hand turn with the
+motor UNPOWERED (-D SINGLE_PART_HANDTURN, tier single-recheck-v12p0) -- task 3692, D1a; and the cold zero, the 6.5in's
+dual-align at the Doco's numbers, the drive started and floated and never driven (-D SINGLE_PART_ALIGN, tier
+single-align-v11p1) -- task 3694, D1b's first leg: four steps, two hand paces each way, whose intro and result cards are
+shared (same_cards_as) and whose ACT cards name the way and the pace. The supply sag and the
 cloth pinch were removed 2026-10-04 (STEPHEN: qualify the Doco as the 6.5in, no new measurements; task 3691).
 
 EXTENDS tools/gen_t0stop_assets.py's pattern (T0-24's stop-state hand test, PL-127; DOCs/plans/T0-24-INTERACTION-
@@ -132,6 +135,15 @@ STATUSES = [
     ("ST_NM_FEW_TURNS", "NOT MEASURED  --  UNDER TWO TURNS SEEN, REDO", "warn"),
     ("ST_NM_TOO_FAST", "NOT MEASURED  --  TOO FAST TO COUNT, REDO SLOWER", "warn"),
     ("ST_WIRING", "STARTING THE MOTOR, THE WIRING CHECK  --  HANDS OFF", "wait"),
+    # the cold zero (task 3694: the drive is started and floated, never driven)
+    ("ST_AL_STILL", "READING THE REST LEVEL  --  LEAVE THE SHAFT STILL", "wait"),
+    ("ST_AL_TURN_NOW", "TURN IT NOW, THE WAY AND THE PACE THE CARD SAYS", "wait"),
+    ("ST_AL_NO_CROSS", "TURNING, NO SIGNAL CROSSING YET  --  TURN FASTER", "warn"),
+    ("ST_AL_CROSSING", "THE SIGNAL CROSSES  --  KEEP TURNING", "good"),
+    ("ST_AL_UNRESOLVED", "NOT RESOLVED  --  THE SIGNAL STAYED UNDER ITS BAND", "warn"),
+    ("ST_AL_SHORT", "NOT MEASURED  --  TOO FEW CROSSINGS, REDO", "warn"),
+    ("ST_AL_CLIPPED", "NOT MEASURED  --  A REST LEVEL SITS ON A RAIL", "warn"),
+    ("ST_AL_STALLED", "NOT MEASURED  --  NO TURN FOR TWO MINUTES", "warn"),
     # whole-run screens
     ("ST_ALL_DONE", "ALL STEPS DONE  --  THE MOTOR IS STOPPED", "good"),
     ("ST_NO_STEPS", "THIS SUPPLY HAS NO STEPS IN THIS TEST  --  NOTHING RAN", "warn"),
@@ -165,6 +177,8 @@ LABELS = [
     ("L_ENC_COUNTS", "ENCODER COUNTS"),
     ("L_TPR_X10", "HALL TICKS A TURN, X10"),
     ("L_TURNS_X10", "ENCODER TURNS, X10"),
+    ("L_CROSSINGS", "SIGNAL CROSSINGS"),            # task 3694, the cold zero
+    ("L_SWING_MV", "LARGEST SWING, MV P-P"),
 ]
 
 # Buttons (layer 8): (id, title, slot). The forward action is always the RIGHT slot, STOP MOTOR and REDO STEP the LEFT,
@@ -275,6 +289,51 @@ STEPS = [
          forward="NEXT STEP starts the motor and runs the wiring check: the shaft turns a little one way and back. "
                  "Take your hands off first.",
          act_lbl=("L_HALL_TICKS", "L_ENC_COUNTS"), res_lbl=("L_TPR_X10", "L_TURNS_X10")),
+    # task 3694, D1b's first leg: the 6.5in's cold zero (test_bench_dual's ALIGN part) at the Doco's numbers. The drive is
+    # started and floated so its ADC reads the phase pins, and is NEVER driven: no STOP MOTOR, nothing to stop. Each step ends
+    # on its own hall ticks (three turns: a sensor sees him finish), or on his DONE. The pace is a number because the Doco's
+    # signal is small (test_bench_single.spin2 CON { the Doco's numbers }, THE AMPLITUDE): about two turns a second clears
+    # the band if Rev A reads the phases at Rev B's scale. The four steps share one INTRO and one RESULT card (same_cards_as);
+    # each ACT card names its way and its pace.
+    dict(id="AL_SLOW_CW", name="ZERO: SLOW, CLOCKWISE", kind="align", powered=False, setup="ST_AL_STILL",
+         intro=("The cold zero. The motor is started but NEVER driven: its drive stays off, and the program only reads the "
+                "voltage the magnets make in the windings as you turn the shaft. Four steps: two paces, each way.",
+                "Click START STEP, and leave the shaft still while it reads the rest level. At YOUR TURN, turn the shaft "
+                "the way and at the pace the step name says, until it says it has enough: about three turns.",
+                "A free shaft with a soft notchy drag from the magnets. Nothing pushes back."),
+         act=("The drive is off. The program reads the windings and counts where their voltage crosses its rest level.",
+              "Looking at the ENCODER end, turn the shaft CLOCKWISE at about TWO turns a second, 120 rpm, and keep it "
+              "turning.",
+              "A free shaft with a soft notchy drag. Nothing pushes back.",
+              "By itself after about three turns. DONE ends it now. Turned too slowly, the signal is too small to read."),
+         expect="MEASURED, with about 70 crossings. NOT RESOLVED means the signal stayed inside its noise band: redo the "
+                "step a little faster. The swing is the signal the program saw.",
+         begin="START STEP reads the rest level for about a second: leave the shaft still. Then the green YOUR TURN banner.",
+         act_lbl=("L_RPM", "L_CROSSINGS"), res_lbl=("L_CROSSINGS", "L_SWING_MV")),
+    dict(id="AL_SLOW_CCW", name="ZERO: SLOW, COUNTER-CLOCKWISE", kind="align", powered=False, setup="ST_AL_STILL",
+         same_cards_as="AL_SLOW_CW",
+         act=("The drive is off. The program reads the windings and counts where their voltage crosses its rest level.",
+              "Looking at the ENCODER end, turn the shaft COUNTER-CLOCKWISE at about TWO turns a second, 120 rpm, and "
+              "keep it turning.",
+              "A free shaft with a soft notchy drag. Nothing pushes back.",
+              "By itself after about three turns. DONE ends it now. Turned too slowly, the signal is too small to read."),
+         act_lbl=("L_RPM", "L_CROSSINGS"), res_lbl=("L_CROSSINGS", "L_SWING_MV")),
+    dict(id="AL_FAST_CW", name="ZERO: FAST, CLOCKWISE", kind="align", powered=False, setup="ST_AL_STILL",
+         same_cards_as="AL_SLOW_CW",
+         act=("The drive is off. The program reads the windings and counts where their voltage crosses its rest level.",
+              "Looking at the ENCODER end, turn the shaft CLOCKWISE FASTER, about FOUR turns a second, 240 rpm, and "
+              "keep it turning.",
+              "A free shaft with a soft notchy drag. Nothing pushes back.",
+              "By itself after about three turns. DONE ends it now."),
+         act_lbl=("L_RPM", "L_CROSSINGS"), res_lbl=("L_CROSSINGS", "L_SWING_MV")),
+    dict(id="AL_FAST_CCW", name="ZERO: FAST, COUNTER-CLOCKWISE", kind="align", powered=False, setup="ST_AL_STILL",
+         same_cards_as="AL_SLOW_CW",
+         act=("The drive is off. The program reads the windings and counts where their voltage crosses its rest level.",
+              "Looking at the ENCODER end, turn the shaft COUNTER-CLOCKWISE FASTER, about FOUR turns a second, 240 rpm, "
+              "and keep it turning.",
+              "A free shaft with a soft notchy drag. Nothing pushes back.",
+              "By itself after about three turns. DONE ends it now."),
+         act_lbl=("L_RPM", "L_CROSSINGS"), res_lbl=("L_CROSSINGS", "L_SWING_MV")),
 ]
 
 # The whole-run screens: (id, name text, banner, card, right button).
@@ -313,22 +372,31 @@ STEP = {s["id"]: i for i, s in enumerate(STEPS)}
 SPEC = ids(SPECIALS)
 
 # Cards (layer 4): per step its INTRO (also its SETUP card), ACT and RESULT, then a SKIP
-# where it has one; then the specials'. card_index() is the one place a (step, phase) finds its card.
+# where it has one; then the specials'. card_index() is the one place a (step, phase) finds its card. A step with
+# same_cards_as (task 3694, the cold zero's four steps) reuses that step's INTRO, SETUP and RESULT cards and has only its
+# own ACT card: every card is 241 KB of layer 4, which every sgpanel tier loads.
 CARD_TABLE = []
 CARD_OF = {}
 for _s in STEPS:
-    _begin = _s.get("begin", "START STEP sets the step up, hands off, in about a second" +
-                    (" and the shaft speeds up." if _s["powered"] else ".") + " Then the green YOUR TURN banner.")
-    CARD_OF[(_s["id"], "PH_INTRO")] = len(CARD_TABLE)
-    CARD_TABLE.append([("THIS STEP", _s["intro"][0]), ("YOU WILL", _s["intro"][1]),
-                       ("YOU SHOULD FEEL", _s["intro"][2]), ("START STEP", _begin)])
+    _same = _s.get("same_cards_as")
+    if _same is None:
+        _begin = _s.get("begin", "START STEP sets the step up, hands off, in about a second" +
+                        (" and the shaft speeds up." if _s["powered"] else ".") + " Then the green YOUR TURN banner.")
+        CARD_OF[(_s["id"], "PH_INTRO")] = len(CARD_TABLE)
+        CARD_TABLE.append([("THIS STEP", _s["intro"][0]), ("YOU WILL", _s["intro"][1]),
+                           ("YOU SHOULD FEEL", _s["intro"][2]), ("START STEP", _begin)])
+    else:
+        CARD_OF[(_s["id"], "PH_INTRO")] = CARD_OF[(_same, "PH_INTRO")]
     CARD_OF[(_s["id"], "PH_SETUP")] = CARD_OF[(_s["id"], "PH_INTRO")]
     CARD_OF[(_s["id"], "PH_ACT")] = len(CARD_TABLE)
     CARD_TABLE.append(list(zip(("NOW", "YOU", "FEEL", "ENDS"), _s["act"])))
-    CARD_OF[(_s["id"], "PH_RESULT")] = len(CARD_TABLE)
-    CARD_TABLE.append([("EXPECTED", _s["expect"]),
-                       ("NOT MEASURED?", "REDO STEP runs this step again from its setup. Follow the YOU line again."),
-                       ("OTHERWISE", _s.get("forward", FORWARD))])
+    if _same is None:
+        CARD_OF[(_s["id"], "PH_RESULT")] = len(CARD_TABLE)
+        CARD_TABLE.append([("EXPECTED", _s["expect"]),
+                           ("NOT MEASURED?", "REDO STEP runs this step again from its setup. Follow the YOU line again."),
+                           ("OTHERWISE", _s.get("forward", FORWARD))])
+    else:
+        CARD_OF[(_s["id"], "PH_RESULT")] = CARD_OF[(_same, "PH_RESULT")]
     if "skip" in _s:
         CARD_OF[(_s["id"], "PH_SKIP")] = len(CARD_TABLE)
         CARD_TABLE.append([("WHAT HAPPENED", _s["skip"][0]), ("YOU", _s["skip"][1]), ("THEN", FORWARD)])
@@ -360,7 +428,7 @@ def screen_for(step_idx, phase):
     if phase == "PH_ACT":
         if s["kind"] == "hand":                       # the latch, a sensor, ends it; he may stop the motor
             return BAN["B_TURN_POWERED"], card, LBL[s["act_lbl"][0]], LBL[s["act_lbl"][1]], BTN["BT_STOP"], BTN["BT_NONE"]
-        if s["kind"] in ("held", "turn"):             # nothing is driven: DONE is his end, the encoder the sensor's
+        if s["kind"] in ("held", "turn", "align"):    # nothing is driven: DONE is his end, the encoder the sensor's
             return BAN["B_TURN"], card, LBL[s["act_lbl"][0]], LBL[s["act_lbl"][1]], BTN["BT_NONE"], BTN["BT_DONE"]
         raise AssertionError("no step kind %r" % s["kind"])
     if phase == "PH_SKIP":
@@ -389,7 +457,12 @@ def check_tables():
                 assert bl == BTN["BT_STOP"], (s["id"], p)
             if not s["powered"]:                                         # nothing to stop: no STOP drawn
                 assert bl != BTN["BT_STOP"], (s["id"], p)
-        assert len(s["intro"]) == 3 and len(s["act"]) == 4, s["id"]
+        if "same_cards_as" in s:                                         # the shared cards' owner comes first, of one kind
+            owner = STEPS[STEP[s["same_cards_as"]]]
+            assert STEP[owner["id"]] < si and owner["kind"] == s["kind"] and "same_cards_as" not in owner, s["id"]
+            assert len(s["act"]) == 4, s["id"]
+        else:
+            assert len(s["intro"]) == 3 and len(s["act"]) == 4, s["id"]
     for sp_idx in range(len(SPECIALS)):
         assert special_for(sp_idx)[3] == BTN["BT_NONE"]
     texts = [t for _, t, _ in BANNERS] + [t for _, t, _ in STATUSES] + [t for _, t in LABELS]
@@ -585,6 +658,7 @@ TIERS = [
     ("single-handload-v24p0", 6, ["HL_4A", "HL_2A"]),
     ("single-heldpush-v12p0", 2, ["HP_ONE", "HP_OTHER"]),
     ("single-recheck-v12p0", 2, ["HT"]),                        # task 3692: the hand turn, then the wiring screen
+    ("single-align-v11p1", 1, ["AL_SLOW_CW", "AL_SLOW_CCW", "AL_FAST_CW", "AL_FAST_CCW"]),   # task 3694: the cold zero
 ]
 # The live phrases a normal step passes through (storyboard only; the measure cog publishes them), its RESULT phrase,
 # and sample readings (ACT, RESULT).
@@ -593,6 +667,7 @@ WALK = {
     "held": (["ST_ARM_HOLD"], ["ST_TURN_NOW", "ST_TURNED_FREE", "ST_PUSHING", "ST_AT_CEIL", "ST_GAVE_WAY"], "ST_MEASURED",
              (19, 100), (24, 251)),
     "turn": (["ST_BLANK"], ["ST_HT_WAIT", "ST_HT_TURNING", "ST_HT_ENOUGH"], "ST_MEASURED", (72, 4320), (240, 30)),
+    "align": (["ST_AL_STILL"], ["ST_AL_TURN_NOW", "ST_AL_NO_CROSS", "ST_AL_CROSSING"], "ST_MEASURED", (118, 31), (71, 30)),
 }
 
 
@@ -638,7 +713,10 @@ def storyboard(out_dir, layers):
            ("HP_OTHER", 2, 2, "PH_RESULT", "ST_SAME_WAY", None), ("HP_ONE", 1, 2, "PH_RESULT", "ST_RISE_TOO_FAST", None),
            ("HL_2A", 2, 3, "PH_ACT", "ST_NOLATCH", BTN["BT_STOP"]),
            ("HT", 1, 1, "PH_RESULT", "ST_NM_FEW_TURNS", None), ("HT", 1, 1, "PH_RESULT", "ST_NM_TOO_FAST", None),
-           ("HT", 1, 1, "PH_ACT", "ST_HT_ENOUGH", BTN["BT_DONE"])]
+           ("HT", 1, 1, "PH_ACT", "ST_HT_ENOUGH", BTN["BT_DONE"]),
+           ("AL_SLOW_CW", 1, 4, "PH_RESULT", "ST_AL_UNRESOLVED", None), ("AL_SLOW_CCW", 2, 4, "PH_RESULT", "ST_AL_SHORT", None),
+           ("AL_FAST_CW", 3, 4, "PH_RESULT", "ST_AL_CLIPPED", None), ("AL_FAST_CCW", 4, 4, "PH_RESULT", "ST_AL_STALLED", None),
+           ("AL_SLOW_CW", 1, 4, "PH_ACT", "ST_AL_CROSSING", BTN["BT_DONE"])]
     for sid, seq_num, count, p, st, lit in alt:
         si = STEP[sid]
         ban, cd, l1, l2, bl, br = screen_for(si, p)

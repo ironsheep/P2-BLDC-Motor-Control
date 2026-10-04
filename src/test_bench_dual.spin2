@@ -830,6 +830,12 @@
 ''               the BM-OUT and operator-queue row loops, the guard / pair / crossing loops and the idle-sample scan. The two
 ''               transition-half and window-half loops of the rgCmdStart/rgWinStart pass gain a last test that the window starts
 ''               inside the ring (clipped to the ring, FROM startJ TO endJ would have counted down). No record, token or footprint change.
+''               04 Oct 2026 -- SRC_REV=85, FMT 55: PL-103 (task 3694), the ALIGN part's bias read. A read the hall code called
+''               still could land on a wheel coasting inside one sector, and the band sized from that motion reached the rail
+''               (Visit 7c pass 2: five legs refused, bias_tries 4-22, hyst 17-58 mV). A read is now still only when no phase
+''               strayed more than ALIGN_BIAS_STRAY_MAX_MV (8: every first-try read strayed 5-6 mV, every re-taken leg's worst
+''               phase 15-54), and the band is sized from the leg's quietest hall-still read (alignApplyBias()) when no read
+''               passes. BM-AGUIDE gains stray_mV; bias_still now means still in hall code AND voltage. The next hand run certifies it.
 ''
 '' =================================================================================================
 
@@ -947,8 +953,8 @@
 
 CON { build identity }
 
-    SRC_REV     = 84                              ' hand-bumped whenever this file changes
-    FMT_VERSION = 54                                   ' BM- record-format version
+    SRC_REV     = 85                              ' hand-bumped whenever this file changes
+    FMT_VERSION = 55                                   ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
 CON { timing }
@@ -1851,6 +1857,19 @@ CON { ALIGN tier (task 3590) -- the hall zero measured cold, and the ONE per-mot
     '  so the leg records no crossings at all and dies SHORT -- a whole leg of his time for nothing.
     '  Retrying costs only time we are already spending waiting for him to be ready.
     ALIGN_BIAS_TRIES    = 40
+    ' PL-103 (SRC_REV 85): A READ IS STILL IN VOLTAGE AS WELL AS IN HALL CODE. A wheel still coasting INSIDE one hall sector
+    '  holds its code while its back-EMF moves the phases, so a read the hall code called still sized the band from motion,
+    '  the band reached the rail and good legs were refused (VISIT-7C-PASS2-EVALUATION.md sec 3.4). Each phase's stray from
+    '  its own mean over the read must now be at most ALIGN_BIAS_STRAY_MAX_MV, or the read is re-taken. MEASURED (the
+    '  BM-AGUIDE records of debug_260922-122515.log and -122644.log, 2026-09-22): the nine legs whose bias landed first try
+    '  strayed 5-6 mV on every phase (hyst 9-10 = stray + ALIGN_HYST_MARGIN_MV); the seven re-taken legs' worst phase strayed
+    '  15-54 mV (hyst 19-58). 8 mV is above every first-try read and under every re-taken one. A leg whose tries all stray
+    '  more (a channel noisier than the 6.5in's Rev B, say) is not left at a zero level: its band is sized from the QUIETEST
+    '  hall-still read of its tries (alignApplyBias()), and BM-AGUIDE's stray_mV says how quiet that was. Desk mutation
+    '  (task 3694, sgl3694_model.py): run 1 leg 7's read (stray 54 / 23 / 33) rails 2 bands under the hall-only rule and none
+    '  with the cap; over 2,000 modelled coasting settles the hall-only rule rails 1,972, the cap none. Certified by the next
+    '  hand run.
+    ALIGN_BIAS_STRAY_MAX_MV = 8
     ALIGN_STALL_MS      = 120_000                           ' no tick movement for this long -> the leg is NOMEAS, never a hang
     ALIGN_SETTLE_MS     = 400                               ' after the previous leg's burst, before the bias read
     ALIGN_MIN_CROSS     = 20                                ' crossings a leg needs before its Z is a measurement
@@ -23083,7 +23102,10 @@ VAR { ALIGN tier state -- cog 0 only }
     LONG    agAskedDir                                      ' +1 or -1: what the guide ASKED for
     LONG    agSpeed                                         ' ASPD_SLOW or ASPD_FAST
     LONG    agBiasTries                                     ' bias re-takes this leg cost
-    LONG    bAgBiasStill                                    ' TRUE when a bias read completed with the wheel stationary
+    LONG    bAgBiasStill                                    ' TRUE when a bias read completed still in hall code AND in voltage (PL-103)
+    LONG    agStrayMv                                       ' PL-103: the worst phase's stray in the read the band was sized from, mV; LIM_BIG when no read was hall-still
+    LONG    agQuietBias[ALIGN_PHASES]                       ' PL-103: the quietest hall-still read of the leg so far: each phase's mean, mV ...
+    LONG    agQuietNoise[ALIGN_PHASES]                      ' ... and each phase's stray from it, mV
     LONG    agHallCode                                      ' hall code last seen
     LONG    agTicks                                         ' signed ticks since the leg's first edge
     LONG    agLastMoveMs                                    ' getms() of the last tick -- the stall test's only input
@@ -23174,9 +23196,11 @@ PRI alignLeg(side, askedDir, speedClass, bStarted) | biasTry
 ' One leg, in the order that makes the operator's screen readable and the bias trustworthy:
 '
 '  1. emit the leg that just finished -- its crossings and its summary, a burst he can watch scroll
-'  2. settle, then read each phase's BIAS with the wheel stationary; a read during which a tick moved
-'     is thrown away and re-taken. The bias is taken BEFORE the guide, not after it, so the wheel is
-'     stationary BY CONSTRUCTION rather than by asking him to wait -- there is no race to lose (P10).
+'  2. settle, then read each phase's BIAS with the wheel stationary; a read during which a tick moved, or
+'     (PL-103) during which any phase strayed more than ALIGN_BIAS_STRAY_MAX_MV, is re-taken, and the band
+'     is sized from the quietest hall-still read (alignApplyBias()). The bias is taken BEFORE the guide, not
+'     after it, so the wheel is stationary BY CONSTRUCTION rather than by asking him to wait -- there is no
+'     race to lose (P10).
 '  3. the guide: wheel, direction, speed, turns. It is the LAST line before the tier goes quiet.
 '  4. quiet: sample until the ticks arrive, or until nothing has moved for ALIGN_STALL_MS.
 '
@@ -23199,6 +23223,7 @@ PRI alignLeg(side, askedDir, speedClass, bStarted) | biasTry
             bAgBiasStill := bAlignBias(side)
             if bAgBiasStill
                 quit
+        alignApplyBias()
         alignGuide()
         alignRun(side)
         alignScoreLeg()
@@ -23219,6 +23244,9 @@ PRI alignResetLeg(side, askedDir, speedClass)
     agSpeed := speedClass
     agBiasTries := 0
     bAgBiasStill := FALSE
+    agStrayMv := LIM_BIG                                    ' PL-103: no hall-still read yet
+    longfill(@agQuietBias, 0, ALIGN_PHASES)
+    longfill(@agQuietNoise, 0, ALIGN_PHASES)
     agTicks := 0
     bAgSectOpen := FALSE
     agSectSamples := 0
@@ -23244,7 +23272,7 @@ PRI alignResetLeg(side, askedDir, speedClass)
     longfill(@bAgFlipSeen, FALSE, ALIGN_PHASES)
     longfill(@agArm, 0, ALIGN_PHASES)
 
-PRI bAlignBias(side) : bStill | startMs, sampleCount, startHall, phaseIdx, phaseMv[ALIGN_PHASES], sumMv[ALIGN_PHASES], minMv[ALIGN_PHASES], maxMv[ALIGN_PHASES]
+PRI bAlignBias(side) : bStill | startMs, sampleCount, startHall, bHallStill, worstMv, phaseIdx, phaseMv[ALIGN_PHASES], sumMv[ALIGN_PHASES], minMv[ALIGN_PHASES], maxMv[ALIGN_PHASES], meanMv[ALIGN_PHASES], strayMv[ALIGN_PHASES]
 ' Read each phase's stationary level for ALIGN_BIAS_MS. The level a back-EMF crossing crosses is the
 ' phase's own reading with the rotor still -- not zero, and not assumed: a coasting phase pin sits
 ' wherever the sense chain puts it, and that is measured here rather than written down.
@@ -23253,20 +23281,29 @@ PRI bAlignBias(side) : bStill | startMs, sampleCount, startHall, phaseIdx, phase
 ' mean, so the band is the noise this channel actually has at this moment rather than a constant.
 '
 ' A read during which the hall code moved is NOT a bias, so it is discarded and the caller re-takes it.
+' PL-103: NOR IS A READ DURING WHICH ANY PHASE STRAYED MORE THAN ALIGN_BIAS_STRAY_MAX_MV -- a wheel coasting
+' inside one sector keeps its hall code while its back-EMF moves the phases, and a band sized from that
+' motion reached the rail at Visit 7c. Every hall-still read is kept as a candidate when it is the quietest
+' of the leg so far (agStrayMv, agQuietBias, agQuietNoise), so the band is sized from the quietest read
+' even when none passes the cap; alignApplyBias() sets it once the tries end.
 '
 ' @param side - SIDE_LEFT or SIDE_RIGHT
-' @returns bStill - TRUE when the whole read completed with no hall movement
+' @returns bStill - TRUE when the whole read completed with no hall movement and no phase strayed past ALIGN_BIAS_STRAY_MAX_MV
 '
 ' @local startMs - getms() the read began
 ' @local sampleCount - samples in the read
 ' @local startHall - hall code when the read began
+' @local bHallStill - TRUE when the hall code held for the whole read
+' @local worstMv - the largest stray of any phase over the read, mV; LIM_BIG when the read was not hall-still
 ' @local phaseIdx - 0 for U, 1 for V, 2 for W
 ' @local phaseMv - this sample's three phase readings
 ' @local sumMv - each phase's total over the read
 ' @local minMv - each phase's lowest reading over the read
 ' @local maxMv - each phase's highest reading over the read
+' @local meanMv - each phase's mean over the read
+' @local strayMv - each phase's larger stray from its mean, either side
 
-    bStill := TRUE
+    bHallStill := TRUE
     sampleCount := 0
     longfill(@sumMv, 0, ALIGN_PHASES)
     longfill(@minMv, LIM_BIG, ALIGN_PHASES)
@@ -23282,27 +23319,44 @@ PRI bAlignBias(side) : bStill | startMs, sampleCount, startHall, phaseIdx, phase
             maxMv[phaseIdx] #>= phaseMv[phaseIdx]
         sampleCount += 1
         if alignHallRead(side) <> startHall
-            bStill := FALSE
+            bHallStill := FALSE
             quit
         if (getms() - startMs) >= ALIGN_BIAS_MS
             quit
-    if bStill and (sampleCount > 0)
-        agBandRailed := 0
+    worstMv := LIM_BIG
+    if bHallStill and (sampleCount > 0)
+        worstMv := 0
         repeat phaseIdx from 0 to ALIGN_PHASES - 1
-            alignSetBand(phaseIdx, sumMv[phaseIdx] / sampleCount, minMv[phaseIdx], maxMv[phaseIdx])
+            meanMv[phaseIdx] := sumMv[phaseIdx] / sampleCount
+            strayMv[phaseIdx] := (maxMv[phaseIdx] - meanMv[phaseIdx]) #> (meanMv[phaseIdx] - minMv[phaseIdx])
+            worstMv #>= strayMv[phaseIdx]
+        if worstMv < agStrayMv                              ' the quietest hall-still read of the leg so far
+            agStrayMv := worstMv
+            longmove(@agQuietBias, @meanMv, ALIGN_PHASES)
+            longmove(@agQuietNoise, @strayMv, ALIGN_PHASES)
+    bStill := (worstMv <= ALIGN_BIAS_STRAY_MAX_MV)
 
-PRI alignSetBand(phaseIdx, biasMv, minMv, maxMv) | noiseMv
+PRI alignApplyBias() | phaseIdx
+' PL-103: set each phase's crossing level and band from the leg's quietest hall-still bias read. When a read passed the
+' stray cap it is that one -- every hall-still read before it strayed more, or it would have ended the tries -- and
+' otherwise the quietest of the re-takes, which BM-AGUIDE's stray_mV and bias_still FALSE then say. With no hall-still
+' read at all the levels stay at zero, as before PL-103: no reading crosses them and the leg is SHORT.
+'
+' @local phaseIdx - 0 for U, 1 for V, 2 for W
+
+    agBandRailed := 0
+    if agStrayMv < LIM_BIG
+        repeat phaseIdx from 0 to ALIGN_PHASES - 1
+            alignSetBand(phaseIdx, agQuietBias[phaseIdx], agQuietNoise[phaseIdx])
+
+PRI alignSetBand(phaseIdx, biasMv, noiseMv)
 ' Set one phase's bias and hysteresis band from its stationary read, and count the phase if its band
 ' reaches a rail -- the crossing region is the only part of the trace Z is read from (PL-100).
 '
 ' @param phaseIdx - 0 for U, 1 for V, 2 for W
 ' @param biasMv - the phase's mean stationary reading
-' @param minMv - its lowest stationary reading
-' @param maxMv - its highest stationary reading
-'
-' @local noiseMv - the larger stray of the read from its mean, either side
+' @param noiseMv - the larger stray of the read from that mean, either side (bAlignBias())
 
-    noiseMv := (maxMv - biasMv) #> (biasMv - minMv)
     agBias[phaseIdx] := biasMv
     agHyst[phaseIdx] := noiseMv + ALIGN_HYST_MARGIN_MV
     if bAlignRailed(biasMv - agHyst[phaseIdx]) or bAlignRailed(biasMv + agHyst[phaseIdx])
@@ -23610,6 +23664,7 @@ PRI alignGuide()
     benchLog.numField(@"hyst_w_mV", agHyst[2], LIM_SMALL)
     benchLog.numField(@"band_railed", agBandRailed, LIM_TINY)
     benchLog.numField(@"bias_tries", agBiasTries, LIM_TINY)
+    benchLog.naNumField(@"stray_mV", agStrayMv, LIM_SMALL, agStrayMv < LIM_BIG)    ' PL-103 (FMT 55): the read the band came from; record worst case 273 bytes
     emitRecord()
     alignSay(alignGuideLine())
 
