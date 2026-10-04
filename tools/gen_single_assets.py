@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Generate the DEBUG PLOT assets for src/test_bench_single.spin2's attended hand tests on the Doco bench (window
 sgpanel): the hand load at low speed (-D SINGLE_PART_HANDLOAD, tiers single-handload-v12p0 / -v24p0), the held stop
-pushed by hand (-D SINGLE_PART_HELDPUSH, single-heldpush-v12p0 / -v24p0), and the two OPTIONAL legs, the supply sag at
-the top (-D SINGLE_PART_SAG, single-sag-v22p2 / -v18p5) and the cloth pinch at the top (-D SINGLE_PART_PINCH,
-single-pinch-v18p5) -- task 3679 phase 2c.
+pushed by hand (-D SINGLE_PART_HELDPUSH, single-heldpush-v12p0 / -v24p0) -- task 3679 phase 2c. The supply sag and the
+cloth pinch were removed 2026-10-04 (STEPHEN: qualify the Doco as the 6.5in, no new measurements; task 3691).
 
 EXTENDS tools/gen_t0stop_assets.py's pattern (T0-24's stop-state hand test, PL-127; DOCs/plans/T0-24-INTERACTION-
 DESIGN.md), the panel that ran on this rig and drew, took every click on a titled button, and redid a row
@@ -13,7 +12,7 @@ Its geometry is kept (560 x 470, the eight layers, the card, status, reading and
 panels cannot drift apart in how they draw. What this script adds, and only this:
   - a step line in place of T0-24's row line: STEP n OF N (both digits blitted: a leg has one to three steps), the
     step's name, and the TOLD supply (this bench senses none, so the panel repeats what the runner's banner says);
-  - its own tables: steps, phases (INTRO, SETUP, ACT, RESTORE for the sag, RESULT, SKIP for the default-limit step the
+  - its own tables: steps, phases (INTRO, SETUP, ACT, RESULT, SKIP for the default-limit step the
     program does not run), banners, status phrases, reading labels, buttons and the whole-run screens;
   - NO KEYS (PLOT-DISPLAY-RULES.md rule 10; the dispatch for task 3679 phase 2c): a button is the only control, so a
     button cell carries its title alone, and the footer says no key is read.
@@ -77,7 +76,6 @@ BANNERS = [
     ("B_SETUP_DRIVE", "HANDS OFF  --  THE SHAFT IS SPEEDING UP", C_RED_BAN),
     ("B_TURN", "YOUR TURN", C_GREEN_BAN),
     ("B_TURN_POWERED", "YOUR TURN  --  THE SHAFT IS POWERED", C_GREEN_BAN),
-    ("B_RESTORE", "YOUR TURN  --  THE MOTOR IS STOPPED", C_GREEN_BAN),
     ("B_RESULT", "RESULT  --  READ IT, THEN CHOOSE A BUTTON", C_BLUE_BAN),
     ("B_SKIPPED", "NOT RUN  --  READ WHY, THEN CLICK THE BUTTON", C_AMBER_BAN),
     ("B_STARTING", "HANDS OFF  --  STARTING", C_AMBER_BAN),
@@ -110,16 +108,6 @@ STATUSES = [
     ("ST_AT_CEIL", "AT ITS CEILING  --  KEEP TURNING", "wait"),
     ("ST_GAVE_WAY", "IT GAVE WAY  --  GOT IT, LET GO", "good"),
     ("ST_HOLD_LIMITED", "IT LET GO AT ITS TIME LIMIT", "warn"),
-    # the sag's ACT and RESTORE
-    ("ST_DIAL_DOWN", "AT THE TOP  --  TURN THE SUPPLY DOWN SLOWLY NOW", "wait"),
-    ("ST_SAG_HELD", "STILL AT SPEED  --  KEEP TURNING IT DOWN", "wait"),
-    ("ST_FAULT_FIRST", "SPEED LOST: IT FAULTED FIRST  --  GOT IT", "good"),
-    ("ST_SLIP_FIRST", "SPEED LOST: IT SLIPPED FIRST  --  GOT IT", "good"),
-    ("ST_RESTORE", "TURN THE SUPPLY BACK UP, THEN CLICK DONE", "wait"),
-    # the pinch's ACT
-    ("ST_PINCH_NOW", "AT THE TOP  --  PINCH THE SHAFT END NOW", "wait"),
-    ("ST_LOAD_SEEN", "LOAD SEEN  --  1 TO 2 SECONDS, THEN LET GO", "wait"),
-    ("ST_LOAD_GONE", "LOAD GONE  --  CLICK DONE", "good"),
     # results
     ("ST_MEASURED", "MEASURED", "good"),
     ("ST_NM_NO_SPEED", "NOT MEASURED  --  IT NEVER REACHED SPEED", "warn"),
@@ -133,8 +121,6 @@ STATUSES = [
     ("ST_NM_NO_SLIP", "NOT MEASURED  --  IT DID NOT GIVE WAY", "warn"),
     ("ST_RISE_TOO_FAST", "GAVE WAY  --  TOO FAST FOR THE RISE, REDO SLOWER", "warn"),
     ("ST_SAME_WAY", "SAME WAY AS STEP 1  --  REDO, TURN IT THE OTHER WAY", "warn"),
-    ("ST_NM_NO_LOSS", "NOT MEASURED  --  THE SPEED WAS NOT LOST", "warn"),
-    ("ST_NM_NO_LOAD", "NOT MEASURED  --  NO LOAD SEEN", "warn"),
     ("ST_NM_FAULT", "THE DRIVE FAULTED UNDER YOUR HAND  --  A FINDING", "warn"),
     ("ST_DEF_SKIPPED", "NOT RUN  --  TOO LITTLE CHARGE LEFT IN THIS TEST", "warn"),
     # whole-run screens
@@ -165,9 +151,6 @@ LABELS = [
     ("L_HOLD_PCT", "HOLD EFFORT, % OF CEILING"),
     ("L_SLIP_DEG", "GAVE WAY AT, DEGREES"),
     ("L_RISE_MS", "RISE TO CEILING, MS"),
-    ("L_DUTY_PCT", "DRIVE, % OF FULL"),
-    ("L_LOST_RPM", "SPEED WHEN LOST, RPM"),
-    ("L_IDLE_MA", "UNLOADED, MA"),
 ]
 
 # Buttons (layer 8): (id, title, slot). The forward action is always the RIGHT slot, STOP MOTOR and REDO STEP the LEFT,
@@ -182,17 +165,17 @@ BUTTONS = [
     ("BT_REDO", "REDO STEP", "L"),
 ]
 
-PHASES = ["PH_INTRO", "PH_SETUP", "PH_ACT", "PH_RESTORE", "PH_RESULT", "PH_SKIP"]
+PHASES = ["PH_INTRO", "PH_SETUP", "PH_ACT", "PH_RESULT", "PH_SKIP"]
 
 # The told supply, one names-layer row per Rev A row in the library's order (test_bench_single.spin2 DAT rowMv).
 SUPPLIES = ["TOLD 7.4 V", "TOLD 11.1 V", "TOLD 12 V", "TOLD 14.8 V", "TOLD 18.5 V", "TOLD 22.2 V", "TOLD 24 V"]
 
 # ---------------------------------------------------------------- the steps --
-# Each step: id; name (the step line); kind (hand, held, sag, pinch); powered (the shaft is driven in SETUP and ACT, so
+# Each step: id; name (the step line); kind (hand, held); powered (the shaft is driven in SETUP and ACT, so
 # STOP MOTOR is live there); the cards (intro: THIS STEP / YOU WILL / YOU SHOULD FEEL; act: NOW / YOU / FEEL / ENDS;
-# expect: the RESULT's EXPECTED line; restore: the sag's RESTORE card; skip: the default step's SKIP card); the reading
+# expect: the RESULT's EXPECTED line; skip: the default step's SKIP card); the reading
 # labels in ACT and in RESULT. The FEEL lines are the analysis's predictions (DOCs/analyses/DOCO-DESK-MODEL-2026-10-03.md
-# sec 4.1 P-H1/P-H2, sec 4.2 P-H4, sec 5.3 P-S7, sec 5.4 P-S8), in the operator's words.
+# sec 4.1 P-H1/P-H2, sec 4.2 P-H4), in the operator's words.
 HAND_ENDS = "By itself, when the drive stops itself. STOP MOTOR stops it now."
 STEPS = [
     dict(id="HL_4A", name="HAND LOAD, 4 A TEST LIMIT", kind="hand", powered=True, setup="ST_SET_LIMIT",
@@ -261,50 +244,6 @@ STEPS = [
          expect="As step 1, turned the other way: the push back began at the first edge, rose in about 0.25 s, and "
                 "gave way at the second edge.",
          act_lbl=("L_DEG", "L_HOLD_PCT"), res_lbl=("L_SLIP_DEG", "L_RISE_MS")),
-    dict(id="SAG_FAULT", name="SUPPLY SAG AT THE TOP", kind="sag", powered=True, setup="ST_SPEEDING",
-         intro=("A supply sag at this supply's top speed, about 3,140 rpm, a field step the drive cannot catch. You "
-                "turn the bench supply down slowly until the speed is lost.",
-                "Click START STEP, wait for YOUR TURN, then turn the supply down about 1 V a second, until the screen "
-                "says the speed is lost.",
-                "Nothing until somewhere between about 18 V and 10 V; then the drive FAULTS and stops by itself, "
-                "without slowing first."),
-         act=("Running at the top speed of 22.2 V.",
-              "Turn the supply down slowly, about 1 V a second.",
-              "No change at first; then it faults and stops by itself.",
-              "By itself when the speed is lost; the program then stops the motor. STOP MOTOR stops it now."),
-         restore=("The motor is stopped.",
-                  "Turn the supply back up to 22.2 V. This bench cannot read the supply.",
-                  "Click DONE when it is back."),
-         expect="The drive faulted first, before the shaft slipped behind its field.",
-         act_lbl=("L_RPM", "L_DUTY_PCT"), res_lbl=("L_LOST_RPM", "L_DUTY_PCT")),
-    dict(id="SAG_SLIP", name="SUPPLY SAG AT THE TOP", kind="sag", powered=True, setup="ST_SPEEDING",
-         intro=("A supply sag at this supply's top speed, about 2,660 rpm. You turn the bench supply down slowly "
-                "until the speed is lost.",
-                "Click START STEP, wait for YOUR TURN, then turn the supply down about 1 V a second, until the screen "
-                "says the speed is lost.",
-                "Nothing until about 8 V; then the speed slips away with no fault."),
-         act=("Running at the top speed of 18.5 V.",
-              "Turn the supply down slowly, about 1 V a second.",
-              "No change at first; near 8 V the speed slips away.",
-              "By itself when the speed is lost; the program then stops the motor. STOP MOTOR stops it now."),
-         restore=("The motor is stopped.",
-                  "Turn the supply back up to 18.5 V. This bench cannot read the supply.",
-                  "Click DONE when it is back."),
-         expect="The shaft slipped behind its field first, with no fault.",
-         act_lbl=("L_RPM", "L_DUTY_PCT"), res_lbl=("L_LOST_RPM", "L_DUTY_PCT")),
-    dict(id="PINCH", name="CLOTH PINCH AT THE TOP", kind="pinch", powered=True, setup="ST_SPEEDING",
-         intro=("A light load at this supply's top speed, about 2,660 rpm: a cloth pinched lightly on the bare shaft "
-                "end for a second or two.",
-                "Click START STEP, wait for YOUR TURN, then pinch the bare shaft end lightly with a cloth for 1 to 2 "
-                "seconds, let go, and click DONE.",
-                "A light drag through the cloth and no slowing. The current rises: the model says about four times "
-                "what the load needs."),
-         act=("Running at the top speed of 18.5 V.",
-              "Pinch the bare shaft end lightly with a cloth, 1 to 2 seconds, then let go.",
-              "A light drag, no slowing.",
-              "Click DONE once you have let go. STOP MOTOR stops it now."),
-         expect="The current while pinched and while free are in the log for the evaluation; nothing is judged.",
-         act_lbl=("L_RPM", "L_MA"), res_lbl=("L_IDLE_MA", "L_PEAK_MA")),
 ]
 
 # The whole-run screens: (id, name text, banner, card, right button).
@@ -337,7 +276,7 @@ PH = {name: i for i, name in enumerate(PHASES)}
 STEP = {s["id"]: i for i, s in enumerate(STEPS)}
 SPEC = ids(SPECIALS)
 
-# Cards (layer 4): per step its INTRO (also its SETUP card), ACT and RESULT, then a RESTORE where it has one and a SKIP
+# Cards (layer 4): per step its INTRO (also its SETUP card), ACT and RESULT, then a SKIP
 # where it has one; then the specials'. card_index() is the one place a (step, phase) finds its card.
 CARD_TABLE = []
 CARD_OF = {}
@@ -354,9 +293,6 @@ for _s in STEPS:
     CARD_TABLE.append([("EXPECTED", _s["expect"]),
                        ("NOT MEASURED?", "REDO STEP runs this step again from its setup. Follow the YOU line again."),
                        ("OTHERWISE", FORWARD)])
-    if "restore" in _s:
-        CARD_OF[(_s["id"], "PH_RESTORE")] = len(CARD_TABLE)
-        CARD_TABLE.append(list(zip(("NOW", "YOU", "ENDS"), _s["restore"])))
     if "skip" in _s:
         CARD_OF[(_s["id"], "PH_SKIP")] = len(CARD_TABLE)
         CARD_TABLE.append([("WHAT HAPPENED", _s["skip"][0]), ("YOU", _s["skip"][1]), ("THEN", FORWARD)])
@@ -390,11 +326,7 @@ def screen_for(step_idx, phase):
             return BAN["B_TURN_POWERED"], card, LBL[s["act_lbl"][0]], LBL[s["act_lbl"][1]], BTN["BT_STOP"], BTN["BT_NONE"]
         if s["kind"] == "held":                       # nothing is driven: DONE is his end, the encoder the sensor's
             return BAN["B_TURN"], card, LBL[s["act_lbl"][0]], LBL[s["act_lbl"][1]], BTN["BT_NONE"], BTN["BT_DONE"]
-        if s["kind"] == "sag":                        # the speed's loss, a sensor, ends it
-            return BAN["B_TURN_POWERED"], card, LBL[s["act_lbl"][0]], LBL[s["act_lbl"][1]], BTN["BT_STOP"], BTN["BT_NONE"]
-        return BAN["B_TURN_POWERED"], card, LBL[s["act_lbl"][0]], LBL[s["act_lbl"][1]], BTN["BT_STOP"], BTN["BT_DONE"]
-    if phase == "PH_RESTORE":
-        return BAN["B_RESTORE"], card, LBL["L_BLANK"], LBL["L_BLANK"], BTN["BT_NONE"], BTN["BT_DONE"]
+        raise AssertionError("no step kind %r" % s["kind"])
     if phase == "PH_SKIP":
         return BAN["B_SKIPPED"], card, LBL["L_BLANK"], LBL["L_BLANK"], BTN["BT_NONE"], BTN["BT_NEXT"]
     return BAN["B_RESULT"], card, LBL[s["res_lbl"][0]], LBL[s["res_lbl"][1]], BTN["BT_REDO"], BTN["BT_NEXT"]
@@ -415,7 +347,7 @@ def check_tables():
                 continue
             _, _, _, _, bl, br = scr
             assert BUTTONS[bl][2] in (None, "L") and BUTTONS[br][2] in (None, "R"), (s["id"], p)   # the slot rule
-            if p in ("PH_INTRO", "PH_RESULT", "PH_RESTORE", "PH_SKIP"):    # cog 0 waits on these alone: a way on
+            if p in ("PH_INTRO", "PH_RESULT", "PH_SKIP"):    # cog 0 waits on these alone: a way on
                 assert br != BTN["BT_NONE"], (s["id"], p)
             if p in ("PH_SETUP", "PH_ACT") and s["powered"]:           # a driven shaft can always be stopped
                 assert bl == BTN["BT_STOP"], (s["id"], p)
@@ -616,9 +548,6 @@ TIERS = [
     ("single-handload-v12p0", 2, ["HL_4A", "HL_2A", "HL_DEF"]),
     ("single-handload-v24p0", 6, ["HL_4A", "HL_2A"]),
     ("single-heldpush-v12p0", 2, ["HP_ONE", "HP_OTHER"]),
-    ("single-sag-v22p2", 5, ["SAG_FAULT"]),
-    ("single-sag-v18p5", 4, ["SAG_SLIP"]),
-    ("single-pinch-v18p5", 4, ["PINCH"]),
 ]
 # The live phrases a normal step passes through (storyboard only; the measure cog publishes them), its RESULT phrase,
 # and sample readings (ACT, RESULT).
@@ -626,8 +555,6 @@ WALK = {
     "hand": (["ST_SPEEDING"], ["ST_GRIP_NOW", "ST_SLOWING", "ST_STANDING", "ST_LATCHED"], "ST_MEASURED", (207, 412), (1012, 790)),
     "held": (["ST_ARM_HOLD"], ["ST_TURN_NOW", "ST_TURNED_FREE", "ST_PUSHING", "ST_AT_CEIL", "ST_GAVE_WAY"], "ST_MEASURED",
              (19, 100), (24, 251)),
-    "sag": (["ST_SPEEDING"], ["ST_DIAL_DOWN", "ST_SAG_HELD", "ST_FAULT_FIRST"], "ST_MEASURED", (3140, 54), (3138, 100)),
-    "pinch": (["ST_SPEEDING"], ["ST_PINCH_NOW", "ST_LOAD_SEEN", "ST_LOAD_GONE"], "ST_MEASURED", (2659, 640), (90, 820)),
 }
 
 
@@ -650,13 +577,8 @@ def storyboard(out_dir, layers):
             si = STEP[sid]
             s = STEPS[si]
             setup, act, res, act_r, res_r = WALK[s["kind"]]
-            if sid == "SAG_SLIP":                         # the slip-first case's own last live phrase and readings
-                act = act[:-1] + ["ST_SLIP_FIRST"]
-                act_r, res_r = (2659, 99), (2602, 100)
             seq = (("PH_INTRO", "ST_WAIT_START", None),) + tuple(("PH_SETUP", st, None) for st in setup)
             seq += tuple(("PH_ACT", st, act_r) for st in act)
-            if s["kind"] == "sag":
-                seq += (("PH_RESTORE", "ST_RESTORE", None),)
             seq += (("PH_RESULT", res, res_r),)
             for p, st, rd in seq:
                 ban, cd, l1, l2, bl, br = screen_for(si, p)
