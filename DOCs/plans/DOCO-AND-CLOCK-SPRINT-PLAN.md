@@ -324,6 +324,10 @@ body's `test_bench_dual.spin2:1821` and `:1860` for the ALIGN constants are `:18
 | **The 3686 rows** (the D2 qualification, §7). `KE_FITTED_MV_PER_KRPM` (R23-SGL-MISDIAL fitted) | none (the 6.5″'s pack was sensed) | 3,530, PROVISIONAL: the sheet's value until D1's evaluation fits Ke across the rows and sets it, before the D2 pack | Arbiter decision D5. A D2 build left at the sheet's value judges ±30 ‰ against a Ke that may be off the sheet by its 10 %: a correct motor 5 % under it reads +47 and FAILS (desk model, «#3686» `sgl3686_model.py`). The tool's per-motor record carries the fitted Ke |
 | DAT `powerPcts` (`POWER_RUNG_COUNT` 4; R23-SGL-POWER) | the spin legs' and POWERMAP's powers, on the halls (`test_bench_dual`) | 25, 50, 75, 100, each capped at the row's top power (89 at 22.2 V), each power sign, each from rest; under DAT `rowLadderA` | The arbiter's D7 left the ladder commanding by increment, so the power path's rungs are their own leg (L-power); the quarters of the power range as the library maps it |
 | `LEG_WIRING_EST_S`, `LEG_POWER_EST_S` | none | 10 s (`checkWiring()`'s two legs, at most 4 s, and the settle); 150 s (four rungs each power sign from rest, held ≥ 5 s, to 21 s a rung at 11.1 V's top) | The qualification chain's run caps (the `RUN_TIME_CAP_S` and `RUN_CHARGE_CAP_MAS` rows) |
+| **The 3692 rows** (D1a, the hand recheck, §10 step 1). `HAND_TURN_REVS`, `HAND_TURN_MIN_COUNTS`, `HAND_TURN_MAX_MS` (L-handturn) | T0-12's `T0_12_REVOLUTIONS` 3, counted on the halls alone, ended by SPACE | 3 turns told; the turn counts only when the encoder saw 2 turns (2,880 counts); his DONE ends it, 120 s at the latest | The motor is UNPOWERED (no driver started), the encoder bolted to the shaft gives the exact turns and direction. T0-12's step, mirrored; nothing it did not have but the encoder as the yardstick |
+| `HANDTICKS_TOL_X100` (R23-SGL-HANDTICKS) | T0-12's "expect 90 per revolution", by eye | 2,400 ∓ 13 (hall ticks per encoder revolution × 100), from the edge-to-edge span of the first and last captured edge | DERIVED: each edge within `SECTOR_TOL_X10` / 10 + 1 = 7 counts of its place on the grid, so a span of at least 2,760 counts is off by 14: 2,400 × 14 / 2,760 = 12.2, rounded up. New cell (`sgl3692_model.py`: worst 9 in 2,000 correct trials; ±5 fails 135) |
+| `HAND_TOLD_SIGN_KNOWN`, `HAND_TOLD_TICK_SIGN` (R23-SGL-HANDDIR) | T0-12's `T0_12_TOLD_CCW` FALSE: clockwise from the hub, the sign logged | FALSE, 0: told **clockwise looking at the encoder end**; the hall sign is tied to the encoder's (counts = +60 × rising ticks) and the told way only recorded | Nothing on file says which way positive power turns the Doco's shaft; D1a's own turn measures it, and the evaluation sets both constants (task 3693) |
+| `NOWHEEL_PROBE_IN`, `NOWHEEL_SETTLE_MS` (R23-SGL-NOWHEEL) | none (the 6.5″ has a wheel) | `driveForDistance(1, DDU_IN)` expects `ERR_NO_WHEEL_DIA`; the encoder watched 500 ms, within `REST_JITTER_COUNTS` | `MOTOR_CHOICE.md`: `WHEEL_DIA_IN_INCH = 0.0` disables the distance methods |
 
 Carried unchanged, and so not tool parameters: `SAMPLE_MS` 5, `ZERO_SAMPLES` 200, `ABS_ABORT_SAMPLES` 4, the 280-byte
 record bound, sign-off format sf 1, six hall ticks per electrical cycle (`wheel.HALL_TICKS_PER_CYCLE`), the hall order
@@ -481,10 +485,25 @@ stated in the evaluation, not counted); PL-148/154/157/111 closed on the log.
 Each visit's run sheet declares its seven attributes, one command per physical setup, what to watch named in advance,
 and no act the log can carry. The pack names its commit in every banner.
 
-- **D1 — Doco bench, measure.** For each Doco voltage (7.4, 11.1, 12, 14.8, 18.5, 22.2, 24 V; Stephen dials the supply
-  between runs, the sheet names the order): the §4 legs. At one voltage: the §1.4 pass-period probe at each test clock.
-  At 12 V and 24 V: the hand-load legs (Stephen's grip at low speed, the sheet says when and for how long).
-- **D2 — Doco bench, certify.** The tool (§8) per voltage; the §7 cells per voltage; the hand-load cells.
+**The Doco qualification, in order (STEPHEN 2026-10-04: the 6.5″'s sequence at the Doco's numbers, no new
+measurements, hand loading only — the motor has no wheel; *"Yes, this looks good with these additional changes"*).** The
+bolted-on shaft encoder judges every speed, direction and rest position.
+1. **Session D1a — the motor recheck, by hand, unpowered** (the 6.5″'s first step, T0-12): the shaft turned about three
+   turns in a told direction; hall ticks per revolution (the pole count) and the hall direction against the turn, the
+   encoder giving the exact turns. **Then the start checks and `checkWiring()`.**
+2. **Desk — the motor documentation on file corrected** (`DOCOENG_MOTOR.md`, `MOTOR_CHOICE.md`'s Doco rows) to what D1a
+   showed.
+3. **Session D1b — measure, per voltage** (7.4, 11.1, 12, 14.8, 18.5, 22.2, 24 V; Stephen dials the supply between runs):
+   the commutation offsets by current minimum, cross-checked against the encoder's hall zero; the speed ladder on the
+   encoder (the duty line, the top speed with the 6.5″'s duty reserve, the feedforward line, the slowest steady speed each
+   way); the ramps and stops as the "before". At one voltage, the §1.4 pass-period probe at each test clock.
+4. **Desk — the driver's Doco tables updated (§6)**; anything beyond a table value goes to Stephen first.
+5. **Session D2 — qualify at every voltage on the updated driver (§7), judged on the encoder**: power rungs within 3 %;
+   ramps within 10 %; the stop limits; top speed smooth forward, reverse and through reversals; **the lowest speed the
+   motor is controllable at and the highest speed it reaches, confirmed once the offsets are right** (STEPHEN 2026-10-04:
+   *"one thing I'd like to have us confirm is the lowest speed the motor is controllable at and the highest speed we can
+   achieve once everything's dialed in correctly. Don't attempt that till we get the offsets correct"*); at 12 V and 24 V
+   by hand: the limit holds, the blocked stop latches in its band, the hold resists a push. The tool (§8) per voltage.
 - **6.5″ session — Rev B platform, wheels up.** `serial_certify.py` at 270 MHz and at the lowest supported clock; the
   front-cog load and frame-budget, dead-gap and noise cells at the lowest supported clock; the tool on one wheel.
 
@@ -595,7 +614,10 @@ All tasks carry priority `high` and tag `v620`; `seq` is the order (plan-to-task
 | §10 D1 | Visit D1 run sheet, pack, hand-back | «#3680» | 11 |
 | §9 (desk) | `serial_certify.py` reconciled with the current driver (D1 wait window) | «#3681» | 12 |
 | §10 D1 | D1 trimmed to the 6.5″'s qualification set (STEPHEN 2026-10-04; added mid-sprint) | «#3691» | before 13 |
-| §10 D1 | D1 evaluation | «#3682» | 13 |
+| §10 D1a | D1a: hand recheck, start and wiring checks — sheet, pack (STEPHEN 2026-10-04; added mid-sprint) | «#3692» | 2 |
+| §10 desk | D1a evaluated; Doco motor docs corrected (added mid-sprint) | «#3693» | 3 |
+| §10 D1b | Align (cold back-EMF Z) at the Doco's numbers, PL-103 fixed; D1b's first leg (added mid-sprint) | «#3694» | 4 |
+| §10 D1b | D1b (offsets, ladder, pass probe) evaluation | «#3682» | 13 |
 | §1 (6) | Clock floor derived; `ERR_CLOCK_TOO_SLOW` ruled (P5), then built | «#3683» | 14 |
 | §6 | Doco tables and ruled driver changes | «#3684» | 15 |
 | §8 | Motor-adoption tool (PL-176) | «#3685» | 16 |
@@ -626,3 +648,19 @@ must reflect and runs in the D1 wait; the refusal follows D1's front-cog cost; d
 - **2026-10-04** — STEPHEN: *"we are not doing anything that we didn't do for the 6.5" motor... we qualify/verify this
   doco motor the same way, no new measurements please"*. «#3691» added (§17): the coast-down, supply-sag and pinch legs
   and the inductance question are removed; the desk model's unknowns stay desk items. D1 gets a new pack.
+- **2026-10-04** — §10 restructured to Stephen's approved sequence: D1a (hand recheck, start and wiring checks), the
+  motor docs corrected, D1b (offsets and ladder per voltage), the tables, D2 (qualification, with the lowest controllable
+  and highest reached speed confirmed on the tuned driver, and the hand loads). «#3692» is D1a, «#3693» its evaluation and
+  the motor docs; «#3682» becomes D1b's evaluation.
+- **2026-10-04** — STEPHEN: *"is there anything that we wrote in the documentation that we have not certified on this
+  bench... we should probably expand the test to cover those other things so all of the documentation we've written has
+  been measured, if possible."* The Doco claims were walked: D1a gains the hall-code sequence (DOCOENG_MOTOR.md's
+  1-5-4-6-2-3 / 1-3-2-6-4-5) and the no-wheel refusal of the distance methods (MOTOR_CHOICE.md); **D1b's offset scan runs
+  at all seven voltages** (it was built for 12 V and 24 V) and its hall map judges the sequence for both power signs. Not
+  measurable here and stated as such in the docs: the wire colours (Stephen's cabling; the Ground row reads "Hall IN: +v",
+  asked), the 6.0 V / 25.9 V refusals (configuration, desk), the Rev B Doco offsets (not tested by ruling), the vendor's
+  4,000 RPM.
+- **2026-10-04** — Align (the 6.5″'s cold back-EMF Z, `dual-align`) brought to the Doco: Stephen asked whether this bench
+  should be its first Doco test (*"i don't want to skew our bench but i do want to complete these measurements"*). Ordering
+  (arbiter): D1a as built; align, with PL-103 fixed, at the numbers D1a confirms, opens D1b ahead of the offset scan, which
+  cross-checks it. «#3694» added (§17).

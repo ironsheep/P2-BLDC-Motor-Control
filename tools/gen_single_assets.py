@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Generate the DEBUG PLOT assets for src/test_bench_single.spin2's attended hand tests on the Doco bench (window
 sgpanel): the hand load at low speed (-D SINGLE_PART_HANDLOAD, tiers single-handload-v12p0 / -v24p0), the held stop
-pushed by hand (-D SINGLE_PART_HELDPUSH, single-heldpush-v12p0 / -v24p0) -- task 3679 phase 2c. The supply sag and the
+pushed by hand (-D SINGLE_PART_HELDPUSH, single-heldpush-v12p0 / -v24p0) -- task 3679 phase 2c; and the hand turn with the
+motor UNPOWERED (-D SINGLE_PART_HANDTURN, tier single-recheck-v12p0) -- task 3692, D1a. The supply sag and the
 cloth pinch were removed 2026-10-04 (STEPHEN: qualify the Doco as the 6.5in, no new measurements; task 3691).
 
 EXTENDS tools/gen_t0stop_assets.py's pattern (T0-24's stop-state hand test, PL-127; DOCs/plans/T0-24-INTERACTION-
@@ -81,6 +82,7 @@ BANNERS = [
     ("B_STARTING", "HANDS OFF  --  STARTING", C_AMBER_BAN),
     ("B_STOPPED", "THE RUN STOPPED ITSELF", C_RED_BAN),
     ("B_ALLDONE", "ALL STEPS DONE", C_GREY),
+    ("B_WIRING", "HANDS OFF  --  THE MOTOR STARTS AND TURNS A LITTLE", C_RED_BAN),
 ]
 
 # Status phrases under SEEN NOW (layer 6): (id, text, ink) -- "wait" neutral, "good" green (the program has what it
@@ -123,6 +125,13 @@ STATUSES = [
     ("ST_SAME_WAY", "SAME WAY AS STEP 1  --  REDO, TURN IT THE OTHER WAY", "warn"),
     ("ST_NM_FAULT", "THE DRIVE FAULTED UNDER YOUR HAND  --  A FINDING", "warn"),
     ("ST_DEF_SKIPPED", "NOT RUN  --  TOO LITTLE CHARGE LEFT IN THIS TEST", "warn"),
+    # the hand turn (task 3692: the motor is unpowered)
+    ("ST_HT_WAIT", "UNPOWERED  --  TURN THE SHAFT CLOCKWISE NOW", "wait"),
+    ("ST_HT_TURNING", "TURNING  --  KEEP GOING, ABOUT THREE TURNS", "wait"),
+    ("ST_HT_ENOUGH", "ABOUT THREE TURNS  --  CLICK DONE", "good"),
+    ("ST_NM_FEW_TURNS", "NOT MEASURED  --  UNDER TWO TURNS SEEN, REDO", "warn"),
+    ("ST_NM_TOO_FAST", "NOT MEASURED  --  TOO FAST TO COUNT, REDO SLOWER", "warn"),
+    ("ST_WIRING", "STARTING THE MOTOR, THE WIRING CHECK  --  HANDS OFF", "wait"),
     # whole-run screens
     ("ST_ALL_DONE", "ALL STEPS DONE  --  THE MOTOR IS STOPPED", "good"),
     ("ST_NO_STEPS", "THIS SUPPLY HAS NO STEPS IN THIS TEST  --  NOTHING RAN", "warn"),
@@ -137,6 +146,7 @@ STATUSES = [
     ("ST_RS_LEGCAP", "THE TEST CHARGE CAP  --  THE RUN STOPPED", "warn"),
     ("ST_RS_TIME", "THE RUN TIME CAP  --  THE RUN STOPPED", "warn"),
     ("ST_RS_ENCWIN", "THE ENCODER DISAGREED WITH THE HALLS  --  STOPPED", "warn"),
+    ("ST_RS_WIRING", "THE WIRING CHECK DID NOT PASS  --  STOPPED", "warn"),
     ("ST_RS_OTHER", "THE RUN STOPPED  --  THE LOG SAYS WHY", "warn"),
 ]
 
@@ -151,6 +161,10 @@ LABELS = [
     ("L_HOLD_PCT", "HOLD EFFORT, % OF CEILING"),
     ("L_SLIP_DEG", "GAVE WAY AT, DEGREES"),
     ("L_RISE_MS", "RISE TO CEILING, MS"),
+    ("L_HALL_TICKS", "HALL TICKS COUNTED"),
+    ("L_ENC_COUNTS", "ENCODER COUNTS"),
+    ("L_TPR_X10", "HALL TICKS A TURN, X10"),
+    ("L_TURNS_X10", "ENCODER TURNS, X10"),
 ]
 
 # Buttons (layer 8): (id, title, slot). The forward action is always the RIGHT slot, STOP MOTOR and REDO STEP the LEFT,
@@ -244,13 +258,30 @@ STEPS = [
          expect="As step 1, turned the other way: the push back began at the first edge, rose in about 0.25 s, and "
                 "gave way at the second edge.",
          act_lbl=("L_DEG", "L_HOLD_PCT"), res_lbl=("L_SLIP_DEG", "L_RISE_MS")),
+    # task 3692, D1a: T0-12's hand-rotation anchor mirrored on the Doco. The motor is UNPOWERED (no driver started), so
+    # nothing is felt but the magnets' cogging; the step ends on his DONE. "turn" kind: DONE is his end, nothing to stop.
+    dict(id="HT", name="HAND TURN, MOTOR UNPOWERED", kind="turn", powered=False, setup="ST_BLANK",
+         intro=("The motor is NOT powered and nothing moves by itself. You turn the shaft by hand while the program "
+                "counts the hall ticks and the encoder counts.",
+                "Click START STEP, wait for YOUR TURN. Looking at the ENCODER end of the shaft, turn it CLOCKWISE, "
+                "about three full turns, steadily, without going back. Then click DONE.",
+                "Nothing from the drive. A free shaft with a soft notchy drag from the magnets."),
+         act=("The motor is unpowered. The program counts hall ticks and encoder counts as you turn.",
+              "Turn the shaft clockwise, looking at the encoder end, about three full turns, steadily. Then click DONE.",
+              "A free shaft with a soft notchy drag. Nothing pushes back.",
+              "When you click DONE. It ends by itself after two minutes."),
+         expect="About 240 hall ticks a turn x10, that is 24 a turn, and about 30 encoder turns x10, that is three turns.",
+         begin="START STEP starts the count at once. Then the green YOUR TURN banner.",
+         forward="NEXT STEP starts the motor and runs the wiring check: the shaft turns a little one way and back. "
+                 "Take your hands off first.",
+         act_lbl=("L_HALL_TICKS", "L_ENC_COUNTS"), res_lbl=("L_TPR_X10", "L_TURNS_X10")),
 ]
 
 # The whole-run screens: (id, name text, banner, card, right button).
 SPECIALS = [
     ("SP_STARTING", "STARTING", "B_STARTING",
-     [("NOW", "The program reads the board, starts the motor under a 2 A test limit, starts the encoder and reads "
-              "the current sense at rest. Nothing turns."),
+     [("NOW", "The program reads the board and, when the test needs them, starts the motor under a 2 A test limit "
+              "and the encoder. Nothing turns."),
       ("YOU", "Nothing yet. The first step's screen comes next.")], "BT_NONE"),
     ("SP_STOPPED", "RUN STOPPED", "B_STOPPED",
      [("WHAT HAPPENED", "The run stopped itself; the line below says why. The motor and the drive are stopped."),
@@ -259,6 +290,11 @@ SPECIALS = [
     ("SP_ALLDONE", "ALL STEPS DONE", "B_ALLDONE",
      [("DONE", "Every step of this test has run. The motor and the drive are stopped."),
       ("YOU", "Click FINISH to close this window. It closes by itself after two minutes.")], "BT_FINISH"),
+    # task 3692: shown after the hand turn, while the motor is started and checkWiring() turns the shaft a little
+    ("SP_WIRING", "WIRING CHECK", "B_WIRING",
+     [("NOW", "The program starts the motor, asks it for a distance, which it must refuse, then turns the shaft a "
+              "little, about a quarter turn one way and back."),
+      ("YOU", "Take your hands off and keep clear of the shaft until the next screen.")], "BT_NONE"),
 ]
 
 FORWARD = "NEXT STEP moves on; on the last step FINISH ends the test."
@@ -281,8 +317,8 @@ SPEC = ids(SPECIALS)
 CARD_TABLE = []
 CARD_OF = {}
 for _s in STEPS:
-    _begin = ("START STEP sets the step up, hands off, in about a second" +
-              (" and the shaft speeds up." if _s["powered"] else ".") + " Then the green YOUR TURN banner.")
+    _begin = _s.get("begin", "START STEP sets the step up, hands off, in about a second" +
+                    (" and the shaft speeds up." if _s["powered"] else ".") + " Then the green YOUR TURN banner.")
     CARD_OF[(_s["id"], "PH_INTRO")] = len(CARD_TABLE)
     CARD_TABLE.append([("THIS STEP", _s["intro"][0]), ("YOU WILL", _s["intro"][1]),
                        ("YOU SHOULD FEEL", _s["intro"][2]), ("START STEP", _begin)])
@@ -292,7 +328,7 @@ for _s in STEPS:
     CARD_OF[(_s["id"], "PH_RESULT")] = len(CARD_TABLE)
     CARD_TABLE.append([("EXPECTED", _s["expect"]),
                        ("NOT MEASURED?", "REDO STEP runs this step again from its setup. Follow the YOU line again."),
-                       ("OTHERWISE", FORWARD)])
+                       ("OTHERWISE", _s.get("forward", FORWARD))])
     if "skip" in _s:
         CARD_OF[(_s["id"], "PH_SKIP")] = len(CARD_TABLE)
         CARD_TABLE.append([("WHAT HAPPENED", _s["skip"][0]), ("YOU", _s["skip"][1]), ("THEN", FORWARD)])
@@ -324,7 +360,7 @@ def screen_for(step_idx, phase):
     if phase == "PH_ACT":
         if s["kind"] == "hand":                       # the latch, a sensor, ends it; he may stop the motor
             return BAN["B_TURN_POWERED"], card, LBL[s["act_lbl"][0]], LBL[s["act_lbl"][1]], BTN["BT_STOP"], BTN["BT_NONE"]
-        if s["kind"] == "held":                       # nothing is driven: DONE is his end, the encoder the sensor's
+        if s["kind"] in ("held", "turn"):             # nothing is driven: DONE is his end, the encoder the sensor's
             return BAN["B_TURN"], card, LBL[s["act_lbl"][0]], LBL[s["act_lbl"][1]], BTN["BT_NONE"], BTN["BT_DONE"]
         raise AssertionError("no step kind %r" % s["kind"])
     if phase == "PH_SKIP":
@@ -548,6 +584,7 @@ TIERS = [
     ("single-handload-v12p0", 2, ["HL_4A", "HL_2A", "HL_DEF"]),
     ("single-handload-v24p0", 6, ["HL_4A", "HL_2A"]),
     ("single-heldpush-v12p0", 2, ["HP_ONE", "HP_OTHER"]),
+    ("single-recheck-v12p0", 2, ["HT"]),                        # task 3692: the hand turn, then the wiring screen
 ]
 # The live phrases a normal step passes through (storyboard only; the measure cog publishes them), its RESULT phrase,
 # and sample readings (ACT, RESULT).
@@ -555,6 +592,7 @@ WALK = {
     "hand": (["ST_SPEEDING"], ["ST_GRIP_NOW", "ST_SLOWING", "ST_STANDING", "ST_LATCHED"], "ST_MEASURED", (207, 412), (1012, 790)),
     "held": (["ST_ARM_HOLD"], ["ST_TURN_NOW", "ST_TURNED_FREE", "ST_PUSHING", "ST_AT_CEIL", "ST_GAVE_WAY"], "ST_MEASURED",
              (19, 100), (24, 251)),
+    "turn": (["ST_BLANK"], ["ST_HT_WAIT", "ST_HT_TURNING", "ST_HT_ENOUGH"], "ST_MEASURED", (72, 4320), (240, 30)),
 }
 
 
@@ -582,18 +620,25 @@ def storyboard(out_dir, layers):
             seq += (("PH_RESULT", res, res_r),)
             for p, st, rd in seq:
                 ban, cd, l1, l2, bl, br = screen_for(si, p)
-                if p == "PH_RESULT" and k == len(steps) - 1:
+                if p == "PH_RESULT" and k == len(steps) - 1 and s["kind"] != "turn":
                     br = BTN["BT_FINISH"]             # the harness's rule: the last step's forward button is FINISH
+                    #  (the hand turn is never the test's last: the wiring check follows, so it keeps NEXT STEP)
                 v1, v2 = (rd if rd is not None else (None, None))
                 save(compose(layers, si, k + 1, len(steps), SUPPLY_ROW0 + row, ban, cd, STAT[st], l1, l2, v1, v2, bl, br),
                      "%s_step%d_%s_%s" % (tier, k + 1, p[3:].lower(), st[3:].lower()))
+            if s["kind"] == "turn":                   # then the wiring check's own screen, until the run ends
+                name, ban, card, bl, br = special_for(SPEC["SP_WIRING"])
+                save(compose(layers, name, 0, 0, SUPPLY_ROW0 + row, ban, card, STAT["ST_WIRING"], LBL["L_BLANK"],
+                             LBL["L_BLANK"], None, None, bl, br), tier + "_wiring")
         name, ban, card, bl, br = special_for(SPEC["SP_ALLDONE"])
         save(compose(layers, name, 0, 0, SUPPLY_ROW0 + row, ban, card, STAT["ST_ALL_DONE"], LBL["L_BLANK"],
                      LBL["L_BLANK"], None, None, bl, br), tier + "_alldone")
     # other than planned: a step not measured, the default step not run, the same way twice, a click lit, the run stopped
     alt = [("HL_4A", 1, 2, "PH_RESULT", "ST_NM_NO_STAND", None), ("HL_DEF", 3, 3, "PH_SKIP", "ST_DEF_SKIPPED", None),
            ("HP_OTHER", 2, 2, "PH_RESULT", "ST_SAME_WAY", None), ("HP_ONE", 1, 2, "PH_RESULT", "ST_RISE_TOO_FAST", None),
-           ("HL_2A", 2, 3, "PH_ACT", "ST_NOLATCH", BTN["BT_STOP"])]
+           ("HL_2A", 2, 3, "PH_ACT", "ST_NOLATCH", BTN["BT_STOP"]),
+           ("HT", 1, 1, "PH_RESULT", "ST_NM_FEW_TURNS", None), ("HT", 1, 1, "PH_RESULT", "ST_NM_TOO_FAST", None),
+           ("HT", 1, 1, "PH_ACT", "ST_HT_ENOUGH", BTN["BT_DONE"])]
     for sid, seq_num, count, p, st, lit in alt:
         si = STEP[sid]
         ban, cd, l1, l2, bl, br = screen_for(si, p)

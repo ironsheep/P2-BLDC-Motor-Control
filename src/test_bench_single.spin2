@@ -39,6 +39,14 @@
 ''               out: the coast-down (phase 2b's, and its cell and records), the supply sag and the cloth pinch (phase
 ''               2c's optional legs, their cells, records, panel steps and screens). The lines above describe them as they
 ''               were built
+''               04 Oct 2026 -- task 3692 (SRC_REV 8, fmt 7): D1a, the Doco hand recheck (plan sec 10 step 1). STEPHEN
+''               2026-10-04: "We do need the motor recheck and the hand qualification as the very first thing we do", and
+''               that everything the Doco documentation claims be measured by the end of the bench tests. L-handturn (-D
+''               SINGLE_PART_HANDTURN, attended, the motor UNPOWERED: no driver started): the operator turns the shaft by hand,
+''               T0-12's anchor mirrored, and the hall ticks, their order and the encoder's counts are recorded; cells
+''               R23-SGL-HANDTICKS (24 ticks a turn), -HANDDIR (the hall and encoder signs tie), -HANDSEQ (the halls'
+''               documented order); and, in the same run's L-wiring, R23-SGL-NOWHEEL (a distance method refuses with no wheel
+''               and nothing moves). One tier: single-recheck-<voltage>
 ''
 '' =================================================================================================
 
@@ -90,6 +98,12 @@
                           defaults; the operator turns the shaft slowly by hand, one way, then the other, until the hold
                           gives way; the encoder angle at every hall edge, testGetHold(), getHoldStatus()
                           (R23-SGL-HOLDRISE, -HOLDSLIP)
+    SINGLE_PART_HANDTURN  L-handturn (task 3692, plan sec 10 step 1), ATTENDED, the motor UNPOWERED, run FIRST: after the board
+                          is read and before start(), the operator turns the shaft by hand about three turns one told way
+                          (T0-12's anchor); the encoder reader (pins only) gives the exact turns and direction and
+                          latches the count at every hall edge. R23-SGL-HANDTICKS, -HANDDIR, -HANDSEQ. With L-wiring
+                          (the tier single-recheck-<voltage>) it also judges R23-SGL-NOWHEEL: the first thing the started
+                          motor is asked is a distance, and it refuses
   (Task 3691, STEPHEN 2026-10-04: the 6.5in's qualification never had a coast-down, a supply sag or a cloth pinch, so
   the Doco's has none: "qualify/verify this doco motor the same way, no new measurements". Those legs are deleted.)
   After every leg, at rest, B1-FRONT prints the front cog's statistics (testGetFrontStats()): the worst pass is the clock
@@ -167,6 +181,7 @@
                                                           single-offscan at v12p0 and v24p0; single-passprobe)
       tools/bench-run.sh single-passprobe-v12p0 clk-200  (a clock by NAME, as every Doco tier takes)
       tools/bench-run.sh single-handload-v12p0           (attended: single-handload / -heldpush at v12p0 and v24p0)
+      tools/bench-run.sh single-recheck-v12p0            (attended, D1a: the hand turn, then the wiring leg; v12p0 only)
   Built without -D BENCH_CFG -D BENCH_DOCO (the compile gate's as-written build), it starts nothing: it prints its
   banner and a B1-REFUSE record and ends.
 }
@@ -184,8 +199,8 @@ CON { timing }
 
 CON { build identity }
 
-    SRC_REV     = 7                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 6                                         ' B1- record-format version (6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
+    SRC_REV     = 8                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 7                                         ' B1- record-format version (7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
 
 CON { the bench this image is built for }
 
@@ -538,6 +553,34 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     POWER_SIGNS             = 2                             ' 0: + power, 1: - power (the API's own sign; the increment's prints beside)
     POWER_SLOTS             = POWER_SIGNS * POWER_RUNG_COUNT
 
+  ' ---- TASK 3692: the hand recheck (plan sec 10 step 1; L-handturn, R23-SGL-HANDTICKS / -HANDDIR / -HANDSEQ / -NOWHEEL) ----
+
+  ' THE HAND TURN (L-handturn). The motor is UNPOWERED -- no driver is started -- and the operator turns the shaft by hand
+  '  HAND_TURN_REVS revolutions one way (T0-12's anchor, T0_12_REVOLUTIONS 3, mirrored); the encoder, bolted to the shaft
+  '  (STEPHEN 2026-10-04), gives the exact turns and direction at 1,440 counts a turn, and its capture cog latches the
+  '  count at every hall edge. 6.5in: T0-12 counted the halls alone (90 a revolution), the wheel's direction told by the
+  '  operator. The step ends on HIS DONE (T0-12's SPACE); HAND_TURN_MAX_MS ends a step nobody ended. The turn counts only
+  '  when the encoder saw HAND_TURN_MIN_COUNTS (two revolutions: the told three less a slow start and a slack finish):
+  '  fewer is NOMEAS and REDO.
+    HAND_TURN_REVS          = 3
+    HAND_TURN_TARGET_COUNTS = HAND_TURN_REVS * ENC_COUNTS_PER_REV       ' the panel says ENOUGH from here: 4,320
+    HAND_TURN_MIN_COUNTS    = 2 * ENC_COUNTS_PER_REV                    ' 2,880
+    HAND_TURN_MAX_MS        = 120_000
+    HAND_POLL_MS            = 2                                         ' the measure cog drains the ring every 2 ms: a hand turn makes
+                                                                        '  tens of edges a second, and the 64-entry ring holds over a second of them
+    HAND_MAX_EDGES          = 192                                       ' edges kept for B1-HTEDGE (8 revolutions); more are counted, not kept
+  ' The direction he is TOLD: clockwise, looking at the ENCODER end of the shaft (the end the encoder is bolted to: the one
+  '  end the bench shows him and he can find). 6.5in: T0_12_TOLD_CCW FALSE, clockwise from the hub. THE TIE TO THE HALLS'
+  '  SIGN IS NOT YET KNOWN: neither the DocoEng sheet nor DOCOENG_MOTOR.md says which way positive power turns the shaft,
+  '  so HAND_TOLD_TICK_SIGN (+1 rising / -1 falling) is not claimed until D1a's own turn has measured it. While
+  '  HAND_TOLD_SIGN_KNOWN is FALSE, R23-SGL-HANDDIR ties the halls' sign to the encoder's and records the told way beside it
+  '  (B1-HTURN2 told_cw, hall_sign); the evaluation sets both and the motor documentation says it
+    HAND_TOLD_SIGN_KNOWN   = FALSE
+    HAND_TOLD_TICK_SIGN    = 0
+  ' R23-SGL-NOWHEEL's distance, in inches (any distance of at least 1 reaches the wheel check first: ticksForDistance())
+    NOWHEEL_PROBE_IN       = 1
+    NOWHEEL_SETTLE_MS      = 500                                        ' the shaft is watched this long after the refusal
+
 CON { legs -- what this image carries }
 
   ' Each -D SINGLE_PART_* compiles one leg in; main() runs every leg compiled in, in this order.
@@ -575,6 +618,15 @@ CON { legs -- what this image carries }
     PART_PASSPRB_BUILT = TRUE
 #else
     PART_PASSPRB_BUILT = FALSE
+#endif
+  ' task 3692, L-handturn: attended too (the panel and the measure cog), the motor unpowered
+#ifdef SINGLE_PART_HANDTURN
+    PART_HANDTURN_BUILT = TRUE
+#ifndef SINGLE_ATTENDED
+#define SINGLE_ATTENDED
+#endif
+#else
+    PART_HANDTURN_BUILT = FALSE
 #endif
   ' phase 2c, the attended legs: each is its own tier, and any of them builds the panel and the measure cog
   '  (SINGLE_ATTENDED, defined below, compiles their bodies in; an unattended image carries none of them, DBG-16)
@@ -614,7 +666,7 @@ CON { legs -- what this image carries }
     PART_2B_BUILT      = PART_OFFSCAN_BUILT or PART_PASSPRB_BUILT
     PART_2C_BUILT      = PART_HANDLOAD_BUILT or PART_HELDPUSH_BUILT
     PART_Q_BUILT       = PART_WIRING_BUILT or PART_POWER_BUILT
-    PART_ANY_BUILT     = PART_HALLMAP_BUILT or PART_2A_BUILT or PART_2B_BUILT or PART_2C_BUILT or PART_Q_BUILT
+    PART_ANY_BUILT     = PART_HALLMAP_BUILT or PART_2A_BUILT or PART_2B_BUILT or PART_2C_BUILT or PART_Q_BUILT or PART_HANDTURN_BUILT
 
   ' Each leg's length, s, ESTIMATED (DERIVED from its own stimulus at the built-in rates, analysis sec 6; the worst row):
   '  HALLMAP  8 bursts of 0.5-2.5 s, their records, the start's ~2 s and the zero's 1 s: 40
@@ -666,6 +718,8 @@ CON { legs -- what this image carries }
   '  its cap is 3 x that leg's running time (900 s for HANDLOAD, 1_080 HELDPUSH), and the time spent on a screen waiting
   '  for him is not counted.
   '  Task 3686: the qualification chain (WIRING, POWER, LADDER, RAMP, STOPS) is 690 s, so its cap is 2_070 s.
+  '  Task 3692: L-handturn drives nothing and adds no estimate; its whole time is the operator's, added to runIdleMs. The
+  '  recheck tier (HANDTURN, WIRING) caps at 3 x 10 = 30 s of the wiring leg and the zero.
     RUN_TIME_FACTOR    = 3
     RUN_TIME_CAP_S     = RUN_TIME_FACTOR * LEGS_EST_S
 
@@ -1261,6 +1315,101 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     '  drive's own timing; with capped passes, the supply or the ceiling's duty reserve.
     TOPSPD_TOL_PM = 20
 
+    ' ---- TASK 3692: the hand recheck's cells (plan sec 10 step 1). Every negative named below is a desk mutation of this
+    '  harness's own arithmetic or a stated physical case, run in the python model sgl3692_model.py (28 of 28 checks
+    '  agree); every correct-case number is that model's or DERIVED. Their sign-off task is 3692. The motor is UNPOWERED for the first three: the halls
+    '  and the encoder are only read, so nothing the drive does can change what they read (the exclusion check's ground).
+
+    ' R23-SGL-HANDTICKS (L-handturn), crit HALL_TPR_X100, units TPR_X100, one instance MOTOR: hall ticks per encoder
+    '  revolution, x100, over the turn: |the net ticks the halls counted AFTER the first captured edge| x 1,440 x 100 /
+    '  |the encoder's counts between the first and the last captured edge| -- the span of whole sectors between two edges, so
+    '  no partial sector enters at either end. 0 when fewer than two edges were captured.
+    ' PRECONDITION: the encoder saw at least HAND_TURN_MIN_COUNTS (two revolutions) and no captured edge was lost
+    '  (enc.edgesLost(), a ring the drain did not keep up with); otherwise NOMEAS (REDO, a little more, a little slower).
+    '  THE EXCLUSION CHECK: the encoder's travel is the yardstick, never a dependent of the halls, so a motor whose halls
+    '  are dead or skip still has its turn counted and reads 0 or low -- a measured FAIL, not an exclusion. Only a turn
+    '  too short to judge, or a ring that lost edges (the drain every HAND_POLL_MS did not keep up), is excluded.
+    ' BOUND: HALL_TICKS_PER_REV x 100 -/+ HANDTICKS_TOL_X100 (2,400 -/+ 13). DERIVED: the two edges latch the encoder at
+    '  their own hall boundaries, each within SECTOR_TOL_X10 / 10 counts of its place on the equal grid (R23-SGL-SECTOR's
+    '  bound, 6) and one count of the latch's quantum, so the span is the sectors x 60 counts -/+ 2 x 7 = 14 counts; the span
+    '  is at least the two revolutions less one sector at each end, 2,760 counts, so the ratio is off by at most
+    '  2,400 x 14 / 2,760 = 12.2 x100, rounded up to 13. 6.5in: T0-12's 90 hall transitions a revolution, "expect_90",
+    '  by eye (the halls alone, no encoder).
+    ' CORRECT CASE: DocoEng, 4 pole pairs x 6 = 24 ticks a turn (DOCOENG_MOTOR.md, the encoder object's
+    '  HALL_TICKS_PER_REV): two to three and a half turns either way, every edge within 6 counts of the grid -> 2,391 ..
+    '  2,409 (worst 9 off 2,400 in 2,000 trials) -> PASS. Broken: a motor of 3 pole pairs reads 1,800; a hall line that
+    '  never makes every third transition 822 (and 23 bad edges); the encoder at half rate, over six turns, 4,802; no
+    '  hall edge at all 0 -- each FAIL. A half-rate encoder over the told three turns sees only 2,160 counts: NOMEAS, and
+    '  the panel says to turn again, which then reads 4,802. UNFIXED: none on the Doco (a first measurement of it): the
+    '  claim is DOCOENG_MOTOR.md's 6 ticks a hall cycle.
+    '  Desk mutations: the ratio over the WHOLE turn (net ticks / net counts) ranges 2,355 .. 2,443 for a correct motor
+    '  (a sector at each end), so it needs +-48, which PASSES a motor of 23.6 ticks a turn (2,360) -- why the span is edge
+    '  to edge; a bound of +-5 FAILS a correct motor in 135 of 2,000 trials -- why 13.
+    '  Rival: a coupling that slips between the shaft and the encoder reads high (fewer counts for the same ticks); the
+    '  hall map's R23-SGL-ENCCHK over two driven revolutions (the same two counters) tells it apart from a hall fault.
+    HANDTICKS_EDGE_ERR_COUNTS = SECTOR_TOL_X10 / X10 + 1                                ' 7: one edge's place on the grid
+    HANDTICKS_MIN_SPAN        = HAND_TURN_MIN_COUNTS - 2 * ENC_COUNTS_PER_TICK          ' 2,760
+    HANDTICKS_TOL_X100        = (HALL_TICKS_PER_REV * X100 * 2 * HANDTICKS_EDGE_ERR_COUNTS + HANDTICKS_MIN_SPAN - 1) / HANDTICKS_MIN_SPAN   ' 13
+    HANDTICKS_LO_X100         = HALL_TICKS_PER_REV * X100 - HANDTICKS_TOL_X100
+    HANDTICKS_HI_X100         = HALL_TICKS_PER_REV * X100 + HANDTICKS_TOL_X100
+
+    ' R23-SGL-HANDDIR (L-handturn), crit TIE_SIGN_OK, units BOOL01, one instance MOTOR: 1 when the hall count's sign and the
+    '  encoder's sign agree -- the net ticks over the whole turn and the encoder's net count are both non-zero and of one
+    '  sign, which is the encoder object's own relation (counts = +60 x rising ticks, isp_bench_encoder CHECK_TOL_COUNTS;
+    '  a one-way or swapped encoder reads WRONG-WAY) -- and, once HAND_TOLD_SIGN_KNOWN, that sign is the one the told
+    '  direction (clockwise looking at the encoder end) makes (HAND_TOLD_TICK_SIGN); else 0. A criterion of more than one
+    '  condition, so a boolean cell; B1-HTURN2 carries each sign beside the told direction. UNTIL THE TOLD SIGN IS KNOWN the
+    '  cell ties the two instruments to each other and the third leg of the tie (the physical way) is only recorded:
+    '  nothing on file says which way positive power turns this shaft, and a guessed sign could FAIL a sound motor.
+    ' PRECONDITION: as HANDTICKS's: the encoder saw at least HAND_TURN_MIN_COUNTS and no edge was lost; otherwise NOMEAS. THE
+    '  EXCLUSION CHECK: the encoder sign is the ground and is never excluded; a motor whose halls read nothing at all (net
+    '  ticks 0) over a turn the encoder saw is this cell's own negative (0), not an exclusion.
+    ' BOUND: TIE_OK .. TIE_OK (1).
+    ' CORRECT CASE: halls counting up as the encoder counts up (or both down) over a three turn hand turn -> 1 -> PASS.
+    '  Broken: the encoder's A and B lines swapped (counts the other way against the halls) -> 0; two hall lines swapped
+    '  (the halls read the cycle backwards: pair swap reverses 1-5-4-6-2-3) -> 0; no hall edge at all -> 0; each FAIL.
+    '  Once the told sign is known, a motor that turns the told way yet counts the other sign reads 0 (model: told +1
+    '  against a motor counting + PASSES, told -1 FAILS). UNFIXED: none (a first measurement). Desk mutation: judging on
+    '  the encoder alone PASSES the swapped hall pair -- why both signs are read.
+    '  Rival: a hand that turned back across several sectors reads a small net on the halls and the encoder alike
+    '  (B1-HTURN's rise, fall and enc_net separate it); the step's NOMEAS floor is two revolutions NET.
+    TIE_OK = 1
+
+    ' R23-SGL-HANDSEQ (L-handturn), crit SEQ_IN_ORDER, units BOOL01, one instance MOTOR: 1 when every hall transition seen
+    '  follows DOCOENG_MOTOR.md's order for the way the halls counted -- 1-5-4-6-2-3 for rising ticks (positive power),
+    '  1-3-2-6-4-5 for falling (negative power; the driver's deltas4k reads old 1 -> new 5 as +1 and 1 -> 3 as -1, the same
+    '  two orders) -- none skipped, none illegal (%000, %111), none against the counted direction, at least HALL_TICKS_PER_REV
+    '  edges seen (a revolution of them); else 0. The direction counted is the sign of the net ticks (rising when 0). B1-HTURN
+    '  carries the counts that fail it (bad, against) and B1-HTEDGE every transition with its two codes and the encoder count.
+    ' PRECONDITION: as HANDTICKS's. THE EXCLUSION CHECK: a hall line that is stuck or open skips and shows illegal codes
+    '  over a turn the encoder saw -- this cell's negative (0) -- and is not excluded; only a short turn or a lost edge is.
+    ' BOUND: SEQ_OK .. SEQ_OK (1).
+    ' CORRECT CASE: 72 transitions of a three turn hand turn, every one the next code in the documented order -> 1 -> PASS.
+    '  Broken: every third transition skipped (23 bad edges) -> 0; one hall line inverted (48 illegal or skipped edges)
+    '  -> 0; a hand that rocked back across a boundary (one tick against the count) -> 0 -- each FAIL. A hall
+    '  line PAIR swapped reads the cycle backwards, which this cell PASSES (the order is the documented falling one) and
+    '  R23-SGL-HANDDIR FAILS; a rotation of the three lines leaves the cycle unchanged and PASSES both (the driver's
+    '  tables do not care which line is which). UNFIXED: none (a first measurement); DOCOENG_MOTOR.md states the orders.
+    '  Rival: a hand that rocks back across one boundary (not a hall fault): the encoder's count at each edge in B1-HTEDGE
+    '  runs back by under a sector at the against-edge; a hall fault does not move the encoder back.
+    SEQ_OK = 1
+
+    ' R23-SGL-NOWHEEL (L-wiring, in the recheck tier only), crit REFUSED_NOMOVE, units BOOL01, one instance MOTOR: 1 when,
+    '  on the started motor and before anything moves, driveForDistance(NOWHEEL_PROBE_IN, DDU_IN) returned ERR_NO_WHEEL_DIA
+    '  (MOTOR_CHOICE.md: with WHEEL_DIA_IN_INCH = 0.0 the distance methods are disabled and say so) AND the encoder's count
+    '  did not move more than REST_JITTER_COUNTS in the NOWHEEL_SETTLE_MS after it; else 0.
+    ' PRECONDITION: start() returned a cog that reported ready (the same start R23-SGL-START judges) and the call was made;
+    '  otherwise NOMEAS. THE EXCLUSION CHECK: a motor that never started is not asked; a motor that started and answers
+    '  with another error, NO_ERROR, or moves, is the negative (0), because the refusal is exactly what is claimed.
+    ' BOUND: REFUSED_OK .. REFUSED_OK (1).
+    ' CORRECT CASE: the bench's WHEEL_DIA_IN_INCH 0.0: ERR_NO_WHEEL_DIA, the encoder still -> 1 -> PASS. Broken: the call
+    '  returns NO_ERROR and the motor starts (the encoder moves, and the harness stops it) -> 0; ERR_BAD_UNITS or
+    '  ERR_NOT_STARTED (refused for another reason) -> 0; ERR_NO_WHEEL_DIA with a shaft that still turned -> 0. UNFIXED:
+    '  none on file. Desk mutation: judging on the error alone PASSES a refusal that also moved the shaft.
+    '  Rival: the shaft turned by a hand or a draft at that instant, not by the drive: the recheck's own screens tell him
+    '  to keep clear at this point, and B1-NOWHEEL's two counts show the size and sign of the move.
+    REFUSED_OK = 1
+
 CON { record widths -- every numeric field is clamped to one of these }
 
     LIM_TINY  = benchLog.LIM_TINY                           ' prints at most 4 bytes: -999
@@ -1299,7 +1448,7 @@ CON { the hand tests' panel -- GENERATED by tools/gen_single_assets.py, do not h
 ' 6 status phrases, 7 reading labels, 8 buttons. A DEBUG backtick command takes the layer as a literal, so
 ' the layer numbers live in sgSetupPanel() / sgDraw() and here only as this comment.
 
-    SG_STEP_COUNT            = 5
+    SG_STEP_COUNT            = 6
     SG_PHASE_COUNT           = 5
     SG_SNUM_X                = 64
     SG_SCOUNT_X              = 126
@@ -1309,8 +1458,8 @@ CON { the hand tests' panel -- GENERATED by tools/gen_single_assets.py, do not h
     SG_NAME_H                = 36
     SG_SUP_X                 = 432
     SG_SUP_W                 = 116
-    SG_NAME_SPECIAL0         = 5
-    SG_SUPPLY_ROW0           = 8
+    SG_NAME_SPECIAL0         = 6
+    SG_SUPPLY_ROW0           = 10
     SG_BAN_X                 = 12
     SG_BAN_Y                 = 76
     SG_BAN_W                 = 536
@@ -1359,6 +1508,7 @@ CON { the hand tests' panel -- GENERATED by tools/gen_single_assets.py, do not h
     SG_STEP_HL_DEF           = 2
     SG_STEP_HP_ONE           = 3
     SG_STEP_HP_OTHER         = 4
+    SG_STEP_HT               = 5
 
 ' phases
     SG_PH_INTRO              = 0
@@ -1371,6 +1521,7 @@ CON { the hand tests' panel -- GENERATED by tools/gen_single_assets.py, do not h
     SG_SP_STARTING           = 0
     SG_SP_STOPPED            = 1
     SG_SP_ALLDONE            = 2
+    SG_SP_WIRING             = 3
 
 ' banners
     SG_B_INTRO               = 0
@@ -1383,6 +1534,7 @@ CON { the hand tests' panel -- GENERATED by tools/gen_single_assets.py, do not h
     SG_B_STARTING            = 7
     SG_B_STOPPED             = 8
     SG_B_ALLDONE             = 9
+    SG_B_WIRING              = 10
 
 ' status phrases
     SG_ST_BLANK              = 0
@@ -1418,20 +1570,27 @@ CON { the hand tests' panel -- GENERATED by tools/gen_single_assets.py, do not h
     SG_ST_SAME_WAY           = 30
     SG_ST_NM_FAULT           = 31
     SG_ST_DEF_SKIPPED        = 32
-    SG_ST_ALL_DONE           = 33
-    SG_ST_NO_STEPS           = 34
-    SG_ST_RS_BOARD           = 35
-    SG_ST_RS_START           = 36
-    SG_ST_RS_ENCODER         = 37
-    SG_ST_RS_ZERO            = 38
-    SG_ST_RS_LIMIT           = 39
-    SG_ST_RS_SETTING         = 40
-    SG_ST_RS_OVERCURRENT     = 41
-    SG_ST_RS_CHARGE          = 42
-    SG_ST_RS_LEGCAP          = 43
-    SG_ST_RS_TIME            = 44
-    SG_ST_RS_ENCWIN          = 45
-    SG_ST_RS_OTHER           = 46
+    SG_ST_HT_WAIT            = 33
+    SG_ST_HT_TURNING         = 34
+    SG_ST_HT_ENOUGH          = 35
+    SG_ST_NM_FEW_TURNS       = 36
+    SG_ST_NM_TOO_FAST        = 37
+    SG_ST_WIRING             = 38
+    SG_ST_ALL_DONE           = 39
+    SG_ST_NO_STEPS           = 40
+    SG_ST_RS_BOARD           = 41
+    SG_ST_RS_START           = 42
+    SG_ST_RS_ENCODER         = 43
+    SG_ST_RS_ZERO            = 44
+    SG_ST_RS_LIMIT           = 45
+    SG_ST_RS_SETTING         = 46
+    SG_ST_RS_OVERCURRENT     = 47
+    SG_ST_RS_CHARGE          = 48
+    SG_ST_RS_LEGCAP          = 49
+    SG_ST_RS_TIME            = 50
+    SG_ST_RS_ENCWIN          = 51
+    SG_ST_RS_WIRING          = 52
+    SG_ST_RS_OTHER           = 53
 
 ' reading labels
     SG_L_BLANK               = 0
@@ -1443,6 +1602,10 @@ CON { the hand tests' panel -- GENERATED by tools/gen_single_assets.py, do not h
     SG_L_HOLD_PCT            = 6
     SG_L_SLIP_DEG            = 7
     SG_L_RISE_MS             = 8
+    SG_L_HALL_TICKS          = 9
+    SG_L_ENC_COUNTS          = 10
+    SG_L_TPR_X10             = 11
+    SG_L_TURNS_X10           = 12
 
 ' buttons
     SG_BT_NONE               = 0
@@ -1540,13 +1703,19 @@ sgScreenTab
     BYTE     3, 14,  5,  6,  0,  2   ' HP_OTHER PH_ACT
     BYTE     5, 15,  7,  8,  6,  3   ' HP_OTHER PH_RESULT
     BYTE     0,  0,  0,  0,  0,  0   ' HP_OTHER PH_SKIP (none)
+    BYTE     0, 16,  0,  0,  0,  1   ' HT PH_INTRO
+    BYTE     1, 16,  0,  0,  0,  0   ' HT PH_SETUP
+    BYTE     3, 17,  9, 10,  0,  2   ' HT PH_ACT
+    BYTE     5, 18, 11, 12,  6,  3   ' HT PH_RESULT
+    BYTE     0,  0,  0,  0,  0,  0   ' HT PH_SKIP (none)
 
 ' One entry per whole-run screen (SG_SP_*), SG_SPECIAL_BYTES bytes each (SG_SPC_*): name, banner, card,
 ' left button, right button.
 sgSpecialTab
-    BYTE     5,  7, 16,  0,  0   ' SP_STARTING
-    BYTE     6,  8, 17,  0,  4   ' SP_STOPPED
-    BYTE     7,  9, 18,  0,  4   ' SP_ALLDONE
+    BYTE     6,  7, 19,  0,  0   ' SP_STARTING
+    BYTE     7,  8, 20,  0,  4   ' SP_STOPPED
+    BYTE     8,  9, 21,  0,  4   ' SP_ALLDONE
+    BYTE     9, 10, 22,  0,  0   ' SP_WIRING
 #endif
 
 DAT { token strings }
@@ -1713,6 +1882,19 @@ sSfCritTopDev   BYTE    "TOP_DEV_PM", 0
 sInstMotor      BYTE    "MOTOR", 0
 sInstPwrPos     BYTE    "PWR-POS", 0
 sInstPwrNeg     BYTE    "PWR-NEG", 0
+  ' task 3692: the hand recheck's cells, criteria, units and task, its leg and its wiring screen
+sSfTaskRecheck  BYTE    "3692", 0
+sSfCellHandTk   BYTE    "R23-SGL-HANDTICKS", 0
+sSfCellHandDir  BYTE    "R23-SGL-HANDDIR", 0
+sSfCellHandSeq  BYTE    "R23-SGL-HANDSEQ", 0
+sSfCellNoWheel  BYTE    "R23-SGL-NOWHEEL", 0
+sSfCritHallTpr  BYTE    "HALL_TPR_X100", 0
+sSfCritTieOk    BYTE    "TIE_SIGN_OK", 0
+sSfCritSeqOk    BYTE    "SEQ_IN_ORDER", 0
+sSfCritRefused  BYTE    "REFUSED_NOMOVE", 0
+sSfUnitsTprX100 BYTE    "TPR_X100", 0
+sLegHandturn    BYTE    "HANDTURN", 0
+sPhWiring       BYTE    "WIRING", 0
 
   ' phase 2c: a hand-load step's end (HE_*), a panel phase, a button the log names
 sHeNone         BYTE    "NONE", 0
@@ -1875,6 +2057,21 @@ VAR { task 3686: the public start path, L-wiring's walk, R23-SGL-TOPSPD }
     LONG    qsEdges, qsLost                                 ' the captured edges taken over the walk, and the ring's lost ones
     LONG    sfTopDev[SMOOTH_COUNT], sfTopN[SMOOTH_COUNT]    ' R23-SGL-TOPSPD: the worst |following - 1|, per mille, and the runs
 
+#ifdef SINGLE_PART_HANDTURN
+VAR { task 3692: L-handturn -- the last run's readings and the cells' feeds, and R23-SGL-NOWHEEL's }
+
+    LONG    htRun, bHtByDone                                ' the run (1-based), and T/F where T means his DONE ended it (else the bound)
+    LONG    htEdges, htRise, htFall, htBad, htAgainst       ' hall edges captured; rising, falling and skipped/illegal ones; edges against the counted way
+    LONG    htTicksAll, htTicksAfter                        ' the signed net ticks of every edge, and of every edge after the first
+    LONG    htEncFirst, htEncLast, htEncSpan                ' the encoder's count latched at the first and last edge, and between them
+    LONG    htEncNet, htLost, htTurnsX1000                  ' the encoder's net count over the step, edges lost, whole turns x1000
+    LONG    htTprX100, htHallSign, htEncSign                ' hall ticks per encoder revolution x100; the two nets' signs
+    LONG    bHtEnough                                       ' T/F where T means the turn is long enough to judge and no edge was lost:
+                                                            '  R23-SGL-HANDTICKS / -HANDDIR / -HANDSEQ's precondition
+    LONG    htEdgeEnc[HAND_MAX_EDGES], htEdgeCodes[HAND_MAX_EDGES]  ' per kept edge: the latched count; the new code | previous << CODE_PREV_SHIFT
+    LONG    bNwRan, nwErr, nwEnc0, nwEnc1                   ' R23-SGL-NOWHEEL: the call was made, its return, the encoder before and after
+#endif
+
 #ifdef SINGLE_PART_POWER
 VAR { task 3686: L-power -- each rung's readings (slot = power sign x POWER_RUNG_COUNT + rung) and the cell's accumulators }
 
@@ -1967,8 +2164,8 @@ PUB main()
     debug("DEBUG_END_SESSION")
 
 PRI runSession() | bGoOn
-' The Doco session: read the board, start the motor under its test limit, start the encoder, read the rest zero, run every
-' leg compiled in; then stop the motor and the encoder, whatever happened.
+' The Doco session: read the board, (task 3692: the hand turn, the motor unpowered), start the motor under its test limit,
+' start the encoder, read the rest zero, run every leg compiled in; then stop the motor and the encoder, whatever happened.
 
 ' Local Variables:
 ' @local bGoOn - T/F where T means every step so far succeeded
@@ -1976,6 +2173,10 @@ PRI runSession() | bGoOn
     bGoOn := bFindRow()
     if bGoOn
         bGoOn := bBoardIsExpected()
+#ifdef SINGLE_PART_HANDTURN
+    if bGoOn
+        bGoOn := bRunHandTurn()                             ' task 3692: FIRST, the motor unpowered: no driver is started yet
+#endif
     if bGoOn
         bGoOn := bStartMotor()
     if bGoOn
@@ -2314,6 +2515,9 @@ PRI bRunWiring() : bPassed | nEnc0, nLost0, bTaken, nEnc, nOfs
 ' @local nEnc - its latched count
 ' @local nOfs - that count less nEnc0
 
+#ifdef SINGLE_PART_HANDTURN
+    noWheelCheck()                                          ' task 3692: before anything moves
+#endif
     drainEdges()                                            ' only the walk's edges
     nLost0 := enc.edgesLost()
     nEnc0 := enc.readCount()
@@ -2375,6 +2579,50 @@ PRI bStartMeasured() : bMeasured
 ' @returns bMeasured - T/F where T means judged
 
     bMeasured := bQsTried and ((qsCog < 0) or (bQsReady == FALSE) or bQsWalkRan)
+#endif
+
+#ifdef SINGLE_PART_HANDTURN
+PRI noWheelCheck() | nSeen
+' R23-SGL-NOWHEEL (task 3692), on the started motor before anything moves: ask for a distance (driveForDistance(), the
+' method that would move it) with the bench's WHEEL_DIA_IN_INCH 0.0, and record what it returns and whether the encoder
+' moved in the NOWHEEL_SETTLE_MS after it (MOTOR_CHOICE.md: the distance methods are disabled with no wheel and return
+' ERR_NO_WHEEL_DIA). A motor that was NOT refused is stopped at once (coastNow()) and ends the run (AR_SETTING: the call
+' changed what it must not). Emits B1-NOWHEEL at rest.
+
+' Local Variables:
+' @local nSeen - the encoder's count moved over the settle, counts
+
+    bNwRan := FALSE
+    if (qsCog >= 0) and bQsReady
+        waitms(STOP_SETTLE_MS)                              ' the start checks' last motion is over
+        nwEnc0 := enc.readCount()
+        nwErr := wheel.driveForDistance(NOWHEEL_PROBE_IN, wheel.DDU_IN)
+        bNwRan := TRUE
+        waitms(NOWHEEL_SETTLE_MS)
+        nwEnc1 := enc.readCount()
+        wheel.getError()                                    ' drain the error that call recorded: it is the reading
+        nSeen := nwEnc1 - nwEnc0
+        benchLog.begin(@"B1-NOWHEEL")
+        benchLog.numField(@"err", nwErr, LIM_SMALL)
+        benchLog.numField(@"expect", wheel.ERR_NO_WHEEL_DIA, LIM_SMALL)
+        benchLog.numField(@"enc0", nwEnc0, LIM_MID)
+        benchLog.numField(@"enc1", nwEnc1, LIM_MID)
+        benchLog.numField(@"moved", nSeen, LIM_SMALL)
+        benchLog.boolField(@"pass", noWheelValue() == REFUSED_OK)
+        lineEmit()
+        if nwErr == wheel.NO_ERROR
+            coastNow()
+            setAbort(AR_SETTING, nwErr)
+
+PRI noWheelValue() : nOk
+' R23-SGL-NOWHEEL's reading: REFUSED_OK when the call returned ERR_NO_WHEEL_DIA and the encoder moved no more than
+' REST_JITTER_COUNTS after it; else 0.
+'
+' @returns nOk - REFUSED_OK or 0
+
+    nOk := 0
+    if bNwRan and (nwErr == wheel.ERR_NO_WHEEL_DIA) and (abs(nwEnc1 - nwEnc0) <= REST_JITTER_COUNTS)
+        nOk := REFUSED_OK
 #endif
 
 CON { --- the hall-map leg (L-hallmap) --- }
@@ -5679,6 +5927,8 @@ DAT { the attended legs' steps, in the order each runs them (SG_STEP_*) }
 handSteps       BYTE    SG_STEP_HL_4A, SG_STEP_HL_2A, SG_STEP_HL_DEF
   ' L-heldpush: one way, then the other
 heldSteps       BYTE    SG_STEP_HP_ONE, SG_STEP_HP_OTHER
+  ' L-handturn (task 3692): the one step
+turnSteps       BYTE    SG_STEP_HT
 
 PRI sgSetupPanel()
 ' Create the attended legs' window and load its eight layers -- the supplied crop-and-overlay technique
@@ -5745,6 +5995,7 @@ PRI sgStoppedStatus() : statusIdx
         AR_LIMITS:                  statusIdx := SG_ST_RS_LIMIT
         AR_SETTING:                 statusIdx := SG_ST_RS_SETTING
         AR_ENC_WIN, AR_ENC_CHECK:   statusIdx := SG_ST_RS_ENCWIN
+        AR_WIRING:                  statusIdx := SG_ST_RS_WIRING
         AR_GUARD:
             case abortDetail
                 BO_OVER_CURRENT:    statusIdx := SG_ST_RS_OVERCURRENT
@@ -6203,7 +6454,7 @@ PRI bSgRunStep(stepId, seqNum, nSteps) : bGoOn | bLast, runNum, btn, bAgain
 ' @local bAgain - T/F where T means run the step again
 
     bGoOn := TRUE
-    bLast := (seqNum == nSteps)
+    bLast := (seqNum == nSteps) and (stepId <> SG_STEP_HT)  ' the hand turn is never the test's last: the wiring check follows it
     if bStepRuns(stepId)
         sgUiWait(stepId, seqNum, nSteps, 0, SG_PH_INTRO, SG_ST_WAIT_START, -1, -1, FALSE, bLast)
         runNum := 0
@@ -6273,6 +6524,10 @@ PRI sgEmitStep(stepId, seqNum, runNum)
 ' @param runNum - its run, 1-based
 
     case stepId
+#ifdef SINGLE_PART_HANDTURN
+        SG_STEP_HT:
+            emitTurnStep(seqNum, runNum)
+#endif
 #ifdef SINGLE_PART_HANDLOAD
         SG_STEP_HL_4A, SG_STEP_HL_2A, SG_STEP_HL_DEF:
             emitHandStep(stepId - SG_STEP_HL_4A, seqNum, runNum)
@@ -6310,6 +6565,10 @@ PRI sgWorker() | jobSeq
         wkRes2 := -1
         wkTakenSeq := jobSeq                                ' the panel draws its first frame only now: never a stale phrase
         case wkStep
+#ifdef SINGLE_PART_HANDTURN
+            SG_STEP_HT:
+                wkTurnStep()
+#endif
 #ifdef SINGLE_PART_HANDLOAD
             SG_STEP_HL_4A, SG_STEP_HL_2A, SG_STEP_HL_DEF:
                 wkHandStep(wkStep - SG_STEP_HL_4A)
@@ -6428,6 +6687,250 @@ PRI hitToken(nHit) : pToken
         SG_BT_REDO:     pToken := @sBtRedo
         SG_HIT_IGNORED: pToken := @sBtIgnored
         other:          pToken := @sBtMiss
+#endif
+
+CON { --- task 3692: L-handturn (plan sec 10 step 1), the hand turn with the motor UNPOWERED, attended --- }
+
+#ifdef SINGLE_PART_HANDTURN
+PRI bRunHandTurn() : bCompleted | eEncErr, nStartMs
+' L-handturn (task 3692, T0-12's hand-rotation anchor mirrored): with the board read and NO DRIVER STARTED -- the motor
+' object's start() is not called, the bridge pins stay as the harness left them, the hall pins are only read -- start the
+' encoder reader (pins only: its capture cog latches the count at every hall edge), run the one step on the panel
+' (bRunAttended(): INTRO, ACT, RESULT), stop the reader, and show the wiring screen that stays up while the motor is
+' started and checkWiring() turns it a little. The encoder is started again by bStartEncoder() afterwards, from count 0.
+' The whole leg is the operator's time, not an unwatched motor's: runIdleMs takes it. Cog 0.
+'
+' @returns bCompleted - T/F where T means nothing ended the run
+
+' Local Variables:
+' @local eEncErr - enc.start()'s result
+' @local nStartMs - getms() when the leg began
+
+    bCompleted := FALSE
+    nStartMs := getms()
+    htRun := 0
+    bHtEnough := FALSE
+    benchLog.cogEventBegin()
+    eEncErr := enc.start(ENC_PIN_A, ENC_PIN_B, MOTOR_BASE)
+    benchLog.cogEventEnd()
+    if eEncErr == enc.ENC_OK
+        bCompleted := bRunAttended(@sLegHandturn, @turnSteps, 1)
+        benchLog.cogEventBegin()
+        enc.stop()
+        if bCompleted
+            sgDrawSpecial(SG_SP_WIRING, SG_ST_WIRING, SG_BT_NONE)
+            sgEmitScreen(0, 0, @sPhWiring, @sPhWiring, SG_ST_WIRING, SG_ST_WIRING, 0)
+    else
+        setAbort(AR_ENC_START, eEncErr)
+    runIdleMs += getms() - nStartMs
+
+PRI wkTurnStep() | nEnc0, nLost0, nStartMs, nAbsEnc, bEnded
+' The hand turn (the measure cog): empty the capture ring, then until his DONE (or HAND_TURN_MAX_MS) take every captured hall
+' edge -- its latched encoder count and both hall codes -- and publish the live readings: the hall ticks counted and the
+' encoder's counts, magnitudes, with the phrase WAITING, TURNING, or ENOUGH once the encoder has seen HAND_TURN_TARGET_COUNTS.
+' Reads pins only: no driver runs and nothing is commanded. Then the step's readings, the cells' feeds and the RESULT phrase
+' (turnResult()). Prints nothing.
+
+' Local Variables:
+' @local nEnc0 - the encoder's count when the step began
+' @local nLost0 - the encoder object's lost edges when it began
+' @local nStartMs - getms() when it began
+' @local nAbsEnc - the encoder's counts turned so far, magnitude
+' @local bEnded - T/F where T means DONE or the bound ended the step
+
+    htRun := wkRun
+    htEdges := 0
+    htRise := 0
+    htFall := 0
+    htBad := 0
+    htTicksAll := 0
+    htTicksAfter := 0
+    htEncFirst := 0
+    htEncLast := 0
+    bHtByDone := FALSE
+    bHtEnough := FALSE
+    drainEdges()
+    nLost0 := enc.edgesLost()
+    nEnc0 := enc.readCount()
+    wkPhase := SG_PH_ACT
+    wkStatus := SG_ST_HT_WAIT
+    wkRead1 := 0
+    wkRead2 := 0
+    nStartMs := getms()
+    bEnded := FALSE
+    repeat until bEnded
+        takeTurnEdges()
+        nAbsEnc := abs(enc.readCount() - nEnc0)
+        wkRead1 := abs(htTicksAll)
+        wkRead2 := nAbsEnc
+        if nAbsEnc >= HAND_TURN_TARGET_COUNTS
+            wkStatus := SG_ST_HT_ENOUGH
+        elseif nAbsEnc >= ENC_COUNTS_PER_TICK
+            wkStatus := SG_ST_HT_TURNING
+        if bWkDoneReq
+            bHtByDone := TRUE
+            bEnded := TRUE
+        elseif getms() - nStartMs >= HAND_TURN_MAX_MS
+            bEnded := TRUE
+        else
+            waitms(HAND_POLL_MS)
+    waitms(STOP_SETTLE_MS)                                  ' the last edges of a hand that just let go
+    takeTurnEdges()
+    turnResult(nEnc0, nLost0)
+
+PRI takeTurnEdges() | bTaken, nEnc, nCode, nPrev, nCodes, nTick
+' Take every captured hall edge waiting in the encoder's ring into the turn's counts: the first HAND_MAX_EDGES are kept (the
+' latched count and both codes), every one is classified by this harness's own order table (classifyEdge(): a rising, a
+' falling or a bad transition) and the signed ticks summed -- over all of them, and over all but the first (whose own
+' boundary starts the span the cell reads).
+
+' Local Variables:
+' @local bTaken - T/F where T means takeEdge() returned an edge
+' @local nEnc - its latched encoder count
+' @local nCode - its hall code after the edge
+' @local nPrev - its hall code before
+' @local nCodes - the new code | the previous one << CODE_PREV_SHIFT
+' @local nTick - its tick: TICK_RISE, TICK_FALL or TICK_BAD
+
+    repeat
+        bTaken, nEnc, nCode, nPrev, _ := enc.takeEdge()
+        if bTaken == FALSE
+            quit
+        nCodes := (nCode & CODE_MASK) | ((nPrev & CODE_MASK) << CODE_PREV_SHIFT)
+        nTick, _ := classifyEdge(nCodes)
+        if htEdges < HAND_MAX_EDGES
+            htEdgeEnc[htEdges] := nEnc
+            htEdgeCodes[htEdges] := nCodes
+        if htEdges == 0
+            htEncFirst := nEnc
+        else
+            htTicksAfter += nTick
+        htEncLast := nEnc
+        htTicksAll += nTick
+        htEdges++
+        case nTick
+            TICK_RISE:  htRise++
+            TICK_FALL:  htFall++
+            other:      htBad++
+
+PRI turnResult(nEnc0, nLost0)
+' The turn's readings and the three cells' feeds, from what takeTurnEdges() took: the encoder's net count and the span between
+' the first and last edge, the whole turns, the hall ticks per encoder revolution x100 (HANDTICKS), the two nets' signs
+' (HANDDIR), the edges against the counted way (HANDSEQ), whether the turn is long enough to judge, and the RESULT phrase
+' and its two readings (hall ticks a turn x10, encoder turns x10).
+'
+' @param nEnc0 - the encoder's count when the step began
+' @param nLost0 - the encoder object's lost edges when it began
+
+    htEncNet := enc.readCount() - nEnc0
+    htLost := enc.edgesLost() - nLost0
+    htEncSpan := htEncLast - htEncFirst
+    htTurnsX1000 := muldiv64(abs(htEncNet), PM, ENC_COUNTS_PER_REV)
+    htTprX100 := 0
+    if (htEdges >= 2) and (htEncSpan <> 0)
+        htTprX100 := muldiv64(abs(htTicksAfter), ENC_COUNTS_PER_REV * X100, abs(htEncSpan))
+    htHallSign := signum(htTicksAll)
+    htEncSign := signum(htEncNet)
+    htAgainst := (htTicksAll >= 0) ? htFall : htRise
+    bHtEnough := (abs(htEncNet) >= HAND_TURN_MIN_COUNTS) and (htLost == 0)
+    wkRes1 := htTprX100 / X10
+    wkRes2 := htTurnsX1000 / (PM / X10)
+    if htLost > 0
+        wkWhy := SG_ST_NM_TOO_FAST
+    elseif bHtEnough == FALSE
+        wkWhy := SG_ST_NM_FEW_TURNS
+    else
+        wkWhy := SG_ST_MEASURED
+
+PRI signum(nValue) : nSign
+' The sign of a value: 1, -1 or 0.
+'
+' @param nValue - any value
+' @returns nSign - 1 above 0, -1 below, else 0
+
+    nSign := 0
+    if nValue > 0
+        nSign := 1
+    elseif nValue < 0
+        nSign := -1
+
+PRI handDirValue() : nOk
+' R23-SGL-HANDDIR's reading: TIE_OK when the hall count and the encoder's count are both non-zero and of one sign and,
+' once HAND_TOLD_SIGN_KNOWN, that sign is HAND_TOLD_TICK_SIGN; else 0.
+'
+' @returns nOk - TIE_OK or 0
+
+    nOk := 0
+    if (htHallSign <> 0) and (htHallSign == htEncSign)
+        if (HAND_TOLD_SIGN_KNOWN == FALSE) or (htHallSign == HAND_TOLD_TICK_SIGN)
+            nOk := TIE_OK
+
+PRI handSeqValue() : nOk
+' R23-SGL-HANDSEQ's reading: SEQ_OK when at least HALL_TICKS_PER_REV edges were seen and none was skipped, illegal or
+' against the counted direction; else 0.
+'
+' @returns nOk - SEQ_OK or 0
+
+    nOk := 0
+    if (htEdges >= HALL_TICKS_PER_REV) and (htBad + htAgainst == 0)
+        nOk := SEQ_OK
+
+PRI emitTurnStep(seqNum, runNum) | idx, nCodes, nTick
+' Emit the hand turn's records, at rest, after its step: B1-HTURN (the counts), B1-HTURN2 (the readings and the cells'
+' feeds, with the told direction beside the signs), then B1-HTEDGE for every kept edge: its two hall codes, its tick and
+' the encoder's count latched at it. Cog 0.
+'
+' @param seqNum - the step's number in the leg, 1-based
+' @param runNum - its run, 1-based
+
+' Local Variables:
+' @local idx - a kept edge
+' @local nCodes - its new code | previous << CODE_PREV_SHIFT
+' @local nTick - its tick
+
+    benchLog.begin(@"B1-HTURN")
+    benchLog.numField(@"step", seqNum, LIM_TINY)
+    benchLog.numField(@"run", runNum, LIM_TINY)
+    benchLog.boolField(@"by_done", bHtByDone)
+    benchLog.numField(@"edges", htEdges, LIM_SMALL)
+    benchLog.numField(@"rise", htRise, LIM_SMALL)
+    benchLog.numField(@"fall", htFall, LIM_SMALL)
+    benchLog.numField(@"bad", htBad, LIM_SMALL)
+    benchLog.numField(@"against", htAgainst, LIM_SMALL)
+    benchLog.numField(@"lost", htLost, LIM_SMALL)
+    benchLog.numField(@"ticks_all", htTicksAll, LIM_SMALL)
+    benchLog.numField(@"ticks_after", htTicksAfter, LIM_SMALL)
+    benchLog.numField(@"enc_net", htEncNet, LIM_MID)
+    benchLog.numField(@"enc_first", htEncFirst, LIM_MID)
+    benchLog.numField(@"enc_last", htEncLast, LIM_MID)
+    benchLog.numField(@"span", htEncSpan, LIM_MID)
+    lineEmit()
+    benchLog.begin(@"B1-HTURN2")
+    benchLog.numField(@"run", runNum, LIM_TINY)
+    benchLog.numField(@"turns_x1000", htTurnsX1000, LIM_SMALL)
+    benchLog.numField(@"tpr_x100", htTprX100, LIM_SMALL)
+    benchLog.numField(@"tpr_lo", HANDTICKS_LO_X100, LIM_SMALL)
+    benchLog.numField(@"tpr_hi", HANDTICKS_HI_X100, LIM_SMALL)
+    benchLog.numField(@"hall_sign", htHallSign, LIM_TINY)
+    benchLog.numField(@"enc_sign", htEncSign, LIM_TINY)
+    benchLog.textField(@"told", @"CW_FROM_ENCODER_END")
+    benchLog.boolField(@"told_known", HAND_TOLD_SIGN_KNOWN)
+    benchLog.numField(@"told_sign", HAND_TOLD_TICK_SIGN, LIM_TINY)
+    benchLog.boolField(@"enough", bHtEnough)
+    benchLog.boolField(@"dir_ok", handDirValue() == TIE_OK)
+    benchLog.boolField(@"seq_ok", handSeqValue() == SEQ_OK)
+    lineEmit()
+    repeat idx from 0 to (htEdges <# HAND_MAX_EDGES) - 1
+        nCodes := htEdgeCodes[idx]
+        nTick, _ := classifyEdge(nCodes)
+        benchLog.begin(@"B1-HTEDGE")
+        benchLog.numField(@"run", runNum, LIM_TINY)
+        benchLog.numField(@"seq", idx + 1, LIM_SMALL)
+        benchLog.numField(@"code", nCodes & CODE_MASK, LIM_TINY)
+        benchLog.numField(@"prev", (nCodes >> CODE_PREV_SHIFT) & CODE_MASK, LIM_TINY)
+        benchLog.numField(@"tick", nTick, LIM_TINY)
+        benchLog.numField(@"enc", htEdgeEnc[idx], LIM_MID)
+        lineEmit()
 #endif
 
 CON { --- L-handload (the analysis's L5): the hand load at low speed, attended --- }
@@ -7386,6 +7889,7 @@ PRI emitBuild()
     benchLog.boolField(@"wiring", PART_WIRING_BUILT)        ' task 3686, the D2 qualification
     benchLog.boolField(@"power", PART_POWER_BUILT)
     benchLog.boolField(@"qualify", QUALIFY_BUILT)
+    benchLog.boolField(@"handturn", PART_HANDTURN_BUILT)    ' task 3692, the D1a hand recheck
     benchLog.numField(@"time_cap_s", RUN_TIME_CAP_S, LIM_SMALL)
     benchLog.numField(@"charge_cap_mas", RUN_CHARGE_CAP_MAS, LIM_MID)
     benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
@@ -7492,6 +7996,13 @@ PRI emitEnd()
 PRI emitSignoffDecls()
 ' Emit one SIGNOFF-DECL per cell this image judges, before anything moves.
 
+#ifdef SINGLE_PART_HANDTURN
+    emitSignoffDecl(@sSfCellHandTk)
+    emitSignoffDecl(@sSfCellHandDir)
+    emitSignoffDecl(@sSfCellHandSeq)
+    if PART_WIRING_BUILT
+        emitSignoffDecl(@sSfCellNoWheel)                    ' asked in L-wiring: the recheck tier carries both
+#endif
 #ifdef SINGLE_PART_WIRING
     emitSignoffDecl(@sSfCellStart)
 #endif
@@ -7555,6 +8066,8 @@ PRI cellTask(pCell) : pTask
     pTask := @sSfTask
     if (pCell == @sSfCellStart) or (pCell == @sSfCellPower) or (pCell == @sSfCellTopSpd)
         pTask := @sSfTaskQual
+    if (pCell == @sSfCellHandTk) or (pCell == @sSfCellHandDir) or (pCell == @sSfCellHandSeq) or (pCell == @sSfCellNoWheel)
+        pTask := @sSfTaskRecheck
 
 PRI emitSignoffs()
 ' Emit every declared cell's SIGNOFF instances: on every path that declared them (a refused build declared none), after
@@ -7576,6 +8089,17 @@ PRI emitDeclaredSignoffs() | setIdx, eSign, eIdx, hl, eDir, nPowIdx
 ' @local eDir - a measured direction, DIR_*
 ' @local nPowIdx - a power sign (R23-SGL-POWER)
 
+#ifdef SINGLE_PART_HANDTURN
+    emitSignoff(@sSfCellHandTk, @sInstMotor, @sSfCritHallTpr, bHtEnough, htTprX100, ...
+                HANDTICKS_LO_X100, HANDTICKS_HI_X100, @sSfUnitsTprX100, 1)
+    emitSignoff(@sSfCellHandDir, @sInstMotor, @sSfCritTieOk, bHtEnough, handDirValue(), ...
+                TIE_OK, TIE_OK, @sSfUnitsBool01, 1)
+    emitSignoff(@sSfCellHandSeq, @sInstMotor, @sSfCritSeqOk, bHtEnough, handSeqValue(), ...
+                SEQ_OK, SEQ_OK, @sSfUnitsBool01, 1)
+    if PART_WIRING_BUILT
+        emitSignoff(@sSfCellNoWheel, @sInstMotor, @sSfCritRefused, bNwRan and bQsReady, noWheelValue(), ...
+                    REFUSED_OK, REFUSED_OK, @sSfUnitsBool01, 1)
+#endif
 #ifdef SINGLE_PART_WIRING
     emitSignoff(@sSfCellStart, @sInstMotor, @sSfCritStartOk, bStartMeasured(), startWireValue(), ...
                 START_OK, START_OK, @sSfUnitsBool01, 1)
