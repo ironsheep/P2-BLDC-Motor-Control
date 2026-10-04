@@ -24,6 +24,11 @@
 ''               cog drives and samples while cog 0 runs the panel; cells R23-SGL-LIMHOLD, -BLKSTOP, -HOLDRISE,
 ''               -HOLDSLIP, -SAGTYPE. The lead check and the Z reference judge the DUTY fit's vertex (arbiter decision
 ''               D9, LEADMOVE_FITQ), the DC-link fit's recorded beside it
+''               04 Oct 2026 -- task 3686 (SRC_REV 5, fmt 5): the D2 QUALIFICATION (plan sec 7): L-wiring (the public
+''               start path and checkWiring()) and L-power (driveAtPower() rungs judged on the encoder), cells
+''               R23-SGL-START, -POWER, -TOPSPD; -D SINGLE_QUALIFY builds the misdial check on the fitted Ke
+''               (KE_FITTED_MV_PER_KRPM, arbiter decision D5); the exclusion check corrected six cells whose negative
+''               read NOMEAS: RAMPARR, STOPROT / STOPTIME, LIMHOLD, HOLDRISE, HOLDSLIP
 ''
 '' =================================================================================================
 
@@ -40,17 +45,23 @@
   -D SINGLE_PART_* symbol, and main() runs, in a fixed order, every leg the image carries -- so one tier may chain every
   leg that needs nothing from the operator (doctrine overlay P1: a command boundary goes where he must act, and nowhere
   else), and a leg may also be built alone. The legs, in the order main() runs them:
+    SINGLE_PART_WIRING    L-wiring (task 3686, plan sec 7), run at the start, before the rest zero is read: the public
+                          start path's verdict (start() with its checks refusing, getHealth()) and checkWiring()'s
+                          walk, its HLT_WIRING verdict, with the encoder's travel beside it (R23-SGL-START)
     SINGLE_PART_HALLMAP   L-hallmap: the encoder angle at every hall edge, both directions, two crawl speeds; the
                           encoder self-check; each of the 24 sectors' width against 15 degrees; the hall pattern's zero
                           per direction in the encoder's frame (phase 1)
     SINGLE_PART_MININC    L-mininc (PL-71): a descending sweep of crawl rates each sign, from rest, until one does not
                           turn steadily on the encoder; the smallest steady one is the minimum (R23-SGL-MININC)
+    SINGLE_PART_POWER     L-power (task 3686, plan sec 7): driveAtPower() at DAT powerPcts (25, 50, 75 and the row's
+                          top power) each power sign, each from rest, held >= 5 s; the encoder's speed against the
+                          increment the library wrote for the power (R23-SGL-POWER)
     SINGLE_PART_LADDER    L-ladder (the analysis's L2): rungs at 25/50/75/100 % of the row's shipped ceiling (and, from
                           12 V up, extension rungs to 400e6, never past PK1_CAP_INCR), each entered from rest on the
                           built-in ramp AND by a step from the rung below, held >= 5 s; the feedforward line, the
-                          reserve ceiling, the misdial check (R23-SGL-FOLLOW, -MISDIAL, -SMOOTH)
+                          reserve ceiling, the misdial check (R23-SGL-FOLLOW, -MISDIAL, -SMOOTH, -TOPSPD)
     SINGLE_PART_RAMP      L-ramp (L7): power to the row's top from rest on the built-in ramp, then stopMotor(); and a
-                          reversal at the top (R23-SGL-RAMPARR, -SMOOTH)
+                          reversal at the top (R23-SGL-RAMPARR, -SMOOTH, -TOPSPD)
     SINGLE_PART_STOPS     L-stops (L8): stopAfterRotation(N) and stopAfterTime(T) armed at rest, at the top and at a
                           crawl, each sign; the encoder's rest against the limit (R23-SGL-STOPROT, -STOPTIME)
     SINGLE_PART_COAST     L-coast (L1, at the 12 V and 24 V rows only): steady at 25, 50 and 100 % of the row, each
@@ -82,6 +93,20 @@
   floor's input (plan sec 13). The hands-off legs need nothing from the operator; tools/bench-run.sh chains them all in
   one tier per voltage (single-measure-<voltage>). The four ATTENDED legs are each their own tier and never in
   single-measure (doctrine overlay P1: a command boundary goes where the operator must act).
+  THE D2 QUALIFICATION (task 3686, plan sec 7): single-qualify-<voltage> chains the hands-off qualification legs --
+  L-wiring, L-power, L-ladder, L-ramp, L-stops -- under -D SINGLE_QUALIFY, which builds the misdial check on the
+  fitted Ke (KE_IS_FITTED TRUE, +-30 per mille); the hand-load criteria at 12 V and 24 V are single-handload and
+  single-heldpush, reused, not duplicated. Each sec 7 criterion and the cell that judges it:
+    the start checks and checkWiring() pass ......... R23-SGL-START (new)
+    each power rung holds speed, encoder, 3 % ....... R23-SGL-POWER (new); R23-SGL-FOLLOW judges by increment
+    ramps arrive within 10 % of the prediction ...... R23-SGL-RAMPARR
+    stopAfterTime / stopAfterRotation at rest ....... R23-SGL-STOPTIME, R23-SGL-STOPROT
+    the ceiling: no lag fault, no re-sync ........... R23-SGL-SMOOTH (NEG, POS, REVERSAL)
+    the ceiling: rate on the speed law .............. R23-SGL-TOPSPD (new; NEG, POS, REVERSAL)
+    the misdial check passes ........................ R23-SGL-MISDIAL, fitted
+    12 V / 24 V hand load: the limit holds .......... R23-SGL-LIMHOLD (single-handload)
+    the blocked shaft latches in 988-1,168 ms ....... R23-SGL-BLKSTOP (single-handload)
+    the hold resists a push within its defaults ..... R23-SGL-HOLDRISE, R23-SGL-HOLDSLIP (single-heldpush)
   THE ATTENDED LEGS' PANEL (doctrine overlay P7, DOCs/procedures/PLOT-DISPLAY-RULES.md): one PLOT window, sgpanel, built
   on the supplied crop-and-overlay technique (DOCs/REF-NO-COMMIT/dbg-display-theory/) as T0-24's proven t0stop panel is
   (test_bench_t0.spin2), from the generated tables of tools/gen_single_assets.py. Every operator action is a titled
@@ -121,6 +146,10 @@
   ON PURPOSE: it is the analysis's fault-first case (P-S7), attended, and optional. STOP MOTOR is live whenever the
   shaft is driven. The run's time cap counts only the time a step runs (runIdleMs: a screen waiting on him is not
   an unwatched motor).
+  Task 3686: L-wiring's walk (checkWiring(), the library's own: power 10, one electrical cycle each way, a leg that
+  draws more than a healthy walk is ended by shorting the phases) runs under the 2 A test limit before the rest zero
+  is read, so no harness guard samples during its ~1.3 s; a walk that does not pass ends the run before anything else
+  drives (AR_WIRING). L-power drives as the ladder does: every guard, the row's ladder test limit, bCheckTop().
 
   RECORD DISCIPLINE (the scan's): tag-first, comma-separated name,value pairs, tags B1- (this binary), BE- (the encoder
   object), SIGNOFF / SIGNOFF-DECL (sf 1, DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1). Every record prints every field in
@@ -132,6 +161,7 @@
 
   HOW IT IS RUN (tools/bench-run.sh, which adds -D BENCH_CFG and the tier's own symbols)
       tools/bench-run.sh single-measure-v12p0            (every hands-off leg in one run; one tier per Doco voltage)
+      tools/bench-run.sh single-qualify-v12p0            (D2: the hands-off qualification in one run; every Doco voltage)
       tools/bench-run.sh single-hallmap-v12p0            (one leg: single-hallmap / -mininc / -ladder / -ramp / -stops;
                                                           single-coast / -offscan at v12p0 and v24p0; single-passprobe)
       tools/bench-run.sh single-passprobe-v12p0 clk-200  (a clock by NAME, as every Doco tier takes)
@@ -154,8 +184,8 @@ CON { timing }
 
 CON { build identity }
 
-    SRC_REV     = 4                                         ' hand-bumped whenever this file changes
-    FMT_VERSION = 4                                         ' B1- record-format version (4: the 2c records; B1-OFSPAIR's duty and DC pairs; B1-END idle_ms)
+    SRC_REV     = 5                                         ' hand-bumped whenever this file changes
+    FMT_VERSION = 5                                         ' B1- record-format version (5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
 
 CON { the bench this image is built for }
 
@@ -304,10 +334,22 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
   '  24 / 22.2 V lie 7.5-8 % apart). WHEN EACH APPLIES (arbiter decision D5): there is no rebuild in the middle of a visit.
   '  D1 runs this build, KE_IS_FITTED FALSE, judging +-130 per mille in the run; the D1 EVALUATION fits Ke across the rows
   '  and applies the fitted +-30 per mille OFFLINE to each row's logged raw ratio (B1-MISDIAL ratio_ppm, vpred_mv, and the
-  '  inputs to refit Ke: slope_e9, frame_cnt, ke_mv_krpm, told_mv; B1-MOTOR's cpr and duty_volt_div); the D2 build sets
-  '  KE_MV_PER_KRPM to the fitted Ke and KE_IS_FITTED TRUE. 6.5in: none (its pack was sensed)
+  '  inputs to refit Ke: slope_e9, frame_cnt, ke_mv_krpm, told_mv; B1-MOTOR's cpr and duty_volt_div); the D2 build
+  '  (task 3686: -D SINGLE_QUALIFY, the single-qualify tiers) sets KE_IS_FITTED TRUE and predicts from
+  '  KE_FITTED_MV_PER_KRPM. 6.5in: none (its pack was sensed)
+#ifdef SINGLE_QUALIFY
+    KE_IS_FITTED            = TRUE
+#else
     KE_IS_FITTED            = FALSE
+#endif
     KE_SHEET_TOL_PCT        = 10
+    ' THE FITTED Ke, mV per 1,000 rpm, line-to-line peak: PROVISIONAL, the sheet's 3,530 until D1's EVALUATION fits it
+    '  across the rows (arbiter decision D5) and sets it here, before the D2 pack is built. A D2 build left at the sheet's
+    '  value judges +-30 per mille against a Ke that may be off the sheet by up to its 10 %: a correct motor whose Ke is
+    '  5 % under the sheet then reads -50 and FAILS (the 3686 desk model) -- so this number is a D2 precondition
+    KE_FITTED_MV_PER_KRPM   = 3_530
+    ' the Ke the misdial check predicts from: the sheet's (KE_MV_PER_KRPM) unfitted, KE_FITTED_MV_PER_KRPM fitted (TRUE is -1)
+    KE_USED_MV_PER_KRPM     = KE_MV_PER_KRPM + (-KE_IS_FITTED) * (KE_FITTED_MV_PER_KRPM - KE_MV_PER_KRPM)
     DUTY_VOLT_DIV           = 8
 
   ' THE MINIMUM INCREMENT (L-mininc, PL-71). A descending sweep of crawl rates, DAT minincTpsX100 (hall ticks/s x 100):
@@ -538,6 +580,19 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     PINCH_TRACE_MS          = 20                            ' B1-PINCHPT: one 20 ms mean, the last PINCH_TRACE_MAX
     PINCH_TRACE_MAX         = 256
 
+  ' ---- TASK 3686: the D2 qualification (plan sec 7) ----
+
+  ' THE POWER RUNGS (L-power). driveAtPower() -- the user's path -- at DAT powerPcts, each capped at the row's top power
+  '  (rowTopPower: 100, or 89 at 22.2 V, where 100 would pass PK1_CAP_INCR), each power sign, each from rest on the
+  '  built-in ramp, then LADDER_SETTLE_MS and a LADDER_WINDOW_MS window, as the ladder's rungs; under the row's ladder
+  '  test limit (DAT rowLadderA: 11.1 V's 75 % rung needs 2.57 A). DERIVED: the arbiter's D7 left the ladder commanding
+  '  by increment, so the power path's rungs are their own leg; the quarters of the power range are the ladder's
+  '  quarters of the ceiling as the library maps them (the row's minimum at power 1 to the ceiling at 100). 6.5in: the
+  '  spin legs' and the LIMITS part's POWERMAP powers (test_bench_dual), on the halls
+    POWER_RUNG_COUNT        = 4
+    POWER_SIGNS             = 2                             ' 0: + power, 1: - power (the API's own sign; the increment's prints beside)
+    POWER_SLOTS             = POWER_SIGNS * POWER_RUNG_COUNT
+
 CON { legs -- what this image carries }
 
   ' Each -D SINGLE_PART_* compiles one leg in; main() runs every leg compiled in, in this order.
@@ -615,10 +670,27 @@ CON { legs -- what this image carries }
 #else
     PART_PINCH_BUILT   = FALSE
 #endif
+  ' task 3686, the D2 qualification's own legs (single-qualify chains them with L-ladder, L-ramp and L-stops)
+#ifdef SINGLE_PART_WIRING
+    PART_WIRING_BUILT  = TRUE
+#else
+    PART_WIRING_BUILT  = FALSE
+#endif
+#ifdef SINGLE_PART_POWER
+    PART_POWER_BUILT   = TRUE
+#else
+    PART_POWER_BUILT   = FALSE
+#endif
+#ifdef SINGLE_QUALIFY
+    QUALIFY_BUILT      = TRUE                               ' the D2 build: the misdial check on the fitted Ke
+#else
+    QUALIFY_BUILT      = FALSE
+#endif
     PART_2A_BUILT      = PART_MININC_BUILT or PART_LADDER_BUILT or PART_RAMP_BUILT or PART_STOPS_BUILT
     PART_2B_BUILT      = PART_COAST_BUILT or PART_OFFSCAN_BUILT or PART_PASSPRB_BUILT
     PART_2C_BUILT      = PART_HANDLOAD_BUILT or PART_HELDPUSH_BUILT or PART_SAG_BUILT or PART_PINCH_BUILT
-    PART_ANY_BUILT     = PART_HALLMAP_BUILT or PART_2A_BUILT or PART_2B_BUILT or PART_2C_BUILT
+    PART_Q_BUILT       = PART_WIRING_BUILT or PART_POWER_BUILT
+    PART_ANY_BUILT     = PART_HALLMAP_BUILT or PART_2A_BUILT or PART_2B_BUILT or PART_2C_BUILT or PART_Q_BUILT
 
   ' Each leg's length, s, ESTIMATED (DERIVED from its own stimulus at the built-in rates, analysis sec 6; the worst row):
   '  HALLMAP  8 bursts of 0.5-2.5 s, their records, the start's ~2 s and the zero's 1 s: 40
@@ -645,6 +717,12 @@ CON { legs -- what this image carries }
   '  SAG      up to the 22.2 V top ~7.5 s, the settle, the dial-down ~15 s (its bound 120), the stop ~5 s: ~30; three
   '           runs, one at the bound: 180
   '  PINCH    up ~6.4 s, the settle and the 2 s reference, the pinch and DONE ~10 s, the stop ~4.5 s: ~25; three: 75
+  '  TASK 3686, the D2 qualification's own legs:
+  '  WIRING   checkWiring()'s two legs ~1.3 s (at most 2 x WALK_LEG_TIMEOUT_MS, 4 s), the settle 0.3 s, the records: 10
+  '  POWER    per rung from rest: up (to 8.6 s at 11.1 V's top, 5.4 at 12 V's), 1 s settle, the 5 s window, down (to
+  '           6 s), the rest: 10-21; per sign four rungs ~70 at 11.1 V; both, with records: 150
+    LEG_WIRING_EST_S   = 10
+    LEG_POWER_EST_S    = 150
     LEG_HALLMAP_EST_S  = 40
     LEG_MININC_EST_S   = 130
     LEG_LADDER_EST_S   = 300
@@ -660,7 +738,8 @@ CON { legs -- what this image carries }
     LEGS_2A_EST_S      = (-PART_MININC_BUILT) * LEG_MININC_EST_S + (-PART_LADDER_BUILT) * LEG_LADDER_EST_S + (-PART_RAMP_BUILT) * LEG_RAMP_EST_S + (-PART_STOPS_BUILT) * LEG_STOPS_EST_S
     LEGS_2B_EST_S      = (-PART_COAST_BUILT) * LEG_COAST_EST_S + (-PART_OFFSCAN_BUILT) * LEG_OFFSCAN_EST_S + (-PART_PASSPRB_BUILT) * LEG_PASSPRB_EST_S
     LEGS_2C_EST_S      = (-PART_HANDLOAD_BUILT) * LEG_HANDLOAD_EST_S + (-PART_HELDPUSH_BUILT) * LEG_HELDPUSH_EST_S + (-PART_SAG_BUILT) * LEG_SAG_EST_S + (-PART_PINCH_BUILT) * LEG_PINCH_EST_S
-    LEGS_DRIVEN_EST_S  = LEGS_2A_EST_S + LEGS_2B_EST_S + LEGS_2C_EST_S  ' every leg after the hall map's crawl
+    LEGS_Q_EST_S       = (-PART_WIRING_BUILT) * LEG_WIRING_EST_S + (-PART_POWER_BUILT) * LEG_POWER_EST_S
+    LEGS_DRIVEN_EST_S  = LEGS_2A_EST_S + LEGS_2B_EST_S + LEGS_2C_EST_S + LEGS_Q_EST_S   ' every leg after the hall map's crawl
     LEGS_EST_S         = (-PART_HALLMAP_BUILT) * LEG_HALLMAP_EST_S + LEGS_DRIVEN_EST_S
 
   ' RUN_TIME_CAP_S: the longest a run may take, RUN_TIME_FACTOR x the legs built (DERIVED). Phase 1 capped the hall map
@@ -669,6 +748,7 @@ CON { legs -- what this image carries }
   '  COAST and OFFSCAN skip), so the chain's cap is 4_425 s (74 minutes); each leg's own bounds end a stuck drive long
   '  before it. Phase 2c: an attended tier builds its one leg, so its cap is 3 x that leg's running time (900 s for
   '  HANDLOAD, 1_080 HELDPUSH, 540 SAG, 225 PINCH), and the time spent on a screen waiting for him is not counted.
+  '  Task 3686: the qualification chain (WIRING, POWER, LADDER, RAMP, STOPS) is 690 s, so its cap is 2_070 s.
     RUN_TIME_FACTOR    = 3
     RUN_TIME_CAP_S     = RUN_TIME_FACTOR * LEGS_EST_S
 
@@ -676,6 +756,7 @@ CON { legs -- what this image carries }
   '  sheet's no-load ceiling over every driven leg built (CON { the Doco's numbers }, RUN_CHARGE_BASE_MAS's note). Every
   '  hands-off leg: 110_400 + 400 x 1_435 = 684_400 (0.19 Ah). An attended tier: 110_400 + 400 x its leg (HANDLOAD
   '  230_400, HELDPUSH 254_400, SAG 182_400, PINCH 140_400); HANDLOAD's stalls are bounded first by its own two caps.
+  '  Task 3686, the qualification chain: 110_400 + 400 x 690 = 386_400.
     RUN_CHARGE_CAP_MAS = RUN_CHARGE_BASE_MAS + NO_LOAD_MA_MAX * LEGS_DRIVEN_EST_S
 
 CON { run sequencing enums }
@@ -732,9 +813,11 @@ CON { run sequencing enums }
   '                 when it read back otherwise): the fault response (L-coast) or the commutation offsets (L-offscan);
   '                 phase 2c: the hold limits or the hold mode (L-heldpush)
   '  AR_WORKER    - phase 2c: the measure cog did not start (detail: cogspin()'s result); nothing was driven
+  '  AR_WIRING    - task 3686: L-wiring's walk did not pass (detail: getHealth()'s failed HLT_* bits, or checkWiring()'s
+  '                 error): a motor whose wiring is not proven is driven no further
     #0, AR_NONE, AR_NOT_DOCO, AR_NO_PART, AR_BOARD, AR_START, AR_LIMITS, AR_ENC_START, AR_ZERO, AR_BURST, AR_ENC_CHECK, ...
-        AR_ROW, AR_GUARD, AR_ENC_WIN, AR_CAP, AR_SETTING, AR_WORKER
-    AR_TOKENS = AR_WORKER + 1
+        AR_ROW, AR_GUARD, AR_ENC_WIN, AR_CAP, AR_SETTING, AR_WORKER, AR_WIRING
+    AR_TOKENS = AR_WIRING + 1
 
   ' How a 2a leg's measured drive ended (RO_ = run outcome):
   '  RO_NOT_RUN  - not reached (the run ended first)
@@ -973,6 +1056,14 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     '  set -> -87: PASS unfitted (not resolved), FAIL once fitted. UNFIXED: nothing checks a told voltage today.
     '  Rival: a Ke off the sheet (or the duty-to-volts scale off) moves every row's prediction by one factor, a misdial one
     '  row's: across D1's rows a common ratio is the motor (fit it; KE_IS_FITTED), a lone row is that row's supply.
+    '  TASK 3686, the D2 build (SINGLE_QUALIFY): fitted, +-30, predicting from KE_FITTED_MV_PER_KRPM. Desk model
+    '  (sgl3686_model.py): 12 V -5 and 24 V -13 PASS; told 24 V set 22.2 V -87, told 12 V set 11.1 V -80, FAIL; a motor
+    '  whose Ke is 5 % under the sheet reads +47 and FAILS on the sheet's value, -5 on its fitted one -- the fitted Ke is
+    '  a D2 precondition. THE EXCLUSION CHECK: a clean rung excludes a capped, held or folded one; the fitted negative (an
+    '  adjacent row) raises the top duty to 45-77 % of duty_max, under the 92.5 % reserve, so no rung it needs is
+    '  excluded. A supply far under the told one caps the top rungs and can leave fewer than MISDIAL_MIN_POINTS clean:
+    '  NOMEAS here, and FOLLOW, POWER and TOPSPD are the cells that fail it (a capped rotor falls behind its field, which
+    '  the lag hold then holds back, or it faults: SMOOTH).
     MISDIAL_FIT_TOL_PM = 30
     MISDIAL_TOL_PM     = MISDIAL_FIT_TOL_PM + (KE_IS_FITTED + 1) * KE_SHEET_TOL_PCT * X10   ' 130, or 30 once fitted (TRUE is -1)
 
@@ -995,6 +1086,10 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     '  ARRIVE_BAND_PM of the top's speed; DN: from stopMotor() to under ARRIVE_BAND_PM of the speed it stopped from.
     ' PRECONDITION: the drive left rest (UP) / held the top (DN), no fault; the prediction is the S-curve (scurveMs()) from
     '  the drive's own limits (testGetRampLimits()) and the increment the library wrote, to the same band as the reading.
+    '  TASK 3686 (the exclusion check): an arrival the encoder never reads before the change's bound (twice the
+    '  generator's whole time plus ARRIVE_MARGIN_MS: the climb, or the stop, ran to it) READS THAT BOUND, at least +1_000
+    '  -- a FAIL, never a NOMEAS. Before, it was not judged: the slowest ramps, this cell's own negative, were the ones
+    '  excluded (sgl3686_model.py: 0.3 x the limits read NOMEAS; now +1_499 -> FAIL). DN no longer needs DCS_STOPPED.
     ' BOUND: -RAMPARR_TOL_PM .. +RAMPARR_TOL_PM (100): RAMPARR's bar (the 6.5in's RAMPARR_PCT 10).
     ' CORRECT CASE: at the 12 V top (335e6) 5_127 ms predicted to 97 %; the 35 ms speed reading lags 18 ms -> +4 -> PASS.
     '  Broken: a generator at half the built-in acceleration -> +979 -> FAIL; at 0.88 of it -> +137 -> FAIL. UNFIXED: the 6.5in's
@@ -1006,7 +1101,10 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     ' R23-SGL-STOPROT (L-stops), crit REST_DEV_COUNTS, units COUNTS, instances NEG-TOP, NEG-CRWL, POS-TOP, POS-CRWL: the
     '  encoder's travel from the arming to rest less N x 60, signed; of the kind's two N, the larger in size.
     ' PRECONDITION: armed at rest (its base exact: nothing moves), the drive ended SR_AT_LIMIT, the shaft read at rest
-    '  (REST_QUIET_MS); a drive that ended otherwise is not judged (its record says why).
+    '  (REST_QUIET_MS); a drive that ended otherwise is not judged (its record says why) -- EXCEPT, task 3686 (the
+    '  exclusion check), a limit that never fired in STOPS_DRIVE_MAX_MS: before, it was not judged, so this cell's own
+    '  negative read NOMEAS; now it is judged at the stop the harness then makes (bStopAndRest()), its travel to that
+    '  rest (sgl3686_model.py: 300 revolutions at the 12 V top read +1_672_419, the crawl's 120 ticks +216_806 -> FAIL).
     ' BOUND: -STOPROT_EARLY_COUNTS (240) .. +STOPROT_LATE_COUNTS (180): the 6.5in's ROTSTOP band in ticks (test_bench_t0
     '  T0_25_ROT_TOL_TICKS 3 = the doc's "within about two hall ticks" + a whole tick late; T0_25_PLAN_EARLY_TICKS 1 more
     '  early), 60 counts a tick.
@@ -1022,7 +1120,9 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
 
     ' R23-SGL-STOPTIME (L-stops), crit REST_DEV_MS, units MS, instances as STOPROT's: the shaft's rest instant less the
     '  deadline the library armed (testGetStopMs()), signed; of the kind's one drive.
-    ' PRECONDITION: armed at rest, SR_AT_LIMIT, the shaft read at rest; otherwise not judged.
+    ' PRECONDITION: armed at rest, SR_AT_LIMIT, the shaft read at rest; otherwise not judged -- except, task 3686 (as
+    '  STOPROT's), a limit that never fired in STOPS_DRIVE_MAX_MS, judged at the harness's own stop: its DCS_STOPPED
+    '  reading less the deadline (sgl3686_model.py: +28_758 at the 12 V top -> FAIL; before, NOMEAS).
     ' BOUND: -STOPTIME_TOL_MS .. +STOPTIME_TOL_MS (100): the doc's "at rest by the limit (within a few milliseconds)" at the
     '  shaft's own resolution -- the S-curve's last count takes 46 ms (CON { the Doco's numbers }, THE REST) -- twice that.
     ' CORRECT CASE: a field at zero on the deadline leaves the shaft's last count 0-55 ms before it -> -55..0 -> PASS. Broken:
@@ -1119,6 +1219,9 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     ' PRECONDITION: the encoder saw his grip (its speed under HAND_CONTACT_PM of the command) AND the fold-back engaged at
     '  least once since the drive began (getEventTotal(EV_FOLDBACK)): a load the limit met. The drive cannot erase what
     '  the encoder read; a grip too light to fold is not a test of the limit. Otherwise NOMEAS (REDO, a firmer grip).
+    '  TASK 3686 (the exclusion check): a fault after his grip is judged WITH OR WITHOUT a fold -- a limit that never
+    '  acts and then lets the rotor fault is this cell's own negative, and the fold precondition read it NOMEAS
+    '  (sgl3686_model.py: now 1 -> FAIL). A clean grip with no fold stays NOMEAS (the light touch below).
     ' BOUND: 0 .. 0: plan sec 7, "the limit holds (no lag fault)".
     ' CORRECT CASE: P-H3 (MODELED, analysis 4.1): at 4 A and 2 A the limit hold arms (set-backs 6-399) and no run faults
     '  -> 0 -> PASS. Broken: a lag fault under the hand -> 1 -> FAIL. Desk mutation: without the fold precondition a light
@@ -1134,7 +1237,9 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     ' PRECONDITION: AT_SPEED reached, his grip seen, and then either the latch (getProtectiveStop() ERR_PLATFORM_BLOCKED)
     '  or the shaft standing still -- no hall tick -- for HAND_NOLATCH_MS. A grip that kept the shaft creeping never
     '  stands, and is NOMEAS (the panel says so; REDO). The stand is read on the driver's hall position, which the stop
-    '  cannot erase: it is what the stop is meant to see.
+    '  cannot erase: it is what the stop is meant to see. TASK 3686 (the exclusion check): this cell's negatives -- no
+    '  latch (read HAND_NOLATCH_MS) and a latch out of the band -- are both measured; a creeping grip is the stop's own
+    '  reason not to latch (the stimulus not applied), and a fault before the stand is LIMHOLD's measured FAIL.
     ' BOUND: BLKSTOP_LO_MS (988) .. BLKSTOP_HI_MS (1_168), the plan's BLKSTOP band carried from the 6.5in (test_bench_dual's
     '  BLK_STAND_LO_MS and, before its SRC_REV 76, its upper bound): the library's BLOCKED_PASSES slots of 1 ms (1_000),
     '  less / plus HAND_STAMP_MS 12 for the stamps (the tick is stamped by the first 5 ms reading that shows it, the latch
@@ -1165,6 +1270,9 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     ' PRECONDITION: a fresh hold (HS_HOLDING at displacement 0, armed this step, the stop mode re-selected: T0-24's re-arm,
     '  PL-123) and at least RISE_MIN_SPAN_MS of rising pairs; otherwise NOMEAS (a flick through the sector: the panel
     '  says turn slower). The hold cannot erase his displacement: the halls read it.
+    '  TASK 3686 (the exclusion check): a hold displaced RISE_MIN_SPAN_MS or more whose duty gained NOTHING reads
+    '  HOLDRISE_NONE_MS -- a hold that does not push back is this cell's own negative, and the rate's "gain above 0"
+    '  read it NOMEAS (sgl3686_model.py: now 99_999 -> FAIL).
     ' BOUND: HOLDRISE_LO_MS (220) .. HOLDRISE_HI_MS (280): the library's HOLD_RISE_MS 250 less / plus a reading either end,
     '  T0-24's band (T0_24_HOLD_RISE_LO_MS / _HI_MS).
     ' CORRECT CASE: frontHold() under a hand at 20 or 60 deg/s, pausing or not, resting anywhere in its sector -> 249 ->
@@ -1176,12 +1284,16 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     HOLDRISE_HI_MS    = wheel.HOLD_RISE_MS + 30
     RISE_MIN_SPAN_MS  = 50
     RISE_NOT_SEEN     = -2                                  ' B1-HPUSH rise_ms NA: too little rising time to rate (-1 is P-H4's negative)
+    HOLDRISE_NONE_MS  = 99_999                              ' task 3686: displaced RISE_MIN_SPAN_MS with no rise at all (a FAIL)
 
     ' R23-SGL-HOLDSLIP (L-heldpush), crit SLIP_TICKS, units TICKS, instances RISE and FALL: the net hall ticks of the push
     '  -- the encoder object's captured edges, classified by this harness's own order table -- at the first reading of
     '  HS_SLIPPED, of the direction's last run.
     ' PRECONDITION: a fresh hold, as HOLDRISE's, and HS_SLIPPED read, no captured edge lost; otherwise NOMEAS (a hold
-    '  that let go at its time limit instead is HS_LIMITED, and says so).
+    '  that let go at its time limit instead is HS_LIMITED, and says so). TASK 3686 (the exclusion check): a hold that
+    '  let go at its time limit AFTER the push had passed more than HOLD_SLIP_TICKS net ticks never slipped where its
+    '  defaults say -- this cell's own negative, which HS_SLIPPED's precondition read NOMEAS -- and reads the net ticks
+    '  at the limit (sgl3686_model.py: 4 -> FAIL). A push that stopped short of the slip and met the limit stays NOMEAS.
     ' BOUND: wheel.HOLD_SLIP_TICKS .. wheel.HOLD_SLIP_TICKS (2): the library's own slip (P-H4, "the slip comes at 30
     '  degrees" -- two 15 degree ticks, 15-30 degrees from where it rested, B1-HPUSH's slip_cnt).
     ' CORRECT CASE: frontHold() under a hand, any rest in the sector, a slow hand or a 600 deg/s flick -> 2 -> PASS.
@@ -1202,6 +1314,83 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     '  (0) and FAILs it -- why the flag is read first. UNFIXED: none; a first measurement, and PK-1's evidence.
     '  Rival: a supply that collapses (its own current limit) rather than a smooth dial: B1-SAGPT's duty trace (a step, not
     '  a ramp) separates them.
+
+    ' ---- TASK 3686: the D2 qualification's new cells (plan sec 7). Every negative named below is a desk mutation of
+    '  this harness's own arithmetic or a stated physical case, run in the python model sgl3686_model.py (51 of 51
+    '  checks agree); every correct-case number is that model's or DERIVED. Their sign-off task is 3686.
+
+    ' R23-SGL-START (L-wiring), crit START_WIRE_OK, units BOOL01, one instance MOTOR: 1 when the public start path and the
+    '  wiring walk both pass -- start() (setStartChecks(TRUE): a failed check refuses it) returned a cog that reported
+    '  ready in READY_TIMEOUT_MS, and after checkWiring() returned NO_ERROR, getHealth() reads HLT_WIRING among the
+    '  checks run and none of HLT_ALL_CHECKS or HLT_WIRING failed -- else 0. A criterion of more than one condition (the
+    '  plan's "the start checks and checkWiring() pass"), so a boolean cell; B1-START (the checks) and B1-WIRING (the
+    '  walk) carry each condition's readings.
+    ' PRECONDITION: start() was attempted (the board read Rev A before it: the bench's own safety, plan sec 2) and then
+    '  either refused, or started and never reported ready -- each a measured 0 -- or started and the walk ran.
+    '  Otherwise NOMEAS: the started board read other than Rev A, the test limit was not taken, or the encoder did not
+    '  start. THE EXCLUSION CHECK: the negatives are a failed HLT_* check (start() refuses: 0) and a
+    '  failed HLT_WIRING (0); none of the exclusions is either. A board start() would refuse for its board never
+    '  reaches start(): that is the bench statement's check (plan sec 2), not this cell's negative. The walk runs
+    '  before the harness reads the rest zero (bMeasureZero()), so that check cannot exclude it; HLT_SENSE_ZERO, the
+    '  same band, refuses the start first and reads 0.
+    ' BOUND: START_OK .. START_OK (1): plan sec 7, "the start checks and checkWiring() pass".
+    ' CORRECT CASE: a sound motor, every check and the walk pass -> 1 -> PASS. Broken: a hall line open (HLT_HALLS) or a
+    '  phase lead open (HLT_PHASE_V) refuses the start -> 0; two phases swapped (HLT_WIRING) -> 0; the walk's request
+    '  unanswered (ERR_NO_RESPONSE) -> 0: each FAIL. Desk mutations: judged on checkWiring()'s return alone, a swapped
+    '  pair reads 1 and PASSES (it returns NO_ERROR whatever its verdict) -- why getHealth() is read; without the
+    '  checked bit a walk that judged nothing reads 1 -- why HLT_WIRING must be among the checks run. UNFIXED: D1's
+    '  B1-START records today's checks on every run; checkWiring() ran at D1 only in the doco-demo tiers.
+    '  Rival: a walk that fails because its pass band was derived on the 6.5in (WALK_SHORT_TICKS, WALK_OVERSHOOT_TICKS)
+    '  and the Doco's light rotor overshoots it, not because the wiring is wrong: B1-WIRING's fwd_ticks / rev_ticks
+    '  against the encoder's own excursion (enc_hi, enc_lo: one count an electrical degree) separate them -- a correct
+    '  motor overshoots both legs alike with the encoder agreeing with the halls; a miswired one moves the wrong way,
+    '  or not at all.
+    START_OK      = 1
+
+    ' R23-SGL-POWER (L-power), crit PWR_DEV_PM, units PERMILLE, one instance per POWER sign (PWR-POS, PWR-NEG: the API's
+    '  own sign; B1-POWER prints the increment's beside it): the worst |encoder speed / the drive law of the increment
+    '  the library wrote for the power - 1| over the sign's rungs, DAT powerPcts capped at the row's top power; a rung
+    '  that faulted, or that the library refused, reads PM (it did not hold its speed).
+    ' PRECONDITION: the rung was commanded by driveAtPower() and its window ran (arrived, or measured as far as it got in
+    '  its bound; then LADDER_SETTLE_MS and the LADDER_WINDOW_MS window), or it faulted, or it was refused; a rung a
+    '  guard ended is not judged (the run is over). The speed is the encoder's travel over the window's own getct()
+    '  span. THE EXCLUSION CHECK: a window is dropped only when the encoder disagrees with the driver's hall position
+    '  (bWindowEncOk(), and the run ends) -- both read the rotor, so a rotor behind its field (the negative) agrees with
+    '  the halls and is never the excluded case.
+    ' BOUND: 0 .. POWER_TOL_PM (30): plan sec 7, "each power rung holds speed: encoder speed within 3 % of command" (the
+    '  6.5in's SPINRATE_FOL_LO 97): FOLLOW's bar, on the power path.
+    ' CORRECT CASE: every row, both signs, a synchronous rotor -> 0 .. 1 -> PASS. Broken: the rotor at 96.0 % of its
+    '  field -> 41 -> FAIL; a rung that faulted or was refused -> 1_000 -> FAIL. Desk mutations: a refused top counted
+    '  NOMEAS leaves its sign judged on three rungs -> PASS -- why a refusal reads PM; the reference taken as the power's
+    '  nominal share of the ceiling, not the increment written, reads up to 31 for a synchronous rotor (the map's
+    '  minimum and its truncated slope) and FAILS a correct motor -- why the written increment is the reference.
+    '  UNFIXED: D1's R23-SGL-FOLLOW over the same speeds by increment (the arbiter's D7) and its L-ramp tops by power;
+    '  the 11.1 V row's top is predicted to fault (P-S2) until sec 6 changes its ceiling.
+    '  Rival: the test current limit holding the rotor back (fold-back, held passes), not the drive's speed control:
+    '  B1-POWER's folds, held and capped separate them -- a slow rung with folds is the limit, with none the field.
+    POWER_TOL_PM  = FOLLOW_TOL_PM
+
+    ' R23-SGL-TOPSPD (L-ladder, L-ramp), crit TOP_DEV_PM, units PERMILLE, instances NEG and POS -- the ceiling: the
+    '  ladder's 100 % rung from rest and by a step, and L-ramp's top run -- and REVERSAL (L-ramp's three tops): the worst
+    '  |encoder speed / the speed law at the increment - 1| over the ceiling's windows, two-sided; a run that faulted,
+    '  or whose window never ran (the climb did not arrive in its bound), reads PM. Its instances and feeds are
+    '  R23-SGL-SMOOTH's, which judges the same runs' faults and re-syncs.
+    ' PRECONDITION: the run was commanded and driven to its window's end, to its fault or to its bound; a run a guard
+    '  ended, or whose window the encoder check refused (bWindowEncOk(), and the run ends), is not judged. THE EXCLUSION
+    '  CHECK: as POWER's -- the encoder check compares two readings of the rotor, so a rotor off the speed law is not
+    '  what it excludes; a climb that never arrives reads PM rather than being dropped.
+    ' BOUND: 0 .. TOPSPD_TOL_PM (20): TOPSPD's bar, the 6.5in's LIMTOP_FOLLOW_PCT 98 (test_bench_dual.spin2's
+    '  R18-DUAL-TOPSPD-M: a ceiling rung clean at >= 98 % of the speed law), made TWO-SIDED: the encoder needs no tick
+    '  quantisation allowance (the 6.5in widened its band by rateBandPct()), and a field fast of the law is a defect too.
+    ' CORRECT CASE: every row's top, a 5 s or a 2 s window, a synchronous rotor -> 0 .. 1 -> PASS. Broken: the rotor at
+    '  97.5 % -> 25 -> FAIL, where FOLLOW's 3 % PASSES it; every pass 22 frames (DRIVER_REV 49's 2-22 clock margin) ->
+    '  +45 -> FAIL; one held pass in 40 -> 26 -> FAIL; a climb that never arrived -> 1_000 -> FAIL. Desk mutation: the
+    '  6.5in's one-sided ">= 98 %" PASSES the 22-frame field -- why the bound is two-sided. UNFIXED: D1's L-ramp hold
+    '  following (B1-RAMP hold_fol_pm) and ladder ceiling (B1-RUNG fol_pm) are today's reading of it.
+    '  Rival: a supply that cannot hold the top (the duty pinned) rather than a drive off its law: the window's capped
+    '  and held counts (B1-RUNGD capped, held; B1-RAMP held) separate them -- off the law with no capped pass is the
+    '  drive's own timing; with capped passes, the supply or the ceiling's duty reserve.
+    TOPSPD_TOL_PM = 20
 
 CON { record widths -- every numeric field is clamped to one of these }
 
@@ -1477,6 +1666,9 @@ pinchIncr       LONG    0, 0, 0, 0, 398_000_000, 0, 0
   ' L-handload's steps (HL_COUNT): each step's test limit, whole amps; 0 is the library's default (I_PEAK_A / I_CONT_A)
 handLimitA      LONG    4, 2, 0
 
+  ' TASK 3686, L-power's rungs (POWER_RUNG_COUNT): the power commanded, each capped at the row's top power (rowTopPower)
+powerPcts       LONG    25, 50, 75, 100
+
 #ifdef SINGLE_ATTENDED
 DAT { the hand tests' screen table -- GENERATED by tools/gen_single_assets.py, do not hand-edit }
 
@@ -1591,6 +1783,7 @@ sArEncWin       BYTE    "ENC_WIN", 0
 sArCap          BYTE    "CAP", 0
 sArSetting      BYTE    "SETTING", 0
 sArWorker       BYTE    "WORKER", 0
+sArWiring       BYTE    "WIRING", 0
 
 sRoNotRun       BYTE    "NOT_RUN", 0
 sRoDone         BYTE    "DONE", 0
@@ -1622,6 +1815,8 @@ sLegHandload    BYTE    "HANDLOAD", 0
 sLegHeldpush    BYTE    "HELDPUSH", 0
 sLegSag         BYTE    "SAG", 0
 sLegPinch       BYTE    "PINCH", 0
+sLegWiring      BYTE    "WIRING", 0
+sLegPower       BYTE    "POWER", 0
 sSidePlus       BYTE    "PLUS", 0
 sSideMinus      BYTE    "MINUS", 0
 sFitqDc         BYTE    "DC", 0
@@ -1699,6 +1894,17 @@ sInstLim4a      BYTE    "LIM-4A", 0
 sInstLim2a      BYTE    "LIM-2A", 0
 sInstLimDef     BYTE    "LIM-DEF", 0
 sInstTop        BYTE    "TOP", 0
+  ' task 3686: the D2 qualification's cells, criteria, instances and task
+sSfTaskQual     BYTE    "3686", 0
+sSfCellStart    BYTE    "R23-SGL-START", 0
+sSfCellPower    BYTE    "R23-SGL-POWER", 0
+sSfCellTopSpd   BYTE    "R23-SGL-TOPSPD", 0
+sSfCritStartOk  BYTE    "START_WIRE_OK", 0
+sSfCritPwrDev   BYTE    "PWR_DEV_PM", 0
+sSfCritTopDev   BYTE    "TOP_DEV_PM", 0
+sInstMotor      BYTE    "MOTOR", 0
+sInstPwrPos     BYTE    "PWR-POS", 0
+sInstPwrNeg     BYTE    "PWR-NEG", 0
 
   ' phase 2c: a hand-load step's end (HE_*), a sag's (SO_*), a panel phase, a button the log names
 sHeNone         BYTE    "NONE", 0
@@ -1853,6 +2059,28 @@ VAR { phase 2b: the cells' accumulators }
     LONG    sfLeadSpread[SIGN_COUNT], sfLeadN[SIGN_COUNT]
     LONG    sfPassPpm[SIGN_COUNT], bSfPassMeas[SIGN_COUNT]
 
+VAR { task 3686: the public start path, L-wiring's walk, R23-SGL-TOPSPD }
+
+    LONG    bQsTried                                        ' T/F where T means start() was called (the board read as expected)
+    LONG    qsCog                                           ' start()'s result: the driver's cog, or -1 (refused)
+    LONG    bQsReady                                        ' T/F where T means the started motor reported ready in READY_TIMEOUT_MS
+    LONG    bQsWalkRan                                      ' T/F where T means checkWiring() was called on the started motor
+    LONG    qsWalkErr                                       ' checkWiring()'s result
+    LONG    qsWalkChecked, qsWalkFailed, qsWalkRecovered    ' getHealth() after the walk: HLT_* bits
+    LONG    qsFwdTicks, qsRevTicks                          ' testGetWalk(): each leg's raw hall ticks
+    LONG    qsEncNet, qsEncHi, qsEncLo                      ' the encoder: its travel over the walk, its captured edges' extremes, counts
+    LONG    qsEdges, qsLost                                 ' the captured edges taken over the walk, and the ring's lost ones
+    LONG    sfTopDev[SMOOTH_COUNT], sfTopN[SMOOTH_COUNT]    ' R23-SGL-TOPSPD: the worst |following - 1|, per mille, and the runs
+
+#ifdef SINGLE_PART_POWER
+VAR { task 3686: L-power -- each rung's readings (slot = power sign x POWER_RUNG_COUNT + rung) and the cell's accumulators }
+
+    LONG    pwPower[POWER_SLOTS], pwIncr[POWER_SLOTS], pwOutcome[POWER_SLOTS], pwArrMs[POWER_SLOTS], pwWinMs[POWER_SLOTS]
+    LONG    pwCpsX10[POWER_SLOTS], pwCmdX10[POWER_SLOTS], pwFolPm[POWER_SLOTS], pwWchk[POWER_SLOTS], pwDuty[POWER_SLOTS]
+    LONG    pwHeld[POWER_SLOTS], pwCapped[POWER_SLOTS], pwFolds[POWER_SLOTS], pwResyncs[POWER_SLOTS], pwDcMa[POWER_SLOTS]
+    LONG    sfPowDev[POWER_SIGNS], sfPowN[POWER_SIGNS]
+#endif
+
 #ifdef SINGLE_PART_COAST
 VAR { phase 2b: L-coast -- the coast under way, one reading every COAST_SAMPLE_US }
 
@@ -1909,6 +2137,7 @@ VAR { phase 2c: the panel (cog 0), the measure cog's mailbox, and what each atte
     LONG    hpCeilMs[2], hpSlipMs[2], hpSlipCnt[2], hpSlipTicks[2], hpSlipDps[2], hpLimitMs[2], hpNetTicks[2], hpEdges[2]
     LONG    hpBad[2], hpLost[2], hpMaxTurn[2], hpDcCeil[2], hpSlipsD[2], hpLimitsD[2], bHpTurned[2], bHpSlipped[2]
     LONG    bHpRestored[2]
+    LONG    hpLimitTicks[2]                                 ' task 3686: |net ticks| of the push at the first HS_LIMITED (-1 none)
     ' ... and per measured direction (DIR_*), the last run in that direction: the cells' readings
     LONG    sfRiseMs[DIR_COUNT], bSfRiseMeas[DIR_COUNT], sfSlipTicks[DIR_COUNT], bSfSlipMeas[DIR_COUNT]
 
@@ -1967,6 +2196,11 @@ PRI runSession() | bGoOn
         bGoOn := bStartMotor()
     if bGoOn
         bGoOn := bStartEncoder()
+#ifdef SINGLE_PART_WIRING
+    if bGoOn
+        bGoOn := bRunWiring()                               ' task 3686: before the rest zero, so no harness check excludes it
+        emitFront(@sLegWiring)
+#endif
     if bGoOn
         bGoOn := bMeasureZero()
     if bGoOn
@@ -1982,6 +2216,11 @@ PRI runSession() | bGoOn
     if bGoOn
         bGoOn := bRunMinInc()
         emitFront(@sLegMininc)
+#endif
+#ifdef SINGLE_PART_POWER
+    if bGoOn
+        bGoOn := bRunPowerLeg()
+        emitFront(@sLegPower)
 #endif
 #ifdef SINGLE_PART_LADDER
     if bGoOn
@@ -2181,6 +2420,8 @@ PRI bStartMotor() : bStarted | motorCog, eStartErr, nChecked, nFailed, nRecovere
     benchLog.cogEventBegin()
     motorCog := wheel.start(MOTOR_BASE, user.DRIVE_VOLTAGE, MOTOR_DET_MODE)
     benchLog.cogEventEnd()
+    bQsTried := TRUE                                        ' task 3686: R23-SGL-START's public start path
+    qsCog := motorCog
     if motorCog < 0
         eStartErr := wheel.getError()
     nChecked, nFailed, nRecovered := wheel.getHealth()
@@ -2190,6 +2431,7 @@ PRI bStartMotor() : bStarted | motorCog, eStartErr, nChecked, nFailed, nRecovere
         repeat until wheel.isReady() or (getms() - nWaitStart >= READY_TIMEOUT_MS)
             waitms(READY_POLL_MS)
         bReady := wheel.isReady()
+        bQsReady := bReady                                  ' task 3686: a start that never reports ready is R23-SGL-START's 0
         if eBoardStarted == expectedRevision()
             senseMvPerA := senseMvPerAmp(eBoardStarted)
             eLimErr := wheel.testSetCurrentLimits(TEST_PEAK_A, TEST_CONT_A)
@@ -2285,6 +2527,90 @@ PRI shutdown()
     benchLog.cogEventBegin()
     wheel.stop()
     enc.stop()
+
+CON { --- task 3686: L-wiring, the public start path and the wiring walk (R23-SGL-START) --- }
+
+#ifdef SINGLE_PART_WIRING
+PRI bRunWiring() : bPassed | nEnc0, nLost0, bTaken, nEnc, nOfs
+' L-wiring (plan sec 7), on the motor bStartMotor() started through the public path with its checks refusing: call
+' checkWiring() -- one electrical cycle out and back at the library's WALK_POWER under the test limit, blocking about
+' 1.3 s -- and read its verdict from getHealth()'s HLT_WIRING, never from its return alone (NO_ERROR whatever the
+' verdict). Beside it, the encoder: its travel over the walk, and the extremes of the counts the PASM capture latched at
+' every hall edge (the two legs' reach). Run before the rest zero is read, so no harness check can exclude it. Emits
+' B1-WIRING at rest. A walk that does not pass ends the run (AR_WIRING): a motor whose wiring is not proven is driven
+' no further.
+'
+' @returns bPassed - T/F where T means the start and the walk both passed (R23-SGL-START reads 1)
+
+' Local Variables:
+' @local nEnc0 - the encoder's count before the walk
+' @local nLost0 - the encoder object's lost edges before it
+' @local bTaken - T/F where T means takeEdge() returned an edge
+' @local nEnc - its latched count
+' @local nOfs - that count less nEnc0
+
+    drainEdges()                                            ' only the walk's edges
+    nLost0 := enc.edgesLost()
+    nEnc0 := enc.readCount()
+    qsEdges := 0
+    qsEncHi := 0
+    qsEncLo := 0
+    qsWalkErr := wheel.checkWiring()                        ' blocks: both legs, each ending at rest
+    bQsWalkRan := TRUE
+    waitms(STOP_SETTLE_MS)                                  ' the back leg's last edges
+    qsEncNet := enc.readCount() - nEnc0
+    repeat
+        bTaken, nEnc, _, _, _ := enc.takeEdge()
+        if bTaken == FALSE
+            quit
+        nOfs := nEnc - nEnc0
+        qsEncHi #>= nOfs
+        qsEncLo <#= nOfs
+        qsEdges++
+    qsLost := enc.edgesLost() - nLost0
+    qsWalkChecked, qsWalkFailed, qsWalkRecovered := wheel.getHealth()
+    qsFwdTicks, qsRevTicks := wheel.testGetWalk()
+    bPassed := (startWireValue() == START_OK)
+    benchLog.begin(@"B1-WIRING")
+    benchLog.numField(@"walk_err", qsWalkErr, LIM_SMALL)
+    benchLog.hexField(@"checked", qsWalkChecked)
+    benchLog.hexField(@"failed", qsWalkFailed)
+    benchLog.hexField(@"recovered", qsWalkRecovered)
+    benchLog.numField(@"fwd_ticks", qsFwdTicks, LIM_SMALL)
+    benchLog.numField(@"rev_ticks", qsRevTicks, LIM_SMALL)
+    benchLog.numField(@"band_lo", wheel.WALK_TICKS - wheel.WALK_SHORT_TICKS, LIM_TINY)
+    benchLog.numField(@"band_hi", wheel.WALK_TICKS + wheel.WALK_OVERSHOOT_TICKS, LIM_TINY)
+    benchLog.numField(@"enc_net", qsEncNet, LIM_MID)
+    benchLog.numField(@"enc_hi", qsEncHi, LIM_MID)
+    benchLog.numField(@"enc_lo", qsEncLo, LIM_MID)
+    benchLog.numField(@"edges", qsEdges, LIM_SMALL)
+    benchLog.numField(@"lost", qsLost, LIM_SMALL)
+    benchLog.boolField(@"pass", bPassed)
+    lineEmit()
+    if bPassed == FALSE
+        coastNow()
+        setAbort(AR_WIRING, (qsWalkErr <> wheel.NO_ERROR) ? qsWalkErr : qsWalkFailed)
+
+PRI startWireValue() : nOk
+' R23-SGL-START's reading: START_OK when start() returned a cog that reported ready, and the walk ran and passed by
+' getHealth() -- HLT_WIRING among the checks run, none of HLT_ALL_CHECKS or HLT_WIRING failed -- with checkWiring()
+' returning NO_ERROR; else 0.
+'
+' @returns nOk - START_OK or 0
+
+    nOk := 0
+    if (qsCog >= 0) and bQsReady and bQsWalkRan and (qsWalkErr == wheel.NO_ERROR)
+        if ((qsWalkChecked & wheel.HLT_WIRING) <> 0) and ((qsWalkFailed & (wheel.HLT_ALL_CHECKS | wheel.HLT_WIRING)) == 0)
+            nOk := START_OK
+
+PRI bStartMeasured() : bMeasured
+' R23-SGL-START's precondition: start() was attempted, and it refused, or its motor never reported ready (each a measured
+' 0), or the walk ran.
+'
+' @returns bMeasured - T/F where T means judged
+
+    bMeasured := bQsTried and ((qsCog < 0) or (bQsReady == FALSE) or bQsWalkRan)
+#endif
 
 CON { --- the hall-map leg (L-hallmap) --- }
 
@@ -3377,6 +3703,15 @@ PRI noteSmooth(eInst, bBad)
     if bBad
         sfSmooth[eInst]++
 
+PRI noteTopSpd(eInst, nDev)
+' Count one run into R23-SGL-TOPSPD's instance {eInst} (task 3686): its deviation from the speed law, the worst kept.
+'
+' @param eInst - SIGN_NEG, SIGN_POS or SMOOTH_REVERSAL
+' @param nDev - |following - 1|, per mille; PM for a run that faulted or whose window never ran
+
+    sfTopN[eInst]++
+    sfTopDev[eInst] #>= nDev
+
 CON { --- phase 2b: the helpers the 2b legs share --- }
 
 PRI drainEdges() : nDrained | bTaken
@@ -3698,6 +4033,185 @@ PRI emitMinInc(slotIdx)
     lineEmit()
 #endif
 
+CON { --- task 3686: L-power, the power rungs on the public path (R23-SGL-POWER) --- }
+
+#ifdef SINGLE_PART_POWER
+PRI bRunPowerLeg() : bCompleted | nPowIdx, rungIdx, slotIdx, bGoOn
+' L-power (plan sec 7): under the row's ladder test limit (DAT rowLadderA), each power sign, + then -, every DAT
+' powerPcts rung capped at the row's top power, each from rest (bPowerRung()); then the run's test limit back; then, at
+' rest, every rung's record and R23-SGL-POWER's readings (powerFinish()).
+'
+' @returns bCompleted - T/F where T means no guard ended the run
+
+' Local Variables:
+' @local nPowIdx - 0: + power, 1: - power
+' @local rungIdx - a rung
+' @local slotIdx - its record slot
+' @local bGoOn - T/F where T means nothing has ended the run
+
+    repeat slotIdx from 0 to POWER_SLOTS - 1
+        pwOutcome[slotIdx] := RO_NOT_RUN
+        pwPower[slotIdx] := 0
+        pwIncr[slotIdx] := 0
+        pwArrMs[slotIdx] := -1
+        pwWchk[slotIdx] := -1
+    bGoOn := bSetTestLimit(rowLadderA[rowIdx])
+    repeat nPowIdx from 0 to POWER_SIGNS - 1
+        repeat rungIdx from 0 to POWER_RUNG_COUNT - 1
+            if bGoOn
+                bGoOn := bPowerRung(nPowIdx, rungIdx)
+    if bGoOn
+        bGoOn := bSetTestLimit(TEST_PEAK_A)
+    powerFinish()
+    bCompleted := bGoOn
+
+PRI bPowerRung(nPowIdx, rungIdx) : bGoOn | slotIdx, nPower, nCmd, nWholeMs, nResync0, nResync1, eRo, eRo2, nArrMs, bOk, nDev
+' One power rung from rest, by driveAtPower() -- the user's path: the increment the library wrote is read back
+' (testGetDriveFollow()) and must not pass the row's top (bCheckTop()); then, as a ladder rung, the arrival at it
+' (bounded by twice the generator's time plus ARRIVE_MARGIN_MS; one not arrived is measured as far as it got),
+' LADDER_SETTLE_MS, the LADDER_WINDOW_MS window, the encoder check, and stopMotor() to rest. A refused command (a
+' protective stop latched: cleared) and a fault (recovered) are each recorded, and read PM by the cell.
+'
+' @param nPowIdx - 0: + power, 1: - power
+' @param rungIdx - the rung, 0 .. POWER_RUNG_COUNT - 1
+' @returns bGoOn - T/F where T means nothing ended the run
+
+' Local Variables:
+' @local slotIdx - the rung's record slot
+' @local nPower - the power commanded
+' @local nCmd - the increment the library wrote for it
+' @local nWholeMs - the generator's time from rest to it
+' @local nResync0 - re-synced faults before the command
+' @local nResync1 - after the window
+' @local eRo - the arrival's outcome
+' @local eRo2 - the settle's and the window's
+' @local nArrMs - ms to arrive
+' @local bOk - the window's encoder check
+' @local nDev - its deviation
+
+    bGoOn := TRUE
+    slotIdx := nPowIdx * POWER_RUNG_COUNT + rungIdx
+    nPower := powerPcts[rungIdx] <# rowTopPower
+    if nPowIdx == 1
+        nPower := -nPower
+    pwPower[slotIdx] := nPower
+    _, _, nResync0 := wheel.testGetFaultResponse()
+    sampleBegin()
+    if wheel.driveAtPower(nPower) <> wheel.NO_ERROR
+        pwOutcome[slotIdx] := RO_REFUSED
+        clearProtect()
+    else
+        nCmd, _, _, _, _, _ := wheel.testGetDriveFollow()
+        pwIncr[slotIdx] := nCmd
+        if bCheckTop(nCmd) == FALSE
+            pwOutcome[slotIdx] := RO_ABORTED                ' past the row's top: the run ends, coasting (a harness defect)
+            bGoOn := FALSE
+        else
+            _, nWholeMs := scurveMs(abs(nCmd) #> 1, rampAccelUp, rampJerkUp, 0)
+            eRo, nArrMs := waitPhase(UNTIL_ARRIVED, nCmd, 2 * nWholeMs + ARRIVE_MARGIN_MS, FALSE)
+            eRo2 := eRo
+            if eRo == RO_DONE
+                pwArrMs[slotIdx] := nArrMs
+            if (eRo == RO_DONE) or (eRo == RO_TIMEOUT)      ' not arrived: measured anyway, following says how far short
+                eRo2, _ := waitPhase(UNTIL_ELAPSED, 0, LADDER_SETTLE_MS, FALSE)
+                if eRo2 == RO_DONE
+                    windowBegin()
+                    eRo2, _ := waitPhase(UNTIL_ELAPSED, 0, LADDER_WINDOW_MS, TRUE)
+                    windowEnd()
+            _, _, nResync1 := wheel.testGetFaultResponse()
+            pwResyncs[slotIdx] := nResync1 - nResync0
+            if eRo2 == RO_DONE
+                pwOutcome[slotIdx] := (eRo == RO_DONE) ? RO_DONE : RO_TIMEOUT
+                storePowerRung(slotIdx, nCmd)
+                bOk, nDev := bWindowEncOk()
+                pwWchk[slotIdx] := nDev
+                if bOk
+                    bGoOn, _ := bStopAndRest(FALSE)
+                else
+                    bGoOn := FALSE                          ' the encoder disagreed with the halls: coasted, the run ends
+            elseif eRo2 == RO_FAULT
+                pwOutcome[slotIdx] := RO_FAULT
+                bGoOn := bFaultRecover()
+            else
+                pwOutcome[slotIdx] := RO_ABORTED
+                bGoOn := FALSE
+
+PRI storePowerRung(slotIdx, nCmd)
+' Keep the window just closed as the power rung's readings.
+'
+' @param slotIdx - the rung's record slot
+' @param nCmd - the increment the library wrote, signed
+
+    pwWinMs[slotIdx] := winMs
+    pwCpsX10[slotIdx] := winCpsX10
+    pwCmdX10[slotIdx] := cmdCpsX1000(nCmd) / X100
+    pwFolPm[slotIdx] := followPm(winCpsX10, nCmd)
+    pwDuty[slotIdx] := divRound(winDutySum, winN #> 1)
+    pwHeld[slotIdx] := winLagD
+    pwCapped[slotIdx] := winCapD
+    pwFolds[slotIdx] := winFoldD
+    pwDcMa[slotIdx] := winDcMa
+
+PRI powerFinish() | nPowIdx, rungIdx, slotIdx, nDev
+' At rest after L-power: R23-SGL-POWER's reading per power sign -- the worst |following - 1| over its rungs, PM for a
+' rung that faulted or was refused -- and every rung's B1-POWER.
+
+' Local Variables:
+' @local nPowIdx - a power sign
+' @local rungIdx - a rung
+' @local slotIdx - its record slot
+' @local nDev - the rung's deviation, per mille (-1: not judged)
+
+    repeat nPowIdx from 0 to POWER_SIGNS - 1
+        sfPowDev[nPowIdx] := 0
+        sfPowN[nPowIdx] := 0
+        repeat rungIdx from 0 to POWER_RUNG_COUNT - 1
+            slotIdx := nPowIdx * POWER_RUNG_COUNT + rungIdx
+            nDev := -1
+            case pwOutcome[slotIdx]
+                RO_DONE, RO_TIMEOUT:    nDev := abs(pwFolPm[slotIdx] - PM)
+                RO_FAULT, RO_REFUSED:   nDev := PM          ' it did not hold its speed
+            if nDev >= 0
+                sfPowDev[nPowIdx] #>= nDev
+                sfPowN[nPowIdx]++
+            if pwOutcome[slotIdx] <> RO_NOT_RUN
+                emitPowerRung(nPowIdx, slotIdx)
+
+PRI emitPowerRung(nPowIdx, slotIdx)
+' Emit B1-POWER for one rung: the power and the increment the library wrote for it (its sign is the increment's), how
+' it ended, the encoder's speed against the command's, the window's encoder check, and the drive's readings.
+'
+' @param nPowIdx - the power sign
+' @param slotIdx - the rung's record slot
+
+    benchLog.begin(@"B1-POWER")
+    benchLog.tokenField(@"psign", powToken(nPowIdx), TOKMAX_INST)
+    benchLog.numField(@"power", pwPower[slotIdx], LIM_TINY)
+    benchLog.numField(@"lib_incr", pwIncr[slotIdx], LIM_BIG)
+    benchLog.tokenField(@"outcome", roToken(pwOutcome[slotIdx]), TOKMAX_RO)
+    benchLog.naNumField(@"arr_ms", pwArrMs[slotIdx], LIM_SMALL, pwArrMs[slotIdx] >= 0)
+    benchLog.numField(@"win_ms", pwWinMs[slotIdx], LIM_SMALL)
+    benchLog.numField(@"cps_x10", pwCpsX10[slotIdx], LIM_MID)
+    benchLog.numField(@"cmd_x10", pwCmdX10[slotIdx], LIM_MID)
+    benchLog.numField(@"fol_pm", pwFolPm[slotIdx], LIM_SMALL)
+    benchLog.naNumField(@"wchk", pwWchk[slotIdx], LIM_SMALL, pwWchk[slotIdx] >= 0)
+    benchLog.numField(@"duty", pwDuty[slotIdx], LIM_MID)
+    benchLog.numField(@"held", pwHeld[slotIdx], LIM_MID)
+    benchLog.numField(@"capped", pwCapped[slotIdx], LIM_MID)
+    benchLog.numField(@"folds", pwFolds[slotIdx], LIM_SMALL)
+    benchLog.numField(@"resyncs", pwResyncs[slotIdx], LIM_SMALL)
+    benchLog.numField(@"dc_ma", pwDcMa[slotIdx], LIM_MID)
+    lineEmit()
+
+PRI powToken(nPowIdx) : pToken
+' R23-SGL-POWER's instance token: the power's sign, the API's own.
+'
+' @param nPowIdx - 0: + power, 1: - power
+' @returns pToken - pointer to PWR-POS or PWR-NEG
+
+    pToken := (nPowIdx == 0) ? @sInstPwrPos : @sInstPwrNeg
+#endif
+
 CON { --- L-ladder (the analysis's L2) --- }
 
 #ifdef SINGLE_PART_LADDER
@@ -3940,9 +4454,13 @@ PRI ladderFinish() | eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown, nDe
                     elseif rgOutcome[slotIdx] == RO_FAULT
                         sfFolWorst[eSign] #>= PM            ' it did not hold its speed
                         sfFolN[eSign]++
-                if rungIdx == LADDER_CEIL_RUNG              ' SMOOTH: the ceiling, from rest and by a step
+                if rungIdx == LADDER_CEIL_RUNG              ' SMOOTH and TOPSPD: the ceiling, from rest and by a step
                     if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT) or (rgOutcome[slotIdx] == RO_FAULT)
                         noteSmooth(eSign, (rgOutcome[slotIdx] == RO_FAULT) or (rgResyncs[slotIdx] > 0))
+                    if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT)
+                        noteTopSpd(eSign, abs(rgFolPm[slotIdx] - PM))
+                    elseif rgOutcome[slotIdx] == RO_FAULT
+                        noteTopSpd(eSign, PM)               ' it did not hold the law
                 if rgOutcome[slotIdx] <> RO_NOT_RUN
                     emitLadderRung(eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown)
     repeat eSign from SIGN_NEG to SIGN_POS
@@ -4038,7 +4556,8 @@ PRI fitSign(eSign) | eEntry, rungIdx, slotIdx, nPts, nLo, nHi, fSx, fSy, fMx, fM
 
 PRI misdialSign(eSign) | fV
 ' The sign's misdial check (R23-SGL-MISDIAL): from the duty line's slope, the supply that would give it --
-' Vbus = KE_MV_PER_KRPM x 60 x DUTY_VOLT_DIV x frame_cnt / (sqrt 3 x ENC_COUNTS_PER_REV x 1000 x (duty per count/s)), mV
+' Vbus = Ke x 60 x DUTY_VOLT_DIV x frame_cnt / (sqrt 3 x ENC_COUNTS_PER_REV x 1000 x (duty per count/s)), mV, Ke being
+' KE_USED_MV_PER_KRPM (the sheet's, or task 3686's fitted one in a SINGLE_QUALIFY build)
 ' (the phase peak per rad/s is Ke / sqrt 3; the phase voltage is Vbus x duty / (DUTY_VOLT_DIV x frame_cnt)) -- against
 ' TOLD_MV, per mille. Measured only with MISDIAL_MIN_POINTS clean rungs spanning MISDIAL_MIN_SPAN_PM of the fastest.
 '
@@ -4050,7 +4569,7 @@ PRI misdialSign(eSign) | fV
     bSfMisMeas[eSign] := FALSE
     fitVpredMv[eSign] := 0
     if fitOk[eSign] and (fitPts[eSign] >= MISDIAL_MIN_POINTS) and ((fitHiCps[eSign] - fitLoCps[eSign]) * PM >= MISDIAL_MIN_SPAN_PM * fitHiCps[eSign])
-        fV := float(KE_MV_PER_KRPM) *. 60.0 *. float(DUTY_VOLT_DIV * frameCnt) /. (F_SQRT3 *. float(ENC_COUNTS_PER_REV) *. 1000.0 *. (fitB[eSign] *. float(X10)))
+        fV := float(KE_USED_MV_PER_KRPM) *. 60.0 *. float(DUTY_VOLT_DIV * frameCnt) /. (F_SQRT3 *. float(ENC_COUNTS_PER_REV) *. 1000.0 *. (fitB[eSign] *. float(X10)))
         if fV >. 999999.0
             fV := 999999.0
         fitVpredMv[eSign] := round(fV)
@@ -4145,7 +4664,7 @@ PRI emitMisdial(eSign, bUsable, bUsableKnown)
     benchLog.naNumField(@"ratio_ppm", fitRatioPpm[eSign], LIM_BIG, bSfMisMeas[eSign])
     benchLog.naNumField(@"slope_e9", clampedRound(fitB[eSign] *. 1.0e9, LIM_BIG), LIM_BIG, fitOk[eSign])
     benchLog.numField(@"tol_pm", MISDIAL_TOL_PM, LIM_SMALL)
-    benchLog.numField(@"ke_mv_krpm", KE_MV_PER_KRPM, LIM_SMALL)
+    benchLog.numField(@"ke_mv_krpm", KE_USED_MV_PER_KRPM, LIM_SMALL)   ' the Ke predicted from (task 3686: the fitted one when fitted)
     benchLog.boolField(@"ke_fitted", KE_IS_FITTED)
     benchLog.numField(@"frame_cnt", frameCnt, LIM_MID)
     if bUsableKnown
@@ -4205,12 +4724,14 @@ PRI bRampOnce(nPowSign) : bGoOn | nPower, nCmd, nCmdMs, nResync0
         clearProtect()
         emitRampRefused(nPower)
 
-PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUpBandMs, nUpWholeMs, nArrEncMs, nArrStateMs, eOutcome, bFaulted, bHolding, nHoldMs, nCps, nUpSum, nUpN, nResync1, nHoldFol, bWok, nWdev, nV, nStartCps, nEncAtStop, nDnBandMs, nDnWholeMs, nStopMs, nDnEncMs, nDnStateMs, nDnSum, nDnN, nFinal, nRestMs, bRingShort, nPredTravel, bWinDone, instUp, instDn
+PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUpBandMs, nUpWholeMs, nArrEncMs, nArrStateMs, eOutcome, bFaulted, bHolding, nHoldMs, nCps, nUpSum, nUpN, nResync1, nHoldFol, bWok, nWdev, nV, nStartCps, nEncAtStop, nDnBandMs, nDnWholeMs, nStopMs, nDnEncMs, nDnStateMs, nDnSum, nDnN, nFinal, nRestMs, bRingShort, nPredTravel, bWinDone, instUp, instDn, bUpEnded, bDnEnded, nReadMs
 ' A commanded ramp to the top: held RAMP_HOLD_MS once the drive reads AT_SPEED there, then stopMotor() and the shaft's
 ' rest. Times from the command: the encoder within ARRIVE_BAND_PM of the top (at_enc_ms) against the generator's
 ' prediction to the same band (p_band_ms), and the drive's own AT_SPEED (at_state_ms); from the stop: the encoder under
 ' ARRIVE_BAND_PM of the start speed against the prediction, the drive's DCS_STOPPED, the shaft's travel against the
-' S-curve's, and the DC link through the stop. Feeds R23-SGL-RAMPARR and R23-SGL-SMOOTH. Emits B1-RAMP and B1-RAMPDN.
+' S-curve's, and the DC link through the stop. Feeds R23-SGL-RAMPARR, R23-SGL-SMOOTH and (task 3686) R23-SGL-TOPSPD.
+' Task 3686: a change the encoder never reads arriving before its bound is judged at that bound (RAMPARR's CON). Emits
+' B1-RAMP and B1-RAMPDN.
 '
 ' @param nPower - the power commanded
 ' @param nCmd - the increment the library wrote for it
@@ -4253,9 +4774,14 @@ PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUp
 ' @local bWinDone - T/F where T means the hold's window was closed (its fields are this ramp's)
 ' @local instUp - RAMPARR's UP instance
 ' @local instDn - its DN instance
+' @local bUpEnded - T/F where T means the climb ended by its hold or its bound (no fault, no guard)
+' @local bDnEnded - T/F where T means the stop ended at DCS_STOPPED or its bound (no fault, no guard)
+' @local nReadMs - RAMPARR's reading: the encoder's arrival, or the change's bound when it never came (task 3686)
 
     bGoOn := TRUE
     bFaulted := FALSE
+    bUpEnded := FALSE
+    bDnEnded := FALSE
     nArrEncMs := -1
     nArrStateMs := -1
     nDnEncMs := -1
@@ -4299,8 +4825,10 @@ PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUp
             nHoldMs := smpMs
             windowBegin()
         if bHolding and (smpMs - nHoldMs >= RAMP_HOLD_MS)
+            bUpEnded := TRUE
             quit
         if smpMs - nCmdMs > 2 * nUpWholeMs + ARRIVE_MARGIN_MS
+            bUpEnded := TRUE
             quit                                            ' not at the top in its bound: stopped from where it is
     _, _, nResync1 := wheel.testGetFaultResponse()
     bWinDone := FALSE
@@ -4312,6 +4840,10 @@ PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUp
         bGoOn := bWok
     if bGoOn
         noteSmooth(eSign, bFaulted or (nResync1 <> nResync0))
+        if bWinDone                                         ' task 3686, R23-SGL-TOPSPD: the hold's window at the top
+            noteTopSpd(eSign, abs(nHoldFol - PM))
+        else
+            noteTopSpd(eSign, PM)                           ' a fault, or a climb that never arrived in its bound
     if bGoOn and bFaulted
         bGoOn := bFaultRecover()
     elseif bGoOn
@@ -4337,8 +4869,10 @@ PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUp
                 nDnEncMs := smpMs - nStopMs
             if smpState == wheel.DCS_STOPPED
                 nDnStateMs := smpMs - nStopMs
+                bDnEnded := TRUE
                 quit
             if smpMs - nStopMs > 2 * nDnWholeMs + ARRIVE_MARGIN_MS
+                bDnEnded := TRUE
                 quit
         if bGoOn and bFaulted
             bGoOn := bFaultRecover()
@@ -4346,14 +4880,21 @@ PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUp
             bGoOn, nFinal, nRestMs, bRingShort := restQuiet()
             nPredTravel := muldiv64(cmdCpsX1000(nV), nDnWholeMs, 2 * US_PER_S)
             waitms(LEG_REST_MS)
-    ' R23-SGL-RAMPARR: each change judged when it ran clean to its reading
+    ' R23-SGL-RAMPARR: each change judged when it ran clean to its reading -- task 3686: or to its bound, when the
+    '  encoder never read it arrive, and then it reads that bound (a FAIL, never a NOMEAS: the exclusion check)
     instUp := eSign * CHG_COUNT + CHG_UP
     instDn := eSign * CHG_COUNT + CHG_DN
-    if (nArrEncMs >= 0) and (nArrStateMs >= 0) and (bFaulted == FALSE) and (nResync1 == nResync0) and (nUpBandMs > 0)
-        sfArrPm[instUp] := divRound((nArrEncMs - nUpBandMs) * PM, nUpBandMs)
+    if ((nArrEncMs >= 0) or bUpEnded) and (bFaulted == FALSE) and (nResync1 == nResync0) and (nUpBandMs > 0)
+        nReadMs := 2 * nUpWholeMs + ARRIVE_MARGIN_MS
+        if nArrEncMs >= 0
+            nReadMs := nArrEncMs
+        sfArrPm[instUp] := divRound((nReadMs - nUpBandMs) * PM, nUpBandMs)
         sfArrN[instUp]++
-    if (nDnEncMs >= 0) and (nDnStateMs >= 0) and (nArrStateMs >= 0) and (bFaulted == FALSE) and (nDnBandMs > 0)
-        sfArrPm[instDn] := divRound((nDnEncMs - nDnBandMs) * PM, nDnBandMs)
+    if ((nDnEncMs >= 0) or bDnEnded) and (nArrStateMs >= 0) and (bFaulted == FALSE) and (nDnBandMs > 0)
+        nReadMs := 2 * nDnWholeMs + ARRIVE_MARGIN_MS
+        if nDnEncMs >= 0
+            nReadMs := nDnEncMs
+        sfArrPm[instDn] := divRound((nReadMs - nDnBandMs) * PM, nDnBandMs)
         sfArrN[instDn]++
     benchLog.begin(@"B1-RAMP")
     benchLog.tokenField(@"sign", (eSign == SIGN_NEG) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
@@ -4401,7 +4942,8 @@ PRI emitRampRefused(nPower)
 PRI bReverseRun() : bGoOn | nPhase, nPower, nCmd, nUpMs, nDnMs, eRo, nMs, nResync0, nResync1, bFaulted, bWok, nWdev, nArr0, nArr1, nArr2, nFol0, nFol1, nFol2, nRan
 ' L-ramp's reversal: from rest to the top at +power, then straight to -power, then straight back to +power (through zero
 ' each time, on the built-in ramp), each held REV_HOLD_MS after the drive reads AT_SPEED there; then stopMotor() and rest.
-' Feeds R23-SGL-SMOOTH's REVERSAL (one run: did it fault or re-sync). Emits B1-REVERSE at rest.
+' Feeds R23-SGL-SMOOTH's REVERSAL (one run: did it fault or re-sync) and (task 3686) R23-SGL-TOPSPD's (the worst of its
+' three tops' following). Emits B1-REVERSE at rest.
 '
 ' @returns bGoOn - T/F where T means nothing ended the run
 
@@ -4478,6 +5020,8 @@ PRI bReverseRun() : bGoOn | nPhase, nPower, nCmd, nUpMs, nDnMs, eRo, nMs, nResyn
     if bGoOn
         if nRan > 0
             noteSmooth(SMOOTH_REVERSAL, bFaulted or (nResync1 <> nResync0))
+            ' task 3686, R23-SGL-TOPSPD: the worst of the three tops; a top whose window never ran reads 0, so PM
+            noteTopSpd(SMOOTH_REVERSAL, abs(nFol0 - PM) #> abs(nFol1 - PM) #> abs(nFol2 - PM))
         if bFaulted
             bGoOn := bFaultRecover()
         else
@@ -4528,7 +5072,8 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
 ' driveAtPower() at the top or the crawl; wait, guarded, until isMoveDone(); the shaft's rest (restQuiet()); the stop
 ' reason. ROTATION: the encoder's travel from the arming less N x 60 counts. TIME: the shaft's rest instant less the
 ' deadline the library armed (testGetStopMs()), and the field's zero instant (the drive's own) less it. Judged when the
-' drive ended SR_AT_LIMIT. Emits B1-STOP at rest.
+' drive ended SR_AT_LIMIT -- and, task 3686, when the limit never fired in STOPS_DRIVE_MAX_MS: then at the stop the
+' harness makes, its DCS_STOPPED reading's count and time (a FAIL, never a NOMEAS). Emits B1-STOP at rest.
 '
 ' @param nPowSign - +1 or -1
 ' @param eKind - KIND_TOP or KIND_CRAWL
@@ -4598,6 +5143,8 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
             bGoOn := FALSE
         elseif eRo == RO_TIMEOUT
             bGoOn, _ := bStopAndRest(FALSE)                 ' the limit never fired in its bound: recorded, stopped
+            nFinal := smpEnc                                ' task 3686: judged at this stop's DCS_STOPPED reading
+            nRestMs := smpMs
         else
             bGoOn, nFinal, nRestMs, bRingShort := restQuiet()
             if bGoOn
@@ -4606,6 +5153,7 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
     eReason := wheel.getStopReason()
     nTravel := nFinal - nEnc0
     bJudged := (eRo == RO_DONE) and (eReason == wheel.SR_AT_LIMIT)
+    bJudged |= (eRo == RO_TIMEOUT) and bGoOn                ' task 3686: a limit that never fired is the cells' own negative
     instIdx := eSign * KIND_COUNT + eKind
     if bByTime
         nDev := nRestMs - nDeadline
@@ -6891,12 +7439,13 @@ PRI emitHandStep(hl, seqNum, runNum)
     lineEmit()
 
 PRI bLimHoldMeasured(hl) : bMeasured
-' R23-SGL-LIMHOLD's precondition for a step: run, his grip seen, and the fold-back engaged.
+' R23-SGL-LIMHOLD's precondition for a step: run, his grip seen, and the fold-back engaged -- or, task 3686 (the
+' exclusion check), a fault after his grip, which is judged with or without a fold.
 '
 ' @param hl - HL_4A or HL_2A
 ' @returns bMeasured - T/F where T means judged
 
-    bMeasured := (hlRun[hl] > 0) and bHlContact[hl] and (hlFolds[hl] >= 1)
+    bMeasured := (hlRun[hl] > 0) and bHlContact[hl] and ((hlFolds[hl] >= 1) or (hlFaults[hl] > 0))
 
 PRI bBlkStopMeasured(hl) : bMeasured
 ' R23-SGL-BLKSTOP's precondition for a step: run, and the latch, or the shaft standing HAND_NOLATCH_MS.
@@ -6998,6 +7547,7 @@ PRI wkHeldStep(hp) | eErr, nCeilPct, nRiseMs, nLimitMs, bFresh, nSlips0, nLimits
     hpRiseMs[hp] := RISE_NOT_SEEN
     hpSlipMs[hp] := -1
     hpLimitMs[hp] := -1
+    hpLimitTicks[hp] := -1
     hpCeilMs[hp] := -1
     hpFirstEdgeMs[hp] := -1
     hpSlipCnt[hp] := 0
@@ -7052,6 +7602,9 @@ PRI wkHeldStep(hp) | eErr, nCeilPct, nRiseMs, nLimitMs, bFresh, nSlips0, nLimits
         bSfRiseMeas[eDir] := (hpRiseMs[hp] <> RISE_NOT_SEEN)
     if bFresh and bHpSlipped[hp] and (hpLost[hp] == 0)
         sfSlipTicks[eDir] := hpSlipTicks[hp]
+        bSfSlipMeas[eDir] := TRUE
+    elseif bFresh and (hpLimitTicks[hp] > wheel.HOLD_SLIP_TICKS) and (hpLost[hp] == 0)
+        sfSlipTicks[eDir] := hpLimitTicks[hp]               ' task 3686: it let go at its time limit, past its slip: a FAIL
         bSfSlipMeas[eDir] := TRUE
     wkHeldResult(hp)
 
@@ -7162,6 +7715,7 @@ PRI wkHeldAct(hp) | nActMs, eOutcome, nDuty, nCeil, eHs, nDisp, nTurn, bDisplace
             bHpSlipped[hp] := TRUE
         if (eHs == wheel.HS_LIMITED) and (hpLimitMs[hp] < 0)
             hpLimitMs[hp] := smpMs - nActMs
+            hpLimitTicks[hp] := abs(hpNetTicks[hp])         ' task 3686: past HOLD_SLIP_TICKS here, it never slipped where it should
         wkRead1 := abs(nTurn) * 360 / ENC_COUNTS_PER_REV
         wkRead2 := (nCeil > 0) ? (nDuty * 100 / nCeil) : 0
         if bGuardStops(eOutcome)
@@ -7192,6 +7746,8 @@ PRI wkHeldAct(hp) | nActMs, eOutcome, nDuty, nCeil, eHs, nDisp, nTurn, bDisplace
         hpRiseMs[hp] := -1                                  ' the duty rose before any displacement: P-H4's negative
     elseif (hpRiseSpan[hp] >= RISE_MIN_SPAN_MS) and (hpRiseGain[hp] > 0)
         hpRiseMs[hp] := muldiv64(hpCeil[hp] - hpDutyMin[hp], hpRiseSpan[hp], hpRiseGain[hp])
+    elseif hpRiseSpan[hp] >= RISE_MIN_SPAN_MS
+        hpRiseMs[hp] := HOLDRISE_NONE_MS                    ' task 3686: displaced that long and no rise -- a hold that does not push back
     else
         hpRiseMs[hp] := RISE_NOT_SEEN                       ' too little rising time to rate it (a flick)
 
@@ -7252,6 +7808,7 @@ PRI emitHeldStep(hp, seqNum, runNum)
     benchLog.naNumField(@"slip_ticks", hpSlipTicks[hp], LIM_SMALL, bHpSlipped[hp])
     benchLog.naNumField(@"slip_dps", hpSlipDps[hp], LIM_SMALL, bHpSlipped[hp])
     benchLog.naNumField(@"limit_ms", hpLimitMs[hp], LIM_MID, hpLimitMs[hp] >= 0)
+    benchLog.naNumField(@"limit_ticks", hpLimitTicks[hp], LIM_SMALL, hpLimitTicks[hp] >= 0)
     lineEmit()
     benchLog.begin(@"B1-HPUSHD")
     benchLog.numField(@"step", seqNum, LIM_TINY)
@@ -7865,6 +8422,9 @@ PRI emitBuild()
     benchLog.boolField(@"sag", PART_SAG_BUILT)
     benchLog.boolField(@"pinch", PART_PINCH_BUILT)
     benchLog.boolField(@"coldz", FALSE)                     ' the cold back-EMF Z is not built (CON { the Doco's numbers }, COLD Z)
+    benchLog.boolField(@"wiring", PART_WIRING_BUILT)        ' task 3686, the D2 qualification
+    benchLog.boolField(@"power", PART_POWER_BUILT)
+    benchLog.boolField(@"qualify", QUALIFY_BUILT)
     benchLog.numField(@"time_cap_s", RUN_TIME_CAP_S, LIM_SMALL)
     benchLog.numField(@"charge_cap_mas", RUN_CHARGE_CAP_MAS, LIM_MID)
     benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
@@ -7895,6 +8455,7 @@ PRI emitMotor()
     benchLog.numField(@"cap_from_mv", PK1_CAP_FROM_MV, LIM_MID)
     benchLog.numField(@"ext_rungs", LADDER_EXT_COUNT, LIM_TINY)
     benchLog.boolField(@"ke_fitted", KE_IS_FITTED)
+    benchLog.numField(@"ke_used", KE_USED_MV_PER_KRPM, LIM_SMALL)  ' task 3686: the fitted Ke in a SINGLE_QUALIFY build
     benchLog.numField(@"misdial_tol_pm", MISDIAL_TOL_PM, LIM_SMALL)
     benchLog.numField(@"duty_volt_div", DUTY_VOLT_DIV, LIM_TINY)
     benchLog.numField(@"reserve_pm", DUTY_RESERVE_PM, LIM_SMALL)
@@ -7917,6 +8478,10 @@ PRI emitMotor()
     benchLog.numField(@"pp_pct", PASSPRB_PCT, LIM_TINY)
     benchLog.numField(@"pp_win_ms", PASSPRB_WIN_MS, LIM_SMALL)
     benchLog.numField(@"pp_tol_ppm", PASSPRD_TOL_PPM, LIM_SMALL)
+    benchLog.numField(@"pwr_rungs", POWER_RUNG_COUNT, LIM_TINY)    ' task 3686: L-power, R23-SGL-POWER and -TOPSPD
+    benchLog.numField(@"pwr_tol_pm", POWER_TOL_PM, LIM_SMALL)
+    benchLog.numField(@"top_tol_pm", TOPSPD_TOL_PM, LIM_SMALL)
+    benchLog.numField(@"ke_fit_mv", KE_FITTED_MV_PER_KRPM, LIM_SMALL)
     lineEmit()
     benchLog.begin(@"B1-MOTOR4")                            ' (L-offscan's, apart: one record would pass 260 bytes)
     benchLog.numField(@"ofs_step", OFS_STEP_DEG, LIM_TINY)
@@ -7973,6 +8538,12 @@ PRI emitEnd()
 PRI emitSignoffDecls()
 ' Emit one SIGNOFF-DECL per cell this image judges, before anything moves.
 
+#ifdef SINGLE_PART_WIRING
+    emitSignoffDecl(@sSfCellStart)
+#endif
+#ifdef SINGLE_PART_POWER
+    emitSignoffDecl(@sSfCellPower)
+#endif
 #ifdef SINGLE_PART_HALLMAP
     emitSignoffDecl(@sSfCellEncChk)
     emitSignoffDecl(@sSfCellSector)
@@ -7986,6 +8557,7 @@ PRI emitSignoffDecls()
 #endif
     if PART_LADDER_BUILT or PART_RAMP_BUILT
         emitSignoffDecl(@sSfCellSmooth)
+        emitSignoffDecl(@sSfCellTopSpd)                     ' task 3686: the same runs' rate on the speed law
 #ifdef SINGLE_PART_RAMP
     emitSignoffDecl(@sSfCellRampArr)
 #endif
@@ -8023,8 +8595,18 @@ PRI emitSignoffDecl(pCell)
     benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
     benchLog.tokenField(@"bin", @sSfBin, TOKMAX_BIN)
     benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
-    benchLog.tokenField(@"task", @sSfTask, TOKMAX_TASK)
+    benchLog.tokenField(@"task", cellTask(pCell), TOKMAX_TASK)
     lineEmit()
+
+PRI cellTask(pCell) : pTask
+' The task a cell belongs to, for its SIGNOFF-DECL and SIGNOFF records: task 3686's three qualification cells, else 3679.
+'
+' @param pCell - pointer to the cell id token
+' @returns pTask - pointer to the task token
+
+    pTask := @sSfTask
+    if (pCell == @sSfCellStart) or (pCell == @sSfCellPower) or (pCell == @sSfCellTopSpd)
+        pTask := @sSfTaskQual
 
 PRI emitSignoffs()
 ' Emit every declared cell's SIGNOFF instances: on every path that declared them (a refused build declared none), after
@@ -8033,10 +8615,10 @@ PRI emitSignoffs()
     if (eAbortReason <> AR_NOT_DOCO) and (eAbortReason <> AR_NO_PART)
         emitDeclaredSignoffs()
 
-PRI emitDeclaredSignoffs() | setIdx, eSign, eIdx, hl, eDir, nExpect
+PRI emitDeclaredSignoffs() | setIdx, eSign, eIdx, hl, eDir, nExpect, nPowIdx
 ' Emit the SIGNOFF instances of every cell emitSignoffDecls() declared, one per set, sign, sign-change or sign-kind;
 ' phase 2c's per hand-load limit (LIM-DEF only where that step belongs: a DAT rowHandDef row), per measured direction,
-' and the sag's one.
+' and the sag's one; task 3686's START (one), POWER (per power sign) and TOPSPD (as SMOOTH's).
 
 ' Local Variables:
 ' @local setIdx - SET_*
@@ -8045,7 +8627,17 @@ PRI emitDeclaredSignoffs() | setIdx, eSign, eIdx, hl, eDir, nExpect
 ' @local hl - a hand-load step, HL_*
 ' @local eDir - a measured direction, DIR_*
 ' @local nExpect - R23-SGL-SAGTYPE's bound at the row: 1 fault first, 0 slip first
+' @local nPowIdx - a power sign (R23-SGL-POWER)
 
+#ifdef SINGLE_PART_WIRING
+    emitSignoff(@sSfCellStart, @sInstMotor, @sSfCritStartOk, bStartMeasured(), startWireValue(), ...
+                START_OK, START_OK, @sSfUnitsBool01, 1)
+#endif
+#ifdef SINGLE_PART_POWER
+    repeat nPowIdx from 0 to POWER_SIGNS - 1
+        emitSignoff(@sSfCellPower, powToken(nPowIdx), @sSfCritPwrDev, sfPowN[nPowIdx] > 0, sfPowDev[nPowIdx], ...
+                    0, POWER_TOL_PM, @sSfUnitsPm, sfPowN[nPowIdx])
+#endif
 #ifdef SINGLE_PART_HALLMAP
     repeat setIdx from 0 to SET_COUNT - 1
         emitSignoff(@sSfCellEncChk, setToken(setIdx), @sSfCritEncDev, setBurstsChecked[setIdx] > 0, setEncDevWorst[setIdx], ...
@@ -8074,6 +8666,12 @@ PRI emitDeclaredSignoffs() | setIdx, eSign, eIdx, hl, eDir, nExpect
         if PART_RAMP_BUILT                                  ' the reversal is L-ramp's alone
             emitSignoff(@sSfCellSmooth, @sInstReversal, @sSfCritFaultRun, sfSmoothN[SMOOTH_REVERSAL] > 0, sfSmooth[SMOOTH_REVERSAL], ...
                         SMOOTH_LO, SMOOTH_HI, @sSfUnitsCount, sfSmoothN[SMOOTH_REVERSAL])
+        repeat eSign from SIGN_NEG to SIGN_POS              ' task 3686: R23-SGL-TOPSPD, SMOOTH's instances and feeds
+            emitSignoff(@sSfCellTopSpd, signToken(eSign), @sSfCritTopDev, sfTopN[eSign] > 0, sfTopDev[eSign], ...
+                        0, TOPSPD_TOL_PM, @sSfUnitsPm, sfTopN[eSign])
+        if PART_RAMP_BUILT
+            emitSignoff(@sSfCellTopSpd, @sInstReversal, @sSfCritTopDev, sfTopN[SMOOTH_REVERSAL] > 0, sfTopDev[SMOOTH_REVERSAL], ...
+                        0, TOPSPD_TOL_PM, @sSfUnitsPm, sfTopN[SMOOTH_REVERSAL])
 #ifdef SINGLE_PART_RAMP
     repeat eIdx from 0 to SIGN_COUNT * CHG_COUNT - 1
         emitSignoff(@sSfCellRampArr, chgToken(eIdx), @sSfCritArrDev, sfArrN[eIdx] > 0, sfArrPm[eIdx], ...
@@ -8169,7 +8767,7 @@ PRI emitSignoff(pCell, pInst, pCrit, bMeasured, measuredVal, loLimit, hiLimit, p
     benchLog.numField(@"sf", SF_VERSION, LIM_TINY)
     benchLog.tokenField(@"bin", @sSfBin, TOKMAX_BIN)
     benchLog.tokenField(@"cell", pCell, TOKMAX_CELL)
-    benchLog.tokenField(@"task", @sSfTask, TOKMAX_TASK)
+    benchLog.tokenField(@"task", cellTask(pCell), TOKMAX_TASK)
     benchLog.tokenField(@"motor", pInst, TOKMAX_INST)
     benchLog.tokenField(@"crit", pCrit, TOKMAX_CRIT)
     benchLog.naNumField(@"measured", boundedVal, LIM_BIG, bMeasured)
@@ -8275,6 +8873,7 @@ PRI abortToken(eReason) : pToken
         AR_CAP:         pToken := @sArCap
         AR_SETTING:     pToken := @sArSetting
         AR_WORKER:      pToken := @sArWorker
+        AR_WIRING:      pToken := @sArWiring
         other:          pToken := @sNa
 
 PRI signToken(eSign) : pToken
