@@ -30,7 +30,7 @@ The new Motor we've added:
 | Back-EMF constant | 3.53 V per 1,000 RPM |
 | Torque constant | 0.034 N·m/A |
 | Insulation class | B |
-| Rotation | clockwise, viewed from the output shaft |
+| Rotation | clockwise, viewed from the output shaft | the output shaft is the one with the raised round boss; turning the motor this way counts the halls up (verified on our hardware)
 | Hall sensor supply | +5 to +20 V DC | three sensors, Hu Hv Hw, on the yellow, green and blue leads
 | Shaft | 5 mm, out of both ends |
 
