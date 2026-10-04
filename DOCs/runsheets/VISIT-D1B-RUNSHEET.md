@@ -1,7 +1,7 @@
 # Doco visit D1b — measure the motor on the driver (your only instructions)
 
 **Plan:** `DOCs/plans/DOCO-AND-CLOCK-SPRINT-PLAN.md` §10, step 3 (task «#3696»). **Driver:** DRIVER_REV 52. **Harness:**
-`test_bench_single` SRC_REV 12. **Pack:** `dist/bench-d19b80b.zip` (commit `d19b80b`).
+`test_bench_single` SRC_REV 12. **Pack:** the `dist/bench-<commit>.zip` the hand-back names; this sheet travels inside it.
 
 **What this visit is for:** the measurements the driver's Doco tables are made from, the way the 6.5″'s were. First the
 cold hall zero by hand (the 6.5″'s align method). Then, at each tested voltage, hands off: the hall map in both directions,
@@ -52,7 +52,7 @@ bench supply, nothing on the shaft but the encoder. **The supply voltage you set
 
 | Test | The banner must read |
 |---|---|
-| every run | `B1-BANNER,src_rev,12,commit,d19b80b,fmt,10,driver_rev,52,...`, `told_mv` equal to the supply you set, and `B1-BOARD` reading Rev A |
+| every run | `B1-BANNER,src_rev,12,commit,<the commit in the pack's name>,fmt,10,driver_rev,52,...`, `told_mv` equal to the supply you set, and `B1-BOARD` reading Rev A |
 | the five probes | `clkfreq` 120000000, 200000000, 270000000, 350000000, 271250000 |
 
 ## The visit, declared
