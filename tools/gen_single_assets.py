@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the DEBUG PLOT assets for src/test_bench_single.spin2's attended hand tests on the Doco bench (window
-sgpanel): the hand load at low speed (-D SINGLE_PART_HANDLOAD, tiers single-handload-v12p0 / -v24p0), the held stop
-pushed by hand (-D SINGLE_PART_HELDPUSH, single-heldpush-v12p0 / -v24p0) -- task 3679 phase 2c; the hand turn with the
+sgpanel): the hand load at low speed (-D SINGLE_PART_HANDLOAD, tiers single-handload-v11p1 / -v24p0), the held stop
+pushed by hand (-D SINGLE_PART_HELDPUSH, single-heldpush-v11p1 / -v24p0) -- task 3679 phase 2c (task 3696: 11.1 V, not 12 V); the hand turn with the
 motor UNPOWERED (-D SINGLE_PART_HANDTURN, tier single-recheck-v12p0) -- task 3692, D1a; and the cold zero, the 6.5in's
 dual-align at the Doco's numbers, the drive started and floated and never driven (-D SINGLE_PART_ALIGN, tier
 single-align-v11p1) -- task 3694, D1b's first leg: four steps, two hand paces each way, whose intro and result cards are
@@ -231,10 +231,10 @@ STEPS = [
          expect="The drive stopped itself 1.0 to 1.17 s after the shaft stood still, with no fault.",
          act_lbl=("L_RPM", "L_MA"), res_lbl=("L_LATCH_MS", "L_PEAK_MA")),
     dict(id="HL_DEF", name="HAND LOAD, DEFAULT LIMIT", kind="hand", powered=True, setup="ST_SET_DEFAULT",
-         intro=("No test limit this time, at 12 V only, and briefly: the push is much stronger. The shaft turns "
+         intro=("No test limit this time, at 11.1 V only, and briefly: the push is much stronger. The shaft turns "
                 "slowly by itself; you grip it firmly, stop it and hold it still.",
                 "Click START STEP, wait for YOUR TURN, then grip the shaft firmly and hold it still. Do not let it creep.",
-                "A strong push, about 120 mN.m, twice the last steps, and a hum. About a second after the shaft stops, "
+                "A strong push, about 110 mN.m, twice the last steps, and a hum. About a second after the shaft stops, "
                 "the drive stops itself. If you cannot hold it still, click STOP MOTOR."),
          act=("The shaft turns slowly with the default limit: nothing limits the current.",
               "Grip it firmly, stop it, and hold it still.",
@@ -242,7 +242,7 @@ STEPS = [
               "By itself when the drive stops itself, or the program stops it about a second after it stood still. "
               "STOP MOTOR stops it now."),
          expect="The drive stopped itself 1.0 to 1.17 s after the shaft stood still. Nothing folded the current back.",
-         skip=("This step draws about 6 A for a second. The charge cap of this test has too little left for that, so "
+         skip=("This step draws about 5 A for a second. The charge cap of this test has too little left for that, so "
                "the program did not run it.",
                "Nothing. Click the button to go on."),
          act_lbl=("L_RPM", "L_MA"), res_lbl=("L_LATCH_MS", "L_PEAK_MA")),
@@ -654,9 +654,9 @@ def compose(layers, step_name_row, seq_num, step_count, supply_row, banner, card
 
 # Each tier's steps, in the order the harness runs them (test_bench_single.spin2 legSteps()), and its row index.
 TIERS = [
-    ("single-handload-v12p0", 2, ["HL_4A", "HL_2A", "HL_DEF"]),
+    ("single-handload-v11p1", 1, ["HL_4A", "HL_2A", "HL_DEF"]),    # task 3696: 11.1 V and 24 V (12 V is not tested)
     ("single-handload-v24p0", 6, ["HL_4A", "HL_2A"]),
-    ("single-heldpush-v12p0", 2, ["HP_ONE", "HP_OTHER"]),
+    ("single-heldpush-v11p1", 1, ["HP_ONE", "HP_OTHER"]),
     ("single-recheck-v12p0", 2, ["HT"]),                        # task 3692: the hand turn, then the wiring screen
     ("single-align-v11p1", 1, ["AL_SLOW_CW", "AL_SLOW_CCW", "AL_FAST_CW", "AL_FAST_CCW"]),   # task 3694: the cold zero
 ]
