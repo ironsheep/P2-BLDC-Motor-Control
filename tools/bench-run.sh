@@ -183,7 +183,7 @@ usage() {
     #  visible reason.
     cat <<'EOF'
 Usage:  tools/bench-run.sh <tier> [<clock>]
-  <clock>     -- optional, for the tiers of test_bench_dual and test_bench_t0 only: the clock the run is built at, by NAME
+  <clock>     -- optional, for the tiers of test_bench_dual, test_bench_t0 and test_bench_single only: the clock the run is built at, by NAME
                  (nothing numeric is typed). One of:
                    clk-floor  120 MHz  the lowest supported clock (PROVISIONAL: task 3683 rules it)
                    clk-200    200 MHz
@@ -255,6 +255,19 @@ Usage:  tools/bench-run.sh <tier> [<clock>]
                    demo-rc        the FlySky RC demo, driven by you with the transmitter (in this release, Stephen 2026-09-27); SBUS receiver on P58  [ATTENDED]
                    floor-rc       the RC demo's control loop ON THE FLOOR, driven by you with the transmitter, with a 25 Hz telemetry line of both wheels (RC-TEL) and every drive event (RC-EVT); SBUS receiver on P58; runs until you close the terminal  [WHEELS DOWN, ATTENDED]
                    doco-demo-<voltage>  the DOCO BENCH (one motor, P16 board, a Rev A): the single-motor release demo, told its drive voltage by the tier's NAME -- one of doco-demo-v7p4, -v11p1, -v12p0, -v14p8, -v18p5, -v22p2, -v24p0 (7.4 11.1 12 14.8 18.5 22.2 24 V; nothing is sensed on this bench)  [MOTOR CONNECTED, FREE TO TURN, UNATTENDED]
+                   single-hallmap-<voltage>  the DOCO BENCH's measurement harness, its hall-map leg: the encoder angle at every hall edge, eight two-revolution crawls (60 and 240 rpm, each way) under a 2 A test limit; the voltage told by NAME as doco-demo's is (-v7p4 ... -v24p0); takes a <clock> name  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-mininc-<voltage>   the Doco harness's slowest-steady-speed leg: crawls each way, slower each step, until one does not turn smoothly on the encoder (PL-71); voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-ladder-<voltage>   the Doco harness's speed ladder: a quarter to all of the voltage's top speed (and, from 12 V up, to 400e6), each from rest and by a step, each held ~6 s, each way; the duty line, the reserve ceiling, the misdial check; voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-ramp-<voltage>     the Doco harness's built-in speed-up to the top and stop, each way, and a reversal through zero at the top; voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-stops-<voltage>    the Doco harness's stop limits: stopAfterRotation() and stopAfterTime() at the top and at a crawl, each way; voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-coast-<voltage>    the Doco harness's coast-down: at a quarter, half and all of the top speed, each way, the drive cut on purpose and the free coast to rest read on the encoder; at v12p0 and v24p0 only (single-coast-v12p0, -v24p0); clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-offscan-<voltage>  the Doco harness's timing (commutation offset) scan: the offset stepped 5 degrees over +-30 at a quarter, half and all of the top speed, each way; the current minimum, the lead check, the hall zero at speed (~11 minutes); at v12p0 and v24p0 only; clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-passprobe-<voltage>  the Doco harness's drive-pass probe: half speed for 10 s each way, the encoder's speed against the drive's pass rate to +-0.1 %; voltage as above, and run at each clock NAME (single-passprobe-v12p0 clk-floor, ... clk-frac)  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-measure-<voltage>  EVERY hands-off leg of the Doco harness in one run, in order: hall map, slowest speed, ladder, ramp, stop limits, coast-down and timing scan (at 12 V and 24 V only), drive-pass probe (~25 minutes at v12p0 / v24p0, ~13 elsewhere); voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-handload-<voltage> the Doco harness's hand load, on a panel: the shaft turns slowly by itself and you slow it by hand to a stop, at a 4 A and a 2 A test limit and (12 V only) briefly at the default limits; at v12p0 and v24p0 only (single-handload-v12p0, -v24p0)  [MOTOR CONNECTED, ENCODER COUPLED, ATTENDED: YOUR HAND ON THE SHAFT]
+                   single-heldpush-<voltage> the Doco harness's held stop, on a panel: the stopped motor holds the shaft and you turn it slowly by hand until the hold gives way, one way, then the other; at v12p0 and v24p0 only  [MOTOR CONNECTED, ENCODER COUPLED, ATTENDED: YOUR HAND ON THE SHAFT]
+                   single-sag-<voltage>      OPTIONAL, ask first: the Doco harness's supply sag, on a panel: at the top speed you turn the bench supply down about 1 V a second until the speed is lost; at v22p2 and v18p5 only  [MOTOR CONNECTED, ENCODER COUPLED, ATTENDED: YOUR HAND ON THE SUPPLY]
+                   single-pinch-<voltage>    OPTIONAL, ask first: the Doco harness's cloth pinch, on a panel: at the top speed you pinch the bare shaft end lightly with a cloth for 1 to 2 seconds; at v18p5 only (single-pinch-v18p5)  [MOTOR CONNECTED, ENCODER COUPLED, ATTENDED: A CLOTH ON THE SHAFT END]
                    demo-dual      the two-wheel release demo: wiring check, 1 ft forward, two 15 s steered drives, then each wheel alone 15 s at full power (PL-149), about 1.5 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
 
 Examples:
@@ -263,6 +276,7 @@ Examples:
   tools/bench-run.sh dual-clock-200
   tools/bench-run.sh dual-clock clk-350
   tools/bench-run.sh t0 clk-frac
+  tools/bench-run.sh single-passprobe-v12p0 clk-floor
 EOF
     exit "${1:-2}"          # usage 0 for --help; a refusal is 2
 }
@@ -721,6 +735,126 @@ case "$TIER" in
                     DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
                     EXTRA_DEFS=(-D BENCH_DOCO -D "${DOCO_VINFO% *}")
                     PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED AND FREE TO TURN, HANDS: NONE -- the single-motor release demo on the Doco bench's one motor (the P16 board, a Rev A -- THIS DEMO BUILD DOES NOT CHECK THE BOARD, the Doco harness will). THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so make sure the pack is that voltage. The start checks pulse the motor leads with nothing able to move, then the wiring check turns the motor a little forward and back, then it runs forward and in reverse at full power for 15 seconds each. About 1 minute"
+                    ;;
+    # single-hallmap-<voltage> (task 3679 phase 1, test_bench_single.spin2 SRC_REV 1) -- the Doco measurement harness's hall-map
+    #  leg (L-hallmap) on the Doco bench: built under -D BENCH_CFG -D BENCH_DOCO -D <the voltage's symbol> (doco_voltage above, as
+    #  doco-demo-<voltage> is), -D BENCH_QUIET for the motion harness's reason (nothing prints from the front cog), and the leg's
+    #  part symbol -D SINGLE_PART_HALLMAP. It takes a clock NAME too, as every test_bench_single tier does (the check below).
+    #  Phase 2 adds the other legs' part symbols and a tier that chains every hands-off leg in one command (doctrine P1).
+    single-hallmap-v7p4|single-hallmap-v11p1|single-hallmap-v12p0|single-hallmap-v14p8|single-hallmap-v18p5|single-hallmap-v22p2|single-hallmap-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-hallmap-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_HALLMAP)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness's hall map. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move; then the motor CRAWLS under a 2 A test current limit, in EIGHT SHORT DRIVES of two shaft revolutions each, stopping between them: two each way at 60 rpm, then two each way at 240 rpm. It stops itself on an over-current, a fault, a stall or an encoder that disagrees with the halls. About 1 minute"
+                    ;;
+    # single-<leg>-<voltage> and single-measure-<voltage> (task 3679 phase 2a, test_bench_single.spin2 SRC_REV 2) -- the Doco
+    #  harness's hands-off measuring legs, each alone (one -D SINGLE_PART_* symbol) or all chained in one run (single-measure:
+    #  the hall map, then every 2a leg, in the order the harness runs them -- doctrine P1, a command boundary only where he
+    #  must act, and in these he never does). Built as single-hallmap-<voltage> is (-D BENCH_QUIET -D BENCH_DOCO -D <the
+    #  voltage's symbol>); each takes a clock NAME. Every one's PRECONDITION opens with the same Doco-bench words.
+    single-mininc-v7p4|single-mininc-v11p1|single-mininc-v12p0|single-mininc-v14p8|single-mininc-v18p5|single-mininc-v22p2|single-mininc-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-mininc-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_MININC)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap; a fault inside a leg is recorded and cleared, and the leg goes on. THE LEG: the slowest steady speed, each way. From rest the motor CRAWLS at a falling speed -- 60 rpm, then slower, down to under 2 rpm -- for 2 to 10 seconds a step, stopping between them, until one step does not turn smoothly; then the other way. Under a 2 A test current limit. About 2 minutes"
+                    ;;
+    single-ladder-v7p4|single-ladder-v11p1|single-ladder-v12p0|single-ladder-v14p8|single-ladder-v18p5|single-ladder-v22p2|single-ladder-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-ladder-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_LADDER)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap; a fault inside a leg is recorded and cleared, and the leg goes on. THE LEG: the speed ladder, each way. The motor SPINS UP to a quarter, a half, three quarters and all of this voltage's top speed (and, from 12 V up, two steps more, never past about 2,800 rpm), each time from rest and back to rest, holding each speed about 6 seconds; then climbs the same steps one after another without stopping, and stops. Up to about 3,600 rpm (11.1 V). Under a 2 A test current limit (3 A at 11.1 V). About 5 minutes"
+                    ;;
+    single-ramp-v7p4|single-ramp-v11p1|single-ramp-v12p0|single-ramp-v14p8|single-ramp-v18p5|single-ramp-v22p2|single-ramp-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-ramp-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_RAMP)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap; a fault inside a leg is recorded and cleared, and the leg goes on. THE LEG: the built-in speed-up and stop. From rest the motor SPINS UP to this voltage's top speed (4 to 9 seconds), holds it 2 seconds, and slows to a stop (3 to 6 seconds); one way, then the other; then at the top it REVERSES STRAIGHT THROUGH ZERO to the top the other way, and back again, and stops. Under a 2 A test current limit. About 1.5 minutes"
+                    ;;
+    single-stops-v7p4|single-stops-v11p1|single-stops-v12p0|single-stops-v14p8|single-stops-v18p5|single-stops-v22p2|single-stops-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-stops-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_STOPS)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap; a fault inside a leg is recorded and cleared, and the leg goes on. THE LEG: the stop limits. Twelve drives, each stopping itself on a limit set before it starts: at this voltage's top speed for 300 and 400 shaft turns and for 15 seconds, and at a crawl for 1 and 5 turns and for 3 seconds; one way, then the other. Under a 2 A test current limit. About 2.5 minutes"
+                    ;;
+    # single-coast-<voltage>, single-offscan-<voltage>, single-passprobe-<voltage> (task 3679 phase 2b, test_bench_single.spin2
+    #  SRC_REV 3) -- the coast-down (L1) and the offset scan (L3) drive only at the 12 V and 24 V rows the analysis names, so
+    #  their tiers exist at v12p0 and v24p0 only (the harness prints B1-LEGSKIP and drives nothing at another row, as it does
+    #  inside single-measure); the pass-period probe (plan sec 1.4) at every voltage, and like every Doco tier it takes a clock
+    #  NAME: the D1 sheet runs it once per clock name at one voltage, and a pack carries each as <tier>@<clock>.bin.
+    single-coast-v12p0|single-coast-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-coast-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_COAST)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap. THE LEG: the coast-down. The motor SPINS UP to a quarter, a half and all of this voltage's top speed, each way; at each speed, after a few seconds, the program CUTS THE DRIVE ON PURPOSE (a fault it makes itself) and the motor COASTS FREELY TO A STOP, in under a second; then it is reset and the next speed starts from rest. Six coasts. Up to about 2,600 rpm. Under a 2 A test current limit. About 1.5 minutes"
+                    ;;
+    single-offscan-v12p0|single-offscan-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-offscan-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_OFFSCAN)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap; a fault inside the leg is recorded and cleared, and the leg goes on. THE LEG: the motor timing scan. At a quarter, a half and all of this voltage's top speed, each way, the motor runs while the program shifts its timing a little at a time, holding each setting about 6 seconds; the motor may sound rougher or hunt at some settings, which is what is being measured. Twelve runs from rest, each about 50 seconds. Up to about 2,600 rpm. Under a 2 A test current limit. The motor's own timing is put back at the end, whatever happens. About 11 minutes"
+                    ;;
+    single-passprobe-v7p4|single-passprobe-v11p1|single-passprobe-v12p0|single-passprobe-v14p8|single-passprobe-v18p5|single-passprobe-v22p2|single-passprobe-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-passprobe-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_PASSPROBE)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap. THE LEG: the drive's timing at this build's clock. The motor runs at half of this voltage's top speed for 10 seconds one way, stops, then 10 seconds the other way, and stops. Under a 2 A test current limit. Under a minute"
+                    ;;
+    single-measure-v7p4|single-measure-v11p1|single-measure-v12p0|single-measure-v14p8|single-measure-v18p5|single-measure-v22p2|single-measure-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-measure-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_HALLMAP -D SINGLE_PART_MININC -D SINGLE_PART_LADDER -D SINGLE_PART_RAMP -D SINGLE_PART_STOPS -D SINGLE_PART_COAST -D SINGLE_PART_OFFSCAN -D SINGLE_PART_PASSPROBE)
+                    # the coast-down and the timing scan drive only at 12 V and 24 V: the run is ~25 minutes there, ~13 elsewhere
+                    DOCO_MEASURE_TIME="About 13 minutes"
+                    case "$DOCO_VNAME" in v12p0|v24p0) DOCO_MEASURE_TIME="About 25 minutes: at this voltage it also coasts the motor down six times (it CUTS THE DRIVE ON PURPOSE and the motor coasts freely to a stop) and runs the motor timing scan (the motor may sound rougher or hunt at some settings; its own timing is put back at the end)" ;; esac
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap; a fault inside a leg is recorded and cleared, and the leg goes on. EVERY HANDS-OFF LEG, ONE AFTER ANOTHER, NOTHING BETWEEN THEM FOR YOU TO DO: the hall map (eight short crawls), the slowest steady speed (crawls, each way), the speed ladder (spin-ups to a quarter, half, three quarters and all of the top speed and, from 12 V up, two steps more, each held about 6 seconds, each way), the built-in speed-up and stop (each way, then a reversal straight through zero at the top), the stop limits (twelve drives that stop themselves), and the drive's timing (half speed, 10 seconds each way). Up to about 3,600 rpm (11.1 V). Under a 2 A test current limit (3 A for the ladder at 11.1 V). ${DOCO_MEASURE_TIME}"
+                    ;;
+    # single-handload-<voltage>, single-heldpush-<voltage>, single-sag-<voltage>, single-pinch-<voltage> (task 3679 phase 2c,
+    #  test_bench_single.spin2 SRC_REV 4) -- the Doco harness's ATTENDED legs, each its own tier and never in single-measure (a
+    #  command boundary goes where Stephen acts, doctrine overlay P1). Built as the other Doco tiers are, with the leg's own
+    #  -D SINGLE_PART_* symbol, which also builds the operator panel sgpanel (src/sg_*.bmp, tools/gen_single_assets.py; the pack
+    #  reads their names from the binary and carries them beside it). Only the voltages the analysis names
+    #  (DOCs/analyses/DOCO-DESK-MODEL-2026-10-03.md sec 8): L5 and L6 at 12 V and 24 V, L4 at 22.2 V and 18.5 V, L2b at 18.5 V.
+    #  L4 and L2b are OPTIONAL (arbiter decision D4): the run sheet asks Stephen before they are relied on.
+    single-handload-v12p0|single-handload-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-handload-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_HANDLOAD)
+                    DOCO_HAND_STEPS="TWO STEPS: the 4 A limit, then the 2 A limit -- never the default limits at this voltage"
+                    case "$DOCO_VNAME" in v12p0) DOCO_HAND_STEPS="THREE STEPS: the 4 A limit, the 2 A limit, then -- only if the charge left in the test allows it, and the panel says when it does not -- the default limits, briefly: a much stronger push (about 120 mN.m) and a hum for about a second" ;; esac
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN -- ATTENDED AT THE PC: A PANEL OPENS AND YOU CLICK ITS BUTTONS (NO KEYS ARE READ). THE HAND LOAD. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. ${DOCO_HAND_STEPS}. EACH STEP: the panel says what comes and what you should feel; nothing turns until you click START STEP. Then the shaft turns slowly by itself (about 200 rpm); when the green YOUR TURN banner shows, slow the shaft by hand until it stops, and hold it still. About a second after it stops, the drive stops itself and the panel says so; let go. A steady push of about 60 to 80 mN.m at the test limits. STOP MOTOR on the panel stops the shaft at any time. The result stays on the panel until you click NEXT STEP or REDO STEP. It stops itself on an over-current, a charge it did not expect or its time cap. About 5 minutes, at your pace"
+                    ;;
+    single-heldpush-v12p0|single-heldpush-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-heldpush-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_HELDPUSH)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT -- ATTENDED AT THE PC: A PANEL OPENS AND YOU CLICK ITS BUTTONS (NO KEYS ARE READ). THE HELD STOP: THE MOTOR NEVER TURNS BY ITSELF IN THIS TEST. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. TWO STEPS: after you click START STEP the stopped motor holds the shaft where it is; when the green YOUR TURN banner shows, turn the shaft slowly by hand, about a twelfth of a turn, until the hold gives way, then let go -- step 1 either way, step 2 the other way. You should feel almost nothing for up to 15 degrees, then a light push back (about 20 to 45 mN.m) that firms up in a quarter second, then it gives way and drags. The panel sees you let go and shows the result until you click NEXT STEP or REDO STEP. About 2 minutes, at your pace"
+                    ;;
+    single-sag-v22p2|single-sag-v18p5)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-sag-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_SAG)
+                    DOCO_SAG_WHAT="at 18.5 V the speed should slip away near 8 V with no fault"
+                    case "$DOCO_VNAME" in v22p2) DOCO_SAG_WHAT="at 22.2 V the drive should FAULT and stop by itself somewhere between about 18 V and 10 V, without slowing first (it runs this voltage's full shipped top, 3,140 rpm, on purpose)" ;; esac
+                    PRECONDITION="OPTIONAL -- RUN IT ONLY IF YOU AGREED TO IT ON THE RUN SHEET. THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF THE SHAFT -- ATTENDED AT THE PC AND THE SUPPLY: A PANEL OPENS AND YOU CLICK ITS BUTTONS (NO KEYS ARE READ). THE SUPPLY SAG. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); set the supply to that voltage before the run. ONE STEP: after START STEP the motor speeds up to this voltage's top speed; when the green YOUR TURN banner shows, turn the bench supply down slowly, about 1 V a second, until the panel says the speed is lost; ${DOCO_SAG_WHAT}. The program then stops the motor, and the panel asks you to turn the supply back up to ${DOCO_VINFO#* } mV and click DONE. STOP MOTOR on the panel stops it at any time. About 1 minute"
+                    ;;
+    single-pinch-v18p5)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-pinch-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_PINCH)
+                    PRECONDITION="OPTIONAL -- RUN IT ONLY IF YOU AGREED TO IT ON THE RUN SHEET. THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, THE OTHER SHAFT END BARE AND REACHABLE -- ATTENDED AT THE PC: A PANEL OPENS AND YOU CLICK ITS BUTTONS (NO KEYS ARE READ). THE CLOTH PINCH. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); set the supply to that voltage before the run. ONE STEP: after START STEP the motor speeds up to this voltage's top speed (about 2,660 rpm) and runs 2 seconds untouched; when the green YOUR TURN banner shows, pinch the bare shaft end lightly with a cloth for 1 to 2 seconds, let go, and click DONE. You should feel a light drag and see no slowing; the panel shows the current rise and fall. STOP MOTOR on the panel stops it at any time. Under a minute"
                     ;;
     demo-rc)        BENCH_FILE="demo_dual_motor_rc.spin2"
                     PRECONDITION="ATTENDED -- YOU DRIVE IT WITH THE FLYSKY TRANSMITTER: the SBUS receiver wired to P58 and bound, the transmitter ON with swD (the kill switch) in its run position BEFORE the load. The two-wheel RC demo, as shipped: start checks, the wiring check (each wheel turns a little one way and back), then the sticks drive the platform and every event and stop is printed as it happens. Drive forward, reverse and both turns at low and full stick; flip swD to e-stop, then back to re-arm. It runs until you close the terminal. About 3 minutes, at your pace"

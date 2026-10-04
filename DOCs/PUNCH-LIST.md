@@ -1565,6 +1565,18 @@ could see a timeout where the derivation promises an answer. **To close:** re-de
 in it, and either show it cannot reach 21 or raise the timeout (or the derivation) so it covers it; no bench run is
 needed to decide it.
 
+### PL-198 -- `moveShaftToAngle()` has had no effect since DRIVER_REV 38
+
+> **Status (2026-10-04): OPEN, a finding.** Found during task 3679 (looking for a fixed-field test path for the Doco's
+> hall-zero reference).
+
+`moveShaftToAngle()` (`src/isp_bldc_motor.spin2`, *TESTING USE*) writes `targetAngle`, but the PASM block that read it
+(*TEST-EXERCISER SUPPORT CODE*, inside the drive pass's request handling) is commented out, and its own note says no path
+reaches it since DRIVER_REV 38. So the method returns `NO_ERROR` and moves nothing; a second call returns `ERR_BUSY`
+forever, because nothing clears `targetAngle`. **To close:** either remove the method and the dead block (and the
+launch long's comment), or re-enable a fixed-field path deliberately (cog/LUT space is near full, overlay P13); the
+Doco's hall zero is referenced to the offset scan's current minimum instead (task 3679).
+
 ---
 
 ## Removed from this list

@@ -10,7 +10,7 @@
 ''   Authors.... Stephen M Moraco
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... Oct 2026
-''   Updated.... 3 Oct 2026
+''   Updated.... 4 Oct 2026 -- task 3679 phase 2a: takeEdge(), the non-printing drain step, with emitHallEdges() on it
 ''
 ''   Facts from p2kb, by key:
 ''     p2kbArchSmartPin01011QuadratureEncoder  mode %01011 totals all four edges per line, signed 32-bit, in Z;
@@ -191,34 +191,34 @@ PUB edgesLost() : nLost
 
     nLost := edgeLost
 
-PUB emitHallEdges(nMaxRecords) : nEmitted | nHead, nPending, pSlot, nEnc, nClocks, nCode, nPrev, nDtUs, nClocksPerUs
-'' Drain the capture ring and emit one BE-HALL record per captured hall edge, oldest first, at most
-'' nMaxRecords: the hall map (the encoder count at each hall edge). Fields, all numeric: seq (edge number,
-'' from 1), code (the hall code after the edge), prev (the code before it), enc (the count AT the edge),
-'' dtUs (microseconds since the previous edge, 0 for the first), lost (edges lost so far). The longest
-'' record is 87 bytes. A drain that finds more than RING_ENTRIES pending counts the overrun in edgesLost().
+PUB takeEdge() : bTaken, nEnc, nCode, nPrev, nDtUs | nHead, nPending, pSlot, nClocks
+'' Take the oldest captured hall edge from the ring, printing nothing: the drain step emitHallEdges() is built on
+'' (task 3679 phase 2a), so a harness can read the PASM-latched count AT each edge while the motor turns and emit
+'' its own records at rest. An edge the ring overwrote, or one lapped while it was read (torn), is counted in
+'' edgesLost() and skipped, never returned.
 ''
-'' @param nMaxRecords - the most records to emit this call
-'' @returns nEmitted - records emitted
+'' @returns bTaken - TRUE when an edge was taken; FALSE (every other result 0) when none is waiting
+'' @returns nEnc - the encoder count latched AT the edge
+'' @returns nCode - the hall code after the edge
+'' @returns nPrev - the hall code before the edge
+'' @returns nDtUs - microseconds since the previous taken edge (0 for the first since start())
 
 ' Local Variables:
 ' @local nHead - edges captured, read from the cog's count
 ' @local nPending - edges waiting in the ring
 ' @local pSlot - hub address of the ring entry being read
-' @local nEnc - the entry's encoder count
 ' @local nClocks - the entry's getct() value
-' @local nCode - the entry's hall code after the edge
-' @local nPrev - the entry's hall code before the edge
-' @local nDtUs - microseconds since the previous drained edge
-' @local nClocksPerUs - system clocks in one microsecond
 
-    nEmitted := 0
-    nClocksPerUs := clkfreq / CLOCKS_PER_US_DIV
-    repeat while nEmitted < nMaxRecords
+    bTaken := FALSE
+    nEnc := 0
+    nCode := 0
+    nPrev := 0
+    nDtUs := 0
+    repeat
         nHead := parRingHead
         nPending := nHead - ringTail
         if nPending <= 0
-            quit
+            quit                                            ' nothing waiting
         if nPending > RING_ENTRIES                          ' the cog lapped us: the oldest are gone
             edgeLost += nPending - RING_ENTRIES
             ringTail := nHead - RING_ENTRIES
@@ -231,24 +231,54 @@ PUB emitHallEdges(nMaxRecords) : nEmitted | nHead, nPending, pSlot, nEnc, nClock
 
         if parRingHead - ringTail > RING_ENTRIES            ' lapped while reading this entry: it may be torn
             edgeLost += 1
-            ringTail += 1
+            ringTail += 1                                   ' skipped: try the next one
         else
             ringTail += 1
-            nDtUs := 0
             if bHaveLastEdge
-                nDtUs := (nClocks - lastEdgeClocks) +/ nClocksPerUs
+                nDtUs := (nClocks - lastEdgeClocks) +/ (clkfreq / CLOCKS_PER_US_DIV)
             lastEdgeClocks := nClocks
             bHaveLastEdge := TRUE
+            bTaken := TRUE
+            quit
 
-            log.begin(@"BE-HALL")
-            log.numField(@"seq", ringTail, log.LIM_SMALL)
-            log.numField(@"code", nCode, log.LIM_TINY)
-            log.numField(@"prev", nPrev, log.LIM_TINY)
-            log.numField(@"enc", nEnc, log.LIM_BIG)
-            log.numField(@"dtUs", nDtUs, log.LIM_BIG)
-            log.numField(@"lost", edgeLost, log.LIM_SMALL)
-            emitRecord()
-            nEmitted += 1
+    if bTaken == FALSE                                      ' a skipped torn entry left its values behind: return none
+        nEnc := 0
+        nCode := 0
+        nPrev := 0
+        nDtUs := 0
+
+PUB emitHallEdges(nMaxRecords) : nEmitted | bTaken, nEnc, nCode, nPrev, nDtUs
+'' Drain the capture ring and emit one BE-HALL record per captured hall edge, oldest first, at most
+'' nMaxRecords: the hall map (the encoder count at each hall edge). Fields, all numeric: seq (edge number,
+'' from 1), code (the hall code after the edge), prev (the code before it), enc (the count AT the edge),
+'' dtUs (microseconds since the previous edge, 0 for the first), lost (edges lost so far). The longest
+'' record is 87 bytes. A drain that finds more than RING_ENTRIES pending counts the overrun in edgesLost().
+'' Built on takeEdge() (task 3679 phase 2a): the same drain, with a record per edge.
+''
+'' @param nMaxRecords - the most records to emit this call
+'' @returns nEmitted - records emitted
+
+' Local Variables:
+' @local bTaken - T/F where T means takeEdge() returned an edge
+' @local nEnc - the edge's encoder count
+' @local nCode - the edge's hall code after the edge
+' @local nPrev - the edge's hall code before the edge
+' @local nDtUs - microseconds since the previous drained edge
+
+    nEmitted := 0
+    repeat while nEmitted < nMaxRecords
+        bTaken, nEnc, nCode, nPrev, nDtUs := takeEdge()
+        if bTaken == FALSE
+            quit
+        log.begin(@"BE-HALL")
+        log.numField(@"seq", ringTail, log.LIM_SMALL)
+        log.numField(@"code", nCode, log.LIM_TINY)
+        log.numField(@"prev", nPrev, log.LIM_TINY)
+        log.numField(@"enc", nEnc, log.LIM_BIG)
+        log.numField(@"dtUs", nDtUs, log.LIM_BIG)
+        log.numField(@"lost", edgeLost, log.LIM_SMALL)
+        emitRecord()
+        nEmitted += 1
 
 PUB emitSample(nTimeMs, nHallPos, eDriveState, nDutyPct, nCurrentMa)
 '' Emit one BE-SAMP record on the instrument's timebase: the encoder count (read first, here), then the
