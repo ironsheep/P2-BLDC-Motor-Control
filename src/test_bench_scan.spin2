@@ -88,6 +88,8 @@
 ''   Updated.... 19 Sep 2026 -- task 3574 (SRC_REV 17): records are assembled by isp_bench_log (benchLog on
 ''               cog 0, wdLog on the watchdog cog) instead of this file's two private copies (PL-53) -- the
 ''               same algorithm, so every record is byte-identical. No record changes.
+''   Updated.... 04 Oct 2026 -- task 3695 (SRC_REV 22): every counted loop whose bound can be zero is REPEAT n WITH idx;
+''               REPEAT idx FROM 0 TO n - 1 ran twice at n = 0 (0, then -1). All its bounds were guarded, so no record changes.
 ''
 '' =================================================================================================
 
@@ -187,7 +189,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 21                                      ' hand-bumped whenever this file changes (21: BS-BANNER prints the commit, PL-68)
+    SRC_REV     = 22                                      ' hand-bumped whenever this file changes (22: counted loops are REPEAT n WITH idx, task 3695; 21: BS-BANNER prints the commit, PL-68)
     FMT_VERSION = 13                                        ' BS- record-format version (13: BS-BANNER gains commit after src_rev)
 
 ' fmt 12 changes (task 3597; no record's field names, order or content change):
@@ -2606,11 +2608,11 @@ PRI batchStandardError(nBatches) : seX10, bSeValid | batchIdx, meanF, devF, sumS
     bSeValid := FALSE
     if nBatches >= MIN_BATCHES_FOR_SE
         meanF := 0.0
-        repeat batchIdx from 0 to nBatches - 1
+        repeat nBatches with batchIdx
             meanF := meanF +. batchMeanF[batchIdx]
         meanF := meanF /. float(nBatches)
         sumSqF := 0.0
-        repeat batchIdx from 0 to nBatches - 1
+        repeat nBatches with batchIdx
             devF := batchMeanF[batchIdx] -. meanF
             sumSqF := sumSqF +. (devF *. devF)
         varF := sumSqF /. (float(nBatches - 1) *. float(nBatches))
@@ -3051,7 +3053,7 @@ PRI storeLegOwnZero(slotIdx) | ptIdx, nMissing, nValid
     nMissing := 0
     nValid := 0
     if legCount > 0
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             beat(CP_LOOP_OWNZERO)
             if isValidIdx(ptIdx)
                 nValid += 1
@@ -3229,7 +3231,7 @@ PRI updateLegLow() | ptIdx
 
     legLowIdx := -1
     if legCount > 0
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             if ((legPhase[ptIdx] == PH_REF_START) or (legPhase[ptIdx] == PH_COARSE)) and isValidIdx(ptIdx)
                 if legLowIdx < 0
                     legLowIdx := ptIdx
@@ -3249,7 +3251,7 @@ PRI updateLegLowConfirm() | ptIdx
 
     legLowIdx := -1
     if legCount > 0
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             if ((legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_CLIFF) or (legPhase[ptIdx] == PH_EXTEND)) and isValidIdx(ptIdx)
                 if legLowIdx < 0
                     legLowIdx := ptIdx
@@ -3286,7 +3288,7 @@ PRI bEvaluateConfirmBracket() : bBracketed | ptIdx, bBelowOk, bAboveOk, risePctU
     risePctUp := bLegLimitUpFault ? FAULT_RISE_PCT : RISE_PCT
     risePctDown := bLegLimitDownFault ? FAULT_RISE_PCT : RISE_PCT
     if (legLowIdx >= 0) and (legCount > 0)
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             if (legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_CLIFF) or (legPhase[ptIdx] == PH_EXTEND)
                 if legDeg[ptIdx] < legDeg[legLowIdx]
                     if isHighIdxFor(ptIdx, risePctDown)
@@ -3313,7 +3315,7 @@ PRI legMeasuredFloor() : floorX10, floorDeg, bFound | ptIdx
     floorDeg := 0
     bFound := FALSE
     if legCount > 0
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             if isValidIdx(ptIdx)
                 if (bFound == FALSE) or (legNetX10[ptIdx] < floorX10)
                     floorX10 := legNetX10[ptIdx]
@@ -3331,7 +3333,7 @@ PRI beyondLowCount(walkDir, defSwept) : nBeyond | ptIdx
 
     nBeyond := 0
     if (legLowIdx >= 0) and (legCount > 0)
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             if legPhase[ptIdx] == PH_COARSE
                 if ((walkDir * (legDeg[ptIdx] - defSwept)) > 0) and ((walkDir * (legDeg[ptIdx] - legDeg[legLowIdx])) > 0)
                     if isValidIdx(ptIdx) or (legResult[ptIdx] == PR_ABORT_I)
@@ -3405,7 +3407,7 @@ PRI droopSeqRun(pSeq, nLen) : stopAt, stopKind | idx, walkStop, sideConsec, droo
     stopKind := WS_NONE
     sideConsec := 0
     droopConsec := 0
-    repeat idx from 0 to nLen - 1
+    repeat nLen with idx    ' counted form (task 3695): an empty sequence runs 0 times, not twice
         code := BYTE[pSeq][idx]
         ' DSQ_BOTH feeds BOTH predicates at once (Visit 7c C-3) -- that is the whole point of it.
         walkStop, sideConsec, droopConsec := stepStopDecision((code == DSQ_FAULT) or (code == DSQ_BOTH), ...
@@ -3679,11 +3681,11 @@ PRI computeLegCliff(defSwept, signIdx) | dir, ptIdx, dist, goodDist, faultDist
     goodDist := 0
     faultDist := -1
     if legCount > 0
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             dist := (legDeg[ptIdx] - defSwept) * dir
             if (dist >= 0) and isValidIdx(ptIdx)
                 goodDist := goodDist #> dist
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             dist := (legDeg[ptIdx] - defSwept) * dir
             if (dist > goodDist) and isFaultLikeIdx(ptIdx)
                 if (faultDist < 0) or (dist < faultDist)
@@ -3722,7 +3724,7 @@ PRI bEvaluateBracket(side, speedIdx, signIdx, stopUp, stopDown) : bBracketed | p
     risePctDown := (stopDown == WS_FAULTS) ? FAULT_RISE_PCT : RISE_PCT
     updateLegLow()
     if (legLowIdx >= 0) and (legCount > 0)
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             if (legPhase[ptIdx] == PH_REF_START) or (legPhase[ptIdx] == PH_COARSE) or (legPhase[ptIdx] == PH_CLIFF)
                 if legDeg[ptIdx] < legDeg[legLowIdx]
                     if isHighIdxFor(ptIdx, risePctDown)
@@ -3782,7 +3784,7 @@ PRI legLimitForDir(defSwept, dir) : limitDeg, bFromFault | ptIdx, dist, faultDis
 
     faultDist := -1
     if legCount > 0
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             dist := (legDeg[ptIdx] - defSwept) * dir
             if (dist > 0) and isFaultLikeIdx(ptIdx)
                 if (faultDist < 0) or (dist < faultDist)
@@ -3790,7 +3792,7 @@ PRI legLimitForDir(defSwept, dir) : limitDeg, bFromFault | ptIdx, dist, faultDis
     bFromFault := (faultDist >= 0)
     if bFromFault
         goodDist := 0
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             dist := (legDeg[ptIdx] - defSwept) * dir
             if (dist >= 0) and (dist < faultDist) and isValidIdx(ptIdx)
                 goodDist := goodDist #> dist
@@ -3868,7 +3870,7 @@ PRI runFinePoints(side, speedIdx, signIdx, centreDeg, defSwept, pointLimitMv) : 
         pOrder := @confirmOrder
         orderCount := CONFIRM_ORDER_COUNT
     winTicks := winTicksFor(speedIdx)
-    repeat orderIdx from 0 to orderCount - 1
+    repeat orderCount with orderIdx    ' counted form (task 3695)
         if abortReason <> AR_NONE
             quit
         if legConsecFaults >= LEG_FAULT_CAP
@@ -4036,7 +4038,7 @@ PRI fitLeg(centreDeg, minPts, speedIdx) | ptIdx, nPts, seCnt, uF, yF, u2F, sumOn
     fitSpanLo := POSX
     fitSpanHi := NEGX
     if legCount > 0
-        repeat ptIdx from 0 to legCount - 1
+        repeat legCount with ptIdx
             bPtEligible := (legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_EXTEND) or ...
                 (bFitAdmitsCliff(speedIdx) and (legPhase[ptIdx] == PH_CLIFF))
             if bPtEligible and isValidIdx(ptIdx)
@@ -4080,7 +4082,7 @@ PRI fitLeg(centreDeg, minPts, speedIdx) | ptIdx, nPts, seCnt, uF, yF, u2F, sumOn
                 fitMinF := float(centreDeg) +. (uStarF *. FIT_DEG_SCALE)
                 fitMinMvF := levelF -. ((slopeF *. slopeF) /. (4.0 *. curvF))
                 rssF := 0.0
-                repeat ptIdx from 0 to legCount - 1
+                repeat legCount with ptIdx
                     bPtEligible := (legPhase[ptIdx] == PH_FINE) or (legPhase[ptIdx] == PH_EXTEND) or ...
                         (bFitAdmitsCliff(speedIdx) and (legPhase[ptIdx] == PH_CLIFF))
                     if bPtEligible and isValidIdx(ptIdx)
@@ -4124,9 +4126,9 @@ PRI medianSeX10(seCnt) : medX10 | outerIdx, innerIdx, heldX10
 
     medX10 := 0
     if seCnt > 1
-        repeat outerIdx from 1 to seCnt - 1
-            heldX10 := seScratch[outerIdx]
-            innerIdx := outerIdx - 1
+        repeat seCnt - 1 with outerIdx    ' counted form (task 3695): outerIdx counts 0..seCnt-2, the entry inserted is outerIdx + 1
+            heldX10 := seScratch[outerIdx + 1]
+            innerIdx := outerIdx
             repeat while innerIdx >= 0
                 if seScratch[innerIdx] <= heldX10
                     quit

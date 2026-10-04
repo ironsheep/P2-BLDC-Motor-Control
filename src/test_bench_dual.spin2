@@ -825,6 +825,11 @@
 ''               motor object's nominal DRIVE_PASS_US (expectedPassUs()). A clock that is none of 200 / 270 / 300 carries cells ending
 ''               -KANY and is judged (it was skipped). BM-CLOCK gains pass_us (FMT 54; about 175 bytes worst case). windowStats() sums its
 ''               getct() span in 1 s slices, so a window longer than the 2^31-tick difference (LIMLOW's 7.5 s at 350 MHz) reads true.
+''               04 Oct 2026 -- SRC_REV=84 (no format change): task 3695. Every counted loop whose bound can be zero is REPEAT n WITH
+''               idx (FROM 0 TO n - 1 runs twice at n = 0, the defect task 3693 found in the Doco harness): the ladder's order loop,
+''               the BM-OUT and operator-queue row loops, the guard / pair / crossing loops and the idle-sample scan. The two
+''               transition-half and window-half loops of the rgCmdStart/rgWinStart pass gain a last test that the window starts
+''               inside the ring (clipped to the ring, FROM startJ TO endJ would have counted down). No record, token or footprint change.
 ''
 '' =================================================================================================
 
@@ -942,7 +947,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 83                              ' hand-bumped whenever this file changes
+    SRC_REV     = 84                              ' hand-bumped whenever this file changes
     FMT_VERSION = 54                                   ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -6081,7 +6086,7 @@ PRI lowStats(slotIdx) | sampleIdx, startJ, endJ, refPos, nowPos, lastEdgeT, gapM
     refPos := 0
     lastEdgeT := 0
     ' the transition half: command mark to the window, looking for the first edge
-    if (rgCmdStart >= drLostHead) and (rgWinStart > rgCmdStart) and (drStored > 0)
+    if (rgCmdStart >= drLostHead) and (rgWinStart > rgCmdStart) and (drStored > 0) and ((rgCmdStart - drLostHead) < drStored)   ' task 3695: the last test keeps startJ <= endJ (clipped to the ring, a FROM/TO would count down)
         startJ := rgCmdStart - drLostHead
         endJ := (rgWinStart - 1 - drLostHead) <# (drStored - 1)
         repeat sampleIdx from startJ to endJ
@@ -6098,7 +6103,7 @@ PRI lowStats(slotIdx) | sampleIdx, startJ, endJ, refPos, nowPos, lastEdgeT, gapM
     ' the window half: every edge, and the spread of the intervals between them
     refPos := 0
     lastEdgeT := 0
-    if (rgWinStart >= drLostHead) and (rgWinEnd > rgWinStart) and (drStored > 0)
+    if (rgWinStart >= drLostHead) and (rgWinEnd > rgWinStart) and (drStored > 0) and ((rgWinStart - drLostHead) < drStored)   ' task 3695: as above, startJ <= endJ
         startJ := rgWinStart - drLostHead
         endJ := (rgWinEnd - 1 - drLostHead) <# (drStored - 1)
         repeat sampleIdx from startJ to endJ
@@ -6338,7 +6343,7 @@ PRI ladderSign(seg, side, signMul, pRungTable, rungCount) | orderIdx, rungIdx, m
         whyCode := WHY_ABORTED
     elseif bWheelStart(seg, side) == FALSE
         whyCode := stWhy
-    repeat orderIdx from 0 to rungCount - 1
+    repeat rungCount with orderIdx                          ' counted form (task 3695): an empty table runs 0 times, not twice
         beat(CP_LOOP_POLL)
         rungIdx := LONG[pRungTable][orderIdx]
         motorIncre := ladderIncre[rungIdx] * signMul
@@ -7157,7 +7162,7 @@ PRI faultApiTrial(sid, skipWhy) | tid, whyCode, markMs, rowIdx, recoverWhy, safe
                 whyCode := recoverWhy
     emitFltApi(tid, sid, whyCode)
     if outCount > 0
-        repeat rowIdx from 0 to outCount - 1
+        repeat outCount with rowIdx
             beat(CP_LOOP_DRAIN)
             emitOut(tid, sid, rowIdx)
     segItems := (segItems + 1) <# LIM_SMALL
@@ -7320,7 +7325,7 @@ PRI fltApiVerdict() : whyCode | rowIdx, faultIdx, lastIdx, bStatFaulted, bSigHel
     faultIdx := -1
     bStatFaulted := FALSE
     if outCount > 0
-        repeat rowIdx from 0 to outCount - 1
+        repeat outCount with rowIdx
             beat(CP_LOOP_DRAIN)
             if outBuf[(rowIdx * OUT_LONGS) + OUT_FAULTED] <> FALSE
                 faultIdx := rowIdx
@@ -9073,7 +9078,7 @@ PRI outsideRun() : whyCode | tid, sid, safeEvent, bReached, rowIdx
     else
         traceEmptyEnd(tid, cpEnd, (cpWhy == WHY_NONE) ? WHY_INST_NOACK : cpWhy)
     if outCount > 0
-        repeat rowIdx from 0 to outCount - 1
+        repeat outCount with rowIdx
             beat(CP_LOOP_DRAIN)
             emitOut(tid, sid, rowIdx)
     segItems := (segItems + 1) <# LIM_SMALL
@@ -9532,7 +9537,7 @@ PRI operFlush() | rowIdx, rowBase
 ' @local rowBase - first long of the row
 
     if operQueueCount > 0
-        repeat rowIdx from 0 to operQueueCount - 1
+        repeat operQueueCount with rowIdx
             beat(CP_LOOP_OPER)
             rowBase := rowIdx * OQ_LONGS
             emitOper(operQueue[rowBase + OQ_PROMPT], operQueue[rowBase + OQ_EVENT], operQueue[rowBase + OQ_ANSWER], operQueue[rowBase + OQ_INPUT], operQueue[rowBase + OQ_WAIT], operQueue[rowBase + OQ_WHY])
@@ -14896,8 +14901,8 @@ PRI skEvents(bWalk) | bClean, missedL, illegalL, missedR, illegalR, wantMask, sl
             beat(CP_LIB_STEER_QUERY)                        ' SRC_REV 60 (DRIVER_REV 40): the guard in force on the left
             nGuardMv, _ := steering.testGetWalkGuardMv()    '  wheel's own board, never Rev B's WALK_I_LIMIT_MV (5 mV on Rev A)
             beat(CP_LIB_STEER_QUERY)
-            if bOk                                          ' a Spin2 repeat from a higher bound counts down
-                repeat seqIdx from 0 to nGuard - 1
+            if bOk                                          ' (nGuard >= 1 here; the loop is counted since task 3695)
+                repeat nGuard with seqIdx
                     bOk &= (evSeqAt(SLOT_LEFT, EVQ_GUARD, seqIdx) >= nGuardMv)
             skrNote(SKR_GRD, bOk)
             skrNote(SKR_NOGRD, bClean and (evCount(SLOT_RIGHT, wheelL.EV_WALK_GUARD) == 0))
@@ -23667,8 +23672,8 @@ PRI alignEmitLeg() | crossIdx
         ' NOTE -- same load-bearing guard as alignSectorClose(): with agCross 0 the range `from 0 to -1`
         '  counts DOWN and emits two records from outside the live data. A leg with no crossings is an
         '  ordinary outcome here -- NOSTART has none by definition, and a stall can end one early.
-        if agCross > 0
-            repeat crossIdx from 0 to agCross - 1
+        if agCross > 0                                      ' (task 3695: the loop below is counted, so this guard is no longer load-bearing)
+            repeat agCross with crossIdx
                 alignEmitCross(crossIdx)
         alignEmitSummary()
 
@@ -25603,7 +25608,7 @@ PRI bCaptureIdleUp(otherIdx) : bIdleUp | sampleIdx
     drainBegin()
     bIdleUp := FALSE
     if drStored > 0
-        repeat sampleIdx from 0 to drStored - 1
+        repeat drStored with sampleIdx                      ' counted form (task 3695)
             beat(CP_LOOP_DRAIN)
             if bSmpUp(sampleIdx, otherIdx)
                 bIdleUp := TRUE
@@ -26299,8 +26304,8 @@ PRI evPairs(logIdx, qIdx) : nPairs, bFormed | eKind, nVals, seqIdx, nValue
         eKind := wheelL.EV_FOLDBACK
     nVals := evCount(logIdx, eKind)
     bFormed := (nVals <= EV_SEQ_MAX) and ((nVals // 2) == 0)
-    if bFormed and (nVals > 0)                              ' a Spin2 repeat from a higher bound counts down
-        repeat seqIdx from 0 to nVals - 1
+    if bFormed and (nVals > 0)                              ' (the loop is counted since task 3695; a FROM/TO with a lower bound counts down)
+        repeat nVals with seqIdx
             nValue := evSeqAt(logIdx, qIdx, seqIdx)
             if (seqIdx // 2) == 0
                 if qIdx == EVQ_FOLD

@@ -276,7 +276,7 @@ PUB hasCommand(pEntries, nEntryCount) : bHaveCmdStatus | opStatus, pValues, nIdx
 
             ' locate command in table
             bGoodCmd := FALSE
-            repeat nIdx from 0 to nEntryCount - 1
+            repeat nEntryCount with nIdx    ' counted form: an empty table runs 0 times (FROM 0 TO -1 ran twice, reading entry -1)
                 pCmd := LONG [pEntries][(nIdx * 3) + TBLIDX_POSSCMD]
                 eCmd := LONG [pEntries][(nIdx * 3) + TBLIDX_ECMD]
                 nParamCt := LONG [pEntries][(nIdx * 3) + TBLIDX_PARAMCT]
@@ -455,7 +455,7 @@ PUB decimalForString(pDecimalStr) : decimalValue | nCharCt, nIdx, bHaveNeg
             pDecimalStr++   ' point past neg sign
             nCharCt--
         if (nCharCt > 0)
-            repeat nIdx from 0 to nCharCt - 1
+            repeat nCharCt with nIdx    ' counted form (the guard above already kept it non-empty)
                 decimalValue := (decimalValue * 10) + (BYTE[pDecimalStr][nIdx] - $30)
         if bHaveNeg
             decimalValue := 0 - decimalValue
@@ -478,9 +478,9 @@ PUB hexadecimalForString(pHexStr) : valueOfHex | nChar, nIdx, nOffset, nDigitVal
         ' skip over prefix
         nOffset := 2
     valueOfHex := 0
-    repeat nIdx from nOffset to strsize(pHexStr) - 1
+    repeat strsize(pHexStr) - nOffset with nIdx    ' counted form: "" and "0x" run 0 times (FROM nOffset TO len-1 ran twice, descending); nIdx counts digits, the character is nOffset + nIdx
         valueOfHex *= 16
-        nChar := BYTE[pHexStr][nIdx] & $DF    ' convert upper case to lower
+        nChar := BYTE[pHexStr][nOffset + nIdx] & $DF   ' convert upper case to lower
         if nchar >= $30 && nchar <= $46
             if nChar > $39
                 nDigitValue := nChar - $41 + 10  ' remove 'A' but leave as 10-15
@@ -540,8 +540,8 @@ PRI decimalForToken(pDecimalStr, nTokenLen) : bIsNumber, decimalValue | nIdx, nD
         nFirstIdx := bHaveNeg ? 1 : 0
         if nTokenLen > nFirstIdx
             bIsNumber := TRUE
-            repeat nIdx from nFirstIdx to nTokenLen - 1
-                nDigit := BYTE[pDecimalStr][nIdx] - "0"
+            repeat nTokenLen - nFirstIdx with nIdx    ' counted form (the guard above already kept it non-empty); nIdx counts digits
+                nDigit := BYTE[pDecimalStr][nFirstIdx + nIdx] - "0"
                 if (nDigit < 0) or (nDigit > 9) or (decimalValue > (POSX - nDigit) / 10)
                     bIsNumber := FALSE      ' not a digit, or the value would pass POSX
                     quit
@@ -635,7 +635,7 @@ PRI tskFakeRxStr(pStr) | nIdx, nStatusValue
 ' @local nStatusValue - TRUE when the character queue was full
 
     debug("TASK[Rx] str=[", zstr_(pStr), "]")
-    repeat nIdx from 0 to strsize(pStr) - 1
+    repeat strsize(pStr) with nIdx    ' counted form: an empty string runs 0 times
        nStatusValue := bTskEnqueueChar(byte[pStr][nIdx])
        if nStatusValue
             debug("EEE Abort string write EEE")
@@ -779,7 +779,7 @@ PRI zeroWrappedStr(pRmStr, nLen) | nIdx, pSrc
 ' @local pSrc - pointer to the next source byte (wraps at the buffer's end)
 
     pSrc := pRmStr
-    repeat nIdx from 0 to nLen - 1
+    repeat nLen with nIdx    ' counted form: an empty line clears 0 bytes (FROM 0 TO -1 ran twice, clearing the next queued line's first byte)
         ' if pointing beyond end, wrap to front!
         if pSrc > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
           pSrc -= RX_CHR_Q_MAX_BYTES
@@ -824,7 +824,7 @@ PRI copyWrappedStr(pUserDest, pSrcStr, lenDest) | nIdx, pSrc, pDest
 
     pDest := pUserDest
     pSrc:= pSrcStr
-    repeat nIdx from 0 to lenDest - 1
+    repeat lenDest with nIdx    ' counted form: lenDest 0 copies nothing (FROM 0 TO -1 ran twice)
         ' if pointing beyond end, wrap to front!
         if pSrc > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
           pSrc -= RX_CHR_Q_MAX_BYTES
@@ -961,8 +961,8 @@ PRI dumpParsedCommand(pMsg) | nIdx, nParams
     debug(" -- eCmd=(", udec_(LONG [@currParsedCommand][ENT_CMDENUM_IDX]), ")")
     nParams := LONG [@currParsedCommand][0] - 1
     if nParams > 0
-        repeat nIdx from ENT_PARM1_IDX to ENT_PARM1_IDX + nParams - 1
-            debug(" -- param#", udec_(nIdx), "=(", sdec_(LONG [@currParsedCommand][nIdx]), ")")
+        repeat nParams with nIdx    ' counted form (the guard above already kept it non-empty); nIdx counts parameters
+            debug(" -- param#", udec_(ENT_PARM1_IDX + nIdx), "=(", sdec_(LONG [@currParsedCommand][ENT_PARM1_IDX + nIdx]), ")")
 
 PRI locationNextNonWhiteValue(pBffr, lenRemaining) : pStart, nSepIdx | nLenRemaining, nIdx, nChr
 ' Return ptr and index of end char of next non-white value
@@ -1023,7 +1023,7 @@ PRI bStrHasLowCasePrefix(pTargetStr, pPrefix) : bHasStatus | nIdx
 ' @local nIdx - index of the character being compared
 
     bHasStatus := TRUE
-    repeat nIdx from 0 to strsize(pPrefix) - 1
+    repeat strsize(pPrefix) with nIdx    ' counted form: an empty prefix runs 0 times
         if (BYTE[pTargetStr][nIdx] | $20) <> BYTE[pPrefix][nIdx]
             bHasStatus := False
             quit    ' outta here, we have our answer!
@@ -1043,7 +1043,7 @@ PRI bStrIgnoreCaseMatch(pLtStr, pRtStr) : bMatchStatus | nIdx
     'debug("- sicm: lt(", udec_(strsize(pLtStr)), ")=[", zstr_(pLtStr), "], rt(", udec_(strsize(pRtStr)), ")=[", zstr_(pRtStr), "]")
     if strsize(pLtStr) == strsize(pRtStr)
         bMatchStatus := TRUE
-        repeat nIdx from 0 to strsize(pRtStr) - 1
+        repeat strsize(pRtStr) with nIdx    ' counted form: two empty strings run 0 times (FROM 0 TO -1 compared byte 0 and byte -1)
             ' compare lowCase lt-byte to lowcase rt-byte
             if (BYTE[pLtStr][nIdx] | $20) <> BYTE[pRtStr][nIdx] | $20
                 bMatchStatus := FALSE
@@ -1071,7 +1071,7 @@ PRI indexOfStr(pSrchStr, pRxBffr) : nIdx, idxAfter | nLenRemaining, srchLen, src
   if (srchLen <= nLenRemaining)
     repeat srcIdx from 0 to nLenRemaining - srchLen
         bSrchMatch := True
-        repeat srchIdx from 0 to srchLen - 1
+        repeat srchLen with srchIdx    ' counted form: an empty search text runs 0 times
           if (byte[pSrchStr][srchIdx] <> byte[pRxBffr][srcIdx + srchIdx])
             bSrchMatch := False
             quit    ' abort srchStr compare

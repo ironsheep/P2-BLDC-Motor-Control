@@ -618,6 +618,7 @@ All tasks carry priority `high` and tag `v620`; `seq` is the order (plan-to-task
 | §10 D1 | D1 trimmed to the 6.5″'s qualification set (STEPHEN 2026-10-04; added mid-sprint) | «#3691» | before 13 |
 | §10 D1a | D1a: hand recheck, start and wiring checks — sheet, pack (STEPHEN 2026-10-04; added mid-sprint) | «#3692» | 2 |
 | §10 desk | D1a evaluated; Doco motor docs corrected (added mid-sprint) | «#3693» | 3 |
+| §9 | Empty counted loops run twice: fixed in the serial objects and harnesses (found by D1a; added mid-sprint) | «#3695» | 1 |
 | §10 D1b | Align (cold back-EMF Z) at the Doco's numbers, PL-103 fixed; D1b's first leg (added mid-sprint) | «#3694» | 4 |
 | §10 D1b | D1b (offsets, ladder, pass probe) evaluation | «#3682» | 13 |
 | §1 (6) | Clock floor derived; `ERR_CLOCK_TOO_SLOW` ruled (P5), then built | «#3683» | 14 |
@@ -666,6 +667,12 @@ must reflect and runs in the D1 wait; the refusal follows D1's front-cog cost; d
   should be its first Doco test (*"i don't want to skew our bench but i do want to complete these measurements"*). Ordering
   (arbiter): D1a as built; align, with PL-103 fixed, at the numbers D1a confirms, opens D1b ahead of the offset scan, which
   cross-checks it. «#3694» added (§17).
+- **2026-10-04** — **The Doco voltages are 2S-6S plus 24 V** (STEPHEN: *"i'm thinking we test at 2s-6s voltages (nominal,
+  not max charge)"*, then *"ok B then"*): 7.4, 11.1, 14.8, 18.5, 22.2 and 24.0 V — every LiPo pack at its nominal 3.7 V a
+  cell, and the maker's rated 24 V, where the data sheet's speeds are stated. **12.0 V is not tested**: its table row
+  stays in the driver and is labelled not re-checked in the user docs. The hand loads run at 11.1 V and 24 V (the low and
+  high of the tested set) instead of 12 V and 24 V. Wherever §4, §7 and §10 say "every Doco voltage" or "12 V and 24 V",
+  read this set.
 - **2026-10-04** — D1a evaluated («#3693», `DOCs/analyses/bench/2026-10-04/D1A-RECHECK-EVALUATION.md`): 24 ticks, 4 pole
   pairs, the falling hall order and the hall/encoder direction confirmed; the start, wiring and no-wheel checks pass; the
   six hall sectors are uneven (13.5°-16.7°), so §6 gains a priced per-sector question and the hall map's SECTOR cell is

@@ -56,6 +56,9 @@
 ''               D1A-5 R23-SGL-SECTOR judges each hall code's width against its own mean (repeatability), not against an
 ''               equal 60 counts, and records the six widths per set and direction (new B1-CODEW; B1-SECT worst_dev_x10 and
 ''               worst_slot are now grid_dev_x10 and grid_slot)
+''               04 Oct 2026 -- task 3695 (SRC_REV 10, no format change): every counted loop whose bound can be zero is
+''               REPEAT n WITH idx (FROM 0 TO n - 1 runs twice at n = 0): the ladder's rung loops, the min-inc sub-window
+''               judge and the attended step loop, beside the two B1-UI / B1-HTEDGE loops SRC_REV 9 had guarded. No record changes
 ''
 
 '' =================================================================================================
@@ -209,7 +212,7 @@ CON { timing }
 
 CON { build identity }
 
-    SRC_REV     = 9                                         ' hand-bumped whenever this file changes
+    SRC_REV     = 10                                        ' hand-bumped whenever this file changes
     FMT_VERSION = 8                                         ' B1- record-format version (8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
 
 CON { the bench this image is built for }
@@ -4085,7 +4088,7 @@ PRI bMinIncMeasure(slotIdx, nCmdX1000, nSubMs, nResync0) : bGoOn, bSteady | subI
     if eRo == RO_DONE
         ' each sub-window judged against the WINDOW's way (the encoder's sign for this increment is not assumed)
         miSubWorstPm[slotIdx] := PM
-        repeat subIdx from 0 to nSubs - 1
+        repeat nSubs with subIdx                            ' counted form (task 3695): no sub-window runs 0 times, not twice
             nSubPm := 0
             if miSubExpect[subIdx] > 0
                 nSubPm := muldiv64(abs(miSubTravel[subIdx]), PM, miSubExpect[subIdx])
@@ -4338,13 +4341,13 @@ PRI bRunLadder() : bCompleted | eSign, rungIdx, bGoOn, bEnded
     bGoOn := bSetTestLimit(rowLadderA[rowIdx])
     repeat eSign from SIGN_NEG to SIGN_POS
         bEnded := FALSE
-        repeat rungIdx from 0 to ladRungs - 1
+        repeat ladRungs with rungIdx
             if bGoOn and (bEnded == FALSE)
                 bGoOn, bEnded := bLadderRung(eSign, ENTRY_REST, rungIdx)
             elseif bGoOn
                 rgOutcome[ladSlot(eSign, ENTRY_REST, rungIdx)] := RO_SKIPPED
         bEnded := FALSE
-        repeat rungIdx from 0 to ladRungs - 1
+        repeat ladRungs with rungIdx
             if bGoOn and (bEnded == FALSE)
                 bGoOn, bEnded := bLadderRung(eSign, ENTRY_STEP, rungIdx)
             elseif bGoOn
@@ -4548,7 +4551,7 @@ PRI ladderFinish() | eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown, nDe
             bUsable := FALSE
     repeat eSign from SIGN_NEG to SIGN_POS
         repeat eEntry from ENTRY_REST to ENTRY_STEP
-            repeat rungIdx from 0 to ladRungs - 1
+            repeat ladRungs with rungIdx
                 slotIdx := ladSlot(eSign, eEntry, rungIdx)
                 if ladRungPct[rungIdx] <> 0                 ' FOLLOW: the table's rungs only
                     if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT)
@@ -4606,7 +4609,7 @@ PRI fitSign(eSign) | eEntry, rungIdx, slotIdx, nPts, nLo, nHi, fSx, fSy, fMx, fM
     fSx := 0.0
     fSy := 0.0
     repeat eEntry from ENTRY_REST to ENTRY_STEP
-        repeat rungIdx from 0 to ladRungs - 1
+        repeat ladRungs with rungIdx
             slotIdx := ladSlot(eSign, eEntry, rungIdx)
             if bRgClean[slotIdx]
                 nPts++
@@ -4624,7 +4627,7 @@ PRI fitSign(eSign) | eEntry, rungIdx, slotIdx, nPts, nLo, nHi, fSx, fSy, fMx, fM
         fSxx := 0.0
         fSxy := 0.0
         repeat eEntry from ENTRY_REST to ENTRY_STEP
-            repeat rungIdx from 0 to ladRungs - 1
+            repeat ladRungs with rungIdx
                 slotIdx := ladSlot(eSign, eEntry, rungIdx)
                 if bRgClean[slotIdx]
                     fX := float(abs(rgCpsX10[slotIdx])) -. fMx
@@ -4636,7 +4639,7 @@ PRI fitSign(eSign) | eEntry, rungIdx, slotIdx, nPts, nLo, nHi, fSx, fSy, fMx, fM
             fA := fMy -. fB *. fMx
             fSrr := 0.0
             repeat eEntry from ENTRY_REST to ENTRY_STEP
-                repeat rungIdx from 0 to ladRungs - 1
+                repeat ladRungs with rungIdx
                     slotIdx := ladSlot(eSign, eEntry, rungIdx)
                     if bRgClean[slotIdx]
                         fY := float(rgDuty[slotIdx]) -. (fA +. fB *. float(abs(rgCpsX10[slotIdx])))
@@ -6326,7 +6329,7 @@ PRI sgEmitScreen(seqNum, runNum, pPhase0, pPhase1, nSt0, nSt1, nMs) | idx, pIn
     benchLog.numField(@"presses", sgInputN, LIM_SMALL)
     lineEmit()
     if sgInputN > 0                                         ' "repeat from 0 to -1" runs TWICE in Spin2: with no press it
-        repeat idx from 0 to (sgInputN <# SG_INPUT_MAX) - 1 '  logged the last screen's click again (D1A-6, 2026-10-04)
+        repeat (sgInputN <# SG_INPUT_MAX) with idx          '  logged the last screen's click again (D1A-6, 2026-10-04); counted since task 3695
             pIn := @sgInputs[idx * SG_INPUT_LONGS]
             benchLog.begin(@"B1-UI")
             benchLog.tokenField(@"leg", sgLegToken, TOKMAX_LEG)
@@ -6518,7 +6521,7 @@ PRI bRunAttended(pLegToken, pSteps, nSteps) : bCompleted | nCog, idx, bGoOn
     bGoOn := (nCog >= 0)
     if bGoOn
         wkCog := nCog + 1
-        repeat idx from 0 to nSteps - 1
+        repeat nSteps with idx                              ' counted form (task 3695)
             if bGoOn
                 bGoOn := bSgRunStep(byte[pSteps][idx], idx + 1, nSteps)
         benchLog.cogEventBegin()
@@ -7020,7 +7023,7 @@ PRI emitTurnStep(seqNum, runNum) | idx, nCodes, nTick
     benchLog.boolField(@"seq_ok", handSeqValue() == SEQ_OK)
     lineEmit()
     if htEdges > 0                                          ' (a zero count of "repeat from 0 to -1" would run twice)
-        repeat idx from 0 to (htEdges <# HAND_MAX_EDGES) - 1
+        repeat (htEdges <# HAND_MAX_EDGES) with idx         ' counted form (task 3695)
             nCodes := htEdgeCodes[idx]
             nTick, _ := classifyEdge(nCodes)
             benchLog.begin(@"B1-HTEDGE")

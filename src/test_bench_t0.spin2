@@ -335,6 +335,9 @@
 ''               motor.testGetFoldMinMv() (DRIVER_REV 51: 4 mV only at 254.1 MHz and up; 6 at 200), not the constant FOLD_MIN_MV; its
 ''               legsense and kicksense records gain fold_min_mv. T0-1's minimum dead gap is ceil(CLKFREQ / 4_000_000) exactly (it
 ''               truncated to whole MHz). The frame-budget cell's text states it reads the driver's frame at any clock.
+''               04 Oct 2026 -- SRC_REV 34: task 3695, the counted loops are REPEAT n WITH idx (FROM 0 TO n - 1 runs twice at
+''               n = 0). The T0-24 hold log and try rows print nothing when no sample or try was kept (they printed one or two
+''               phantom lines); no other record changes.
 ''
 '' =================================================================================================
 
@@ -456,7 +459,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 33                                    ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 34                                    ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -2665,9 +2668,9 @@ PRI releaseSpacers(heldCount) | spacerIdx
 ' Local Variables:
 ' @local spacerIdx - index into heldSpacerId[]
 
-    if heldCount > 0                                        ' repeat 0 to -1 would count down, not skip
+    if heldCount > 0                                        ' no cog event for nothing to stop
         benchLog.cogEventBegin()
-        repeat spacerIdx from 0 to heldCount - 1
+        repeat heldCount with spacerIdx                     ' counted form (task 3695): FROM 0 TO heldCount - 1 would run twice at 0
             cogstop(heldSpacerId[spacerIdx])
 
 PRI testT0_16() | baseline, startResult, eCode, rawMotorCog, freeAfter, bPass
@@ -5068,7 +5071,7 @@ PRI t0aAccel() | accRateD, decRateD, tabIdx, pTab, nRows, rowIdx, nRate, eWant, 
     repeat tabIdx from 0 to 1
         pTab := (tabIdx == 0) ? @t0aAccelTab : @t0aDecelTab
         nRows := (tabIdx == 0) ? T0A_ACCEL_ROWS : T0A_DECEL_ROWS
-        repeat rowIdx from 0 to nRows - 1
+        repeat nRows with rowIdx                            ' counted form (task 3695)
             nRate := long[pTab][rowIdx * 2]
             eWant := long[pTab][rowIdx * 2 + 1]
             nMin, nMax, nInc, nDec := motor.testGetRampLimits()
@@ -6549,8 +6552,8 @@ PRI t0sPrintRow(rowIdx, seqNum, runNum) | tryIdx, pTry, sampleIdx, firstIdx, pSa
         T0_24_ROW_HOLDRISE, T0_24_ROW_HOLDSLIP, T0_24_ROW_HOLDLIMIT:
             keptCount := t0wHoldCount <# T0_24_HOLD_RING
             firstIdx := t0wHoldCount - keptCount
-            repeat sampleIdx from firstIdx to t0wHoldCount - 1
-                pSample := @t0wHold[(sampleIdx +// T0_24_HOLD_RING) * T0_24_HOLD_LONGS]
+            repeat keptCount with sampleIdx                          ' counted form (task 3695): no samples prints none (FROM firstIdx TO count-1 ran twice at count 0); sampleIdx counts kept samples, the sample is firstIdx + sampleIdx
+                pSample := @t0wHold[((firstIdx + sampleIdx) +// T0_24_HOLD_RING) * T0_24_HOLD_LONGS]
                 debug("T0-24,hold_log,row,", udec_(seqNum), ",run,", udec_(runNum), ",ms,", udec_(long[pSample][T0_24_HS_MS]), ",pos,", sdec_(long[pSample][T0_24_HS_POS]), ",disp,", sdec_(long[pSample][T0_24_HS_DISP]), ",duty,", udec_(long[pSample][T0_24_HS_DUTY]), ",drv_state,", udec_(long[pSample][T0_24_HS_DRV_STATE]), ",sense_i,", sdec_(long[pSample][T0_24_HS_SENSE_I]))
             debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",hold_result,displaced,", zstr_(t0wHoldRes[T0_24_HR_DISPLACED] ? @"TRUE" : @"FALSE"), ",disp_first_ms,", sdec_(t0wHoldRes[T0_24_HR_DISP_MS]), ",ceil_first_ms,", sdec_(t0wHoldRes[T0_24_HR_CEIL_MS]), ",ceil_sense_i,", sdec_(t0wHoldRes[T0_24_HR_CEIL_I]), ",slip_first_ms,", sdec_(t0wHoldRes[T0_24_HR_SLIP_MS]), ",limit_first_ms,", sdec_(t0wHoldRes[T0_24_HR_LIMIT_MS]), ",fault_first_ms,", sdec_(t0wHoldRes[T0_24_HR_FAULT_MS]), ",fault_first,", zstr_(t0wHoldRes[T0_24_HR_FLT_FIRST] ? @"TRUE" : @"FALSE"), ",aborted,", zstr_(t0wHoldRes[T0_24_HR_ABORTED] ? @"TRUE" : @"FALSE"), ",pass,", zstr_(t0wHoldRes[T0_24_HR_PASS] ? @"PASS" : @"FAIL"))
             debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",hold_start,start_hs,", udec_(t0wHoldRes[T0_24_HR_START_HS]), ",start_disp,", sdec_(t0wHoldRes[T0_24_HR_START_DISP]), ",start_held,", zstr_(t0wHoldRes[T0_24_HR_START_HELD] ? @"TRUE" : @"FALSE"), ",max_disp,", udec_(t0wHoldRes[T0_24_HR_MAX_DISP]), ",rise_ms,", sdec_(t0wHoldRes[T0_24_HR_RISE_MS]), ",samples,", udec_(t0wHoldCount), ",dropped,", udec_(firstIdx), ",protective,", sdec_(t0wProtCode))
@@ -6559,7 +6562,7 @@ PRI t0sPrintRow(rowIdx, seqNum, runNum) | tryIdx, pTry, sampleIdx, firstIdx, pSa
                 debug("T0-24,provoke,row,", udec_(seqNum), ",run,", udec_(runNum), ",stop_mode,", zstr_((rowIdx == T0_24_ROW_FLTHOLD) ? @"BRAKE" : @"FLOAT"), ",fr_err,", sdec_(t0wFrErr), ",force_err,", sdec_(t0wForceErr), ",at_speed,", zstr_(bT0wAtSpeed ? @"TRUE" : @"FALSE"), ",release_span_ms,", udec_(t0sReleaseSpan[rowIdx]), ",faulted,", zstr_(bT0wFaulted ? @"TRUE" : @"FALSE"), ",band_entered,", zstr_(bT0wEntered ? @"TRUE" : @"FALSE"), ",driver_state,", udec_(t0wDrvState), ",abort_amps_x10k,", sdec_(t0wAbortAmps))
             else
                 keptCount := t0wTryCount <# T0_24_TRY_MAX
-                repeat tryIdx from 0 to keptCount - 1
+                repeat keptCount with tryIdx                         ' counted form (task 3695): no tries prints none (FROM 0 TO -1 ran twice)
                     pTry := @t0wTries[tryIdx * T0_24_TRY_LONGS]
                     ' worst case 260 bytes: 150 of labels, row and try <= 2 digits, run < 1_000, six counts at 13, the flags 5 each
                     debug("T0-24,row,", udec_(seqNum), ",run,", udec_(runNum), ",try,", udec_(tryIdx + 1), ",hand_ticks,", udec_(long[pTry][T0_24_TRY_HAND]), ",release_span_ms,", udec_(long[pTry][T0_24_TRY_SPAN]), ",after_ticks,", udec_(long[pTry][T0_24_TRY_AFTER]), ",after_ms,", udec_(long[pTry][T0_24_TRY_AFTER_MS]), ",band_ticks,", udec_(long[pTry][T0_24_TRY_BAND]), ",band_ms,", udec_(long[pTry][T0_24_TRY_BAND_MS]), ",in_band,", zstr_(long[pTry][T0_24_TRY_IN_BAND] ? @"TRUE" : @"FALSE"), ",band_entered,", zstr_(long[pTry][T0_24_TRY_ENTERED] ? @"TRUE" : @"FALSE"), ",shorted,", zstr_(long[pTry][T0_24_TRY_SHORTED] ? @"TRUE" : @"FALSE"), ",estop_latched,", zstr_(long[pTry][T0_24_TRY_LATCHED] ? @"TRUE" : @"FALSE"), ",measured,", zstr_((long[pTry][T0_24_TRY_MEASURED] == T0_24_TRY_CUT) ? @"CUT" : (long[pTry][T0_24_TRY_MEASURED] ? @"TRUE" : @"FALSE")))
