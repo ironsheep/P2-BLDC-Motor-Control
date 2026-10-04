@@ -56,7 +56,7 @@ When no command is waiting, the serial top-level checks for a new one every 1 ms
 - `checkwiring` takes about 1.3 s: two legs of about 0.65 s each. It takes at most about 4 s, if a leg does not come to rest.
 - `setstartchecks 0` takes a full start.
 
-At 624,000 baud each character takes 16 µs on the wire, so sending a command and its reply adds well under 1 ms. (Before 6.0 an idle P2 slept for up to 1 s between checks, so every command could wait that long.)
+At 624,000 baud each character takes 16 µs on the wire, so sending a command and its reply adds well under 1 ms. The bit timing is exact at any system clock. A command line is at most 128 characters: a longer line is cut to its first 128 characters and handled as that, and the link keeps working for the next line. (Before 6.0 an idle P2 slept for up to 1 s between checks, so every command could wait that long.)
 
 The P2 sends nothing unasked. The only line it sends on its own is its `ident:` line at start. Every other line is a reply to a command. Each reply is exactly one line, ending with a single LF. (Before 6.0, `OK` and `ERROR` replies ended with the two characters `\n` and no LF, and a getter's reply was followed by a stray `\n`.)
 

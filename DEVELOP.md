@@ -15,6 +15,7 @@ On this Page:
 - [Download the latest release .zip file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#download-the-latest-release-demo-archive-setzip-file) - get project files
 - [Adjust config file to your desired configuration](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#adjust-config-file-to-your-desired-configuration) 
 - [Include project objects in your top-object-file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#include-project-objects-in-your-top-object-file)
+- [Choosing a clock](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#choosing-a-clock) - the supported range, and the clock must be final before `start()`
 - [Make calls to steering or motor object to drive your platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
 - [Driving a distance, and waiting for it to finish](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#driving-a-distance-and-waiting-for-it-to-finish) - and backing up
 - [Tuning the ramp for your robot's mass](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#tuning-the-ramp-for-your-robots-mass) - acceleration, deceleration and stopping distance
@@ -244,6 +245,14 @@ PUB main() | motorCog
 ```
 
 `start()` checks the pin group, voltage and detection mode itself, and refuses with the reason in `getError()`. The `valid*ForChoice()` methods are there if you want to check a value before you start.
+
+### Choosing a clock
+
+The motor objects work at any system clock from the lowest one `start()` accepts up to 350 MHz. Set your clock the usual way, with `_clkfreq` (or `_xtlfreq` and a PLL setting) in your top-level file; the demos use `_clkfreq = CLK_FREQ`.
+
+Every timing the objects use is derived from the running clock: the PWM frame (44 kHz), the drive pass (23 frames), the dead gap (260 ns, never under the driver boards' 250 ns minimum), the front cog's 1 ms schedule, the board-detection window and the rest of the start-up waits. So the same program behaves the same at a different clock, and the times you ask for (`stopAfterTime()`, command timeouts, ramp rates) are the times you get.
+
+**The clock must be final before `start()`.** The objects take their timing from the clock at the moment `start()` runs, and do not look again. Anything that changes the clock afterwards leaves the motor running with timing for the old one. So whatever sets the final clock must run first. An HDMI video driver is the usual case: it sets the clock its video mode needs (`CLKSET`) when its display starts, so start the display before the motors. The HDMI demos do exactly this and run at their video mode's 270 MHz.
 
 ### And you're off!  Add your own motor control code
 

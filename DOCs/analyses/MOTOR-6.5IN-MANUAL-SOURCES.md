@@ -24,6 +24,8 @@ Paths are under `DOCs/analyses/bench/` unless stated.
 | §3.1 shunt blind to a phase short | vendor placement; `VISIT-10-PASS2-EVALUATION.md` §3.3; PL-118 |
 | §3.2 servo holds a point | `VISIT-8-EVALUATION.md` §3.2 |
 | §3.2 clip-free duty ceiling | `VISIT-9-EVALUATION.md` §2.3 |
+| §3.2 duty floor 1,600 as 100 / 6,136 of the frame, at any clock; dead gap 260 ns rounded up to 71 clocks (263 ns) at 270 MHz | `src/isp_bldc_motor.spin2` `init()` (`gapInNs`, `dead_gap`, `duty_min`, `DUTY_MIN_FRAME_NUM` / `DUTY_MIN_FRAME_DEN`) and the DRIVER_REV 50 history entry (70 -> 71 clocks, `duty_max` 27,648 unchanged at 270 MHz: (3,068 - 71 - 4) x 0.57735 = 1,728 x 16); calculated, not re-measured |
+| §10 the figures are stated at 270 MHz | the clock of the bench sessions cited in this file; the clock-independence of the drive's timing is `src/isp_bldc_motor.spin2` DRIVER_REV 50 and 51 history entries |
 | §3.4 designer's principles | `DOCs/analyses/BLDC-COMMUTATION-PRINCIPLES.md` |
 | §4.2 Z by current minima | `2026-09-22/VISIT-7C-EVALUATION.md` §6 |
 | §4.2 Z cold, by back-EMF | `2026-09-22/VISIT-7C-PASS2-EVALUATION.md` §3.3 |

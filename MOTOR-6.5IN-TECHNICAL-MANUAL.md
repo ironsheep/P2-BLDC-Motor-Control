@@ -218,8 +218,8 @@ whole driver.
 | Duty trim | each frame adds (the magnitude of `err_` − 48) × (duty ÷ 16) to an accumulator, applied shifted right 16 (`SERVO_ACC_SHIFT`, a gain sized for a 7.7 kg platform): symmetric, untruncated, and with a gain that scales with duty | driver |
 | Duty trim, fast slope | while the rotor trails the field by more than `LAG_SOFT`, each frame also adds (lag − 80) × (duty ÷ 16) at 64 times the calm trim's gain per count, so a load is answered with torque at once; below `LAG_SOFT` it adds nothing | driver |
 | What the servo actually holds | a **point**: mean `err` **47–48 counts** at every speed step tried, both motors, both directions | measured |
-| Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **27,648**, the largest amplitude the PWM carries without clipping after the drive re-centres the three levels each frame | calculated; measured clip-free |
-| Dead gap applied | 260 ns (meets the 250 ns minimum) | driver |
+| Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **27,648**, the largest amplitude the PWM carries without clipping after the drive re-centres the three levels each frame. The floor is a fixed fraction of the PWM frame (100 / 6,136), so it scales with the frame at any other clock; the ceiling follows the frame and the dead gap | calculated; measured clip-free |
+| Dead gap applied | 260 ns, converted to clocks at the running clock and rounded up: **71 clocks (263 ns) at 270 MHz**, never under the 250 ns minimum | driver |
 | Lag: the ramp eases its acceleration off, and the trim's fast slope begins | `LAG_SOFT` 80 counts = **112.5°** | driver |
 | Ramp shape | jerk-limited: acceleration eases in and out over **250 ms**; built-in limits **1,000 mm/s²** up and **1,470 mm/s²** down, both provisional until measured under load | driver |
 | Lag: the field stops advancing | `LAG_HOLD` 100 counts = **140.6°** | driver |
@@ -887,7 +887,7 @@ Each question says why it matters and what would settle it.
 ## 10 · About the measurements
 
 Every measurement here was taken on two units of this motor, on a Rev B 64010 board, with the P2 at
-270 MHz, during the driver work of September and October 2026: with the wheels lifted, except the floor results in §6.5,
+270 MHz (the clock every figure here is stated at; the drive's timing at other clocks is described in [DEVELOP.md](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#choosing-a-clock)), during the driver work of September and October 2026: with the wheels lifted, except the floor results in §6.5,
 which were taken with the two units driving a 7.7 kg two-wheel platform. The speed figures were measured on a pack of about 20.5–20.7 V (§6.1). The measurements were made
 with the driver's own sense channels, read through the programs in `src/test_*.spin2`;
 [TECHNIQUES.md](TECHNIQUES.md) explains the methods. The analyses behind each number are kept in this

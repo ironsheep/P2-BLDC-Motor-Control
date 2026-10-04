@@ -220,7 +220,7 @@ start(basePin, voltage, detectMode)                   (steering: startOwned() pe
   ├─ stop any driver and front cog this instance already runs
   ├─ claim the pin group                              → ERR_PIN_GROUP_IN_USE
   ├─ init(...)
-  │    ├─ derive tick constants from CLKFREQ
+  │    ├─ derive tick constants from CLKFREQ              ← the clock at this moment: see DEVELOP.md, "Choosing a clock"
   │    ├─ getBoardType()                              ← detect the board revision
   │    ├─ select the per-motor tables and offsets     ← copied (the deltas packed) into the driver image
   │    ├─ compute frame_cnt, dead_gap, duty_min/max
@@ -244,13 +244,17 @@ second caller of `cogatn` can exist yet. It then samples both wheels' rest zero 
 starts its front cog.
 
 **Board revision detection** charges a capacitor on `pinbase+4`, floats the pin, and counts
-how many of 500 reads still read high:
+how many of the reads it makes in a fixed **371 µs window** still read high (the window is a time,
+paced by `getct()`, so it is the same at every clock; faster clocks simply fit more reads in it):
 
-| Sum | Meaning |
+| Result | Meaning |
 |---|---|
-| `0` | Rev A (a 1 kΩ pulldown holds it low) |
-| ~40–180 | Rev B (the capacitor discharging) |
-| `>250` | no board attached |
+| none high | Rev A (a 1 kΩ pulldown holds it low) |
+| high for a fraction of the window, at least 20 µs | Rev B (the capacitor discharging) |
+| high for over half the window | no board attached |
+
+Rev B is judged on the time the pin stayed high, not on the raw count, so the verdict does not
+depend on the clock.
 
 The detected revision sets the current-sense scale (Rev A 5 mV/A, Rev B 150 mV/A) and with it
 the current limit. That is why `start()` refuses a board it cannot detect: without the
@@ -262,15 +266,18 @@ revision there is no current limit. `BRD_REV_A` / `BRD_REV_B` force one.
 
 The driver runs two nested loops.
 
-- **The frame loop** runs once per PWM frame, **44 kHz (22.7 µs)**: read the ADCs, compute
+- **The frame loop** runs once per PWM frame, **44 kHz (22.7 µs)**. The frame is the system clock
+  divided by 44 kHz, rounded to an even number of clocks (6,136 at 270 MHz), so the PWM and the ADC
+  agree at any clock. Read the ADCs, compute
   and write the three phase levels, read the halls, compute the error, check for a fault,
   apply the current limit, and servo the duty. It writes the 24-long status block every frame.
   On the nine frames after each drive pass it also works out the stop plan, a third of a plan
   a frame, in the slack after that frame's status write (below).
-- **The drive pass** runs every **23 frames, about 1,913 times a second (522.7 µs)**: take
-  the command, advance the ramp, and advance the commanded angle. `cfg_ctcks` is a 500 µs
-  deadline, but it is tested only at frame boundaries, so the pass runs on the 23rd frame.
-  Every per-pass rate — the increments, the ramps — is per 522.7 µs.
+- **The drive pass** runs every **23 frames at every clock, about 1,913 times a second (522.7 µs
+  at 270 MHz)**: take the command, advance the ramp, and advance the commanded angle. `cfg_ctcks`
+  is a deadline of 22.5 frames, but it is tested only at frame boundaries, half a frame after the
+  22nd frame's test and half a frame before the 23rd's, so the pass runs on the 23rd frame.
+  Every per-pass rate — the increments, the ramps — is per 23 frames.
 
 ### The drive pass
 
@@ -435,6 +442,11 @@ limit by the modulation depth (`duty × i_limit_k >> 16`, with duty floored at
 skipped. `i_limit_k` holds the 40 A peak limit, or the 27 A continuous limit while the front
 cog has derated it (§5).
 
+**The fold-back's floor follows the ADC.** A reading is only a measurement of load above the ADC's
+resolution, which is one count per frame: a count is worth more millivolts the fewer clocks the frame
+has. The least net reading the fold-back and the walk guard accept is therefore 4 mV or 7 ADC counts at
+the running clock, whichever is more: 4 mV at 270 MHz, higher below about 254 MHz (11 mV at 100 MHz).
+
 **The limit hold.** A wheel at its current limit keeps its torque and must not lag-fault when it is
 pushed back. From the fold-back's first action, the drive pass holds the field no more than
 `LAG_LIM` (64 counts, 90°, the motor's strongest angle) ahead of the rotor's sector (`holdGate`):
@@ -452,13 +464,14 @@ Triangle PWM at **44 kHz** (`PWM_RATE_IN_HZ`), one ADC sample per frame. The thr
 levels are `duty × sin(angle_ + 0°/120°/240°)` from the CORDIC, then **re-centred** on the
 midpoint of their largest and smallest value, which lets the amplitude reach `(F − dead_gap) ÷
 √3`. `duty_max` is derived from exactly that bound, less a 4-count guard, so the PWM cannot
-clip: 27,648 at 270 MHz.
+clip: at 270 MHz, with a 3,068-count half-frame, that is 27,648. The duty floor, `duty_min`, is a fixed
+fraction of the frame (100 / 6,136), so it is 1,600 at 270 MHz and scales with the frame at any other clock.
 
 `dead_gap` is the delay between switching off one side of a half-bridge and switching on the
-other. **It is 260 ns on both board revisions.** Both Parallax manuals specify a 250 ns
-minimum even though Rev B's gate drivers are about twice as fast as Rev A's, because the limit
-is set by the MOSFETs' response, not the drivers'. The value is 260 rather than 250 because
-the integer conversion truncates: a literal 250 gives 248 ns at 270 MHz.
+other. **It is 260 ns on both board revisions**, converted to clocks at the running clock and
+**rounded up**, so it is never under the manuals' 250 ns minimum at any clock: 71 clocks at 270 MHz
+(263 ns). Both Parallax manuals specify that 250 ns minimum even though Rev B's gate drivers are
+about twice as fast as Rev A's, because the limit is set by the MOSFETs' response, not the drivers'.
 
 ### The bridge states
 
@@ -480,8 +493,13 @@ fault.
 
 ## 5. The front cog
 
-One pass per millisecond, on an absolute `getct()` schedule; a late pass is counted and the
-schedule re-anchored, never replayed.
+One pass per millisecond, on an absolute `getct()` schedule. The schedule is a grid of 1 ms
+slots, and every time the front cog counts is counted in slots, not passes. A pass that runs
+late is not re-anchored: the next one starts on the first slot boundary at least 100 µs ahead and
+stands for every slot since, so the slots it skipped are counted as time and not lost. A slow
+clock therefore lengthens a pass, not the times: blocked-motor time, the current average, the
+hold's rise and limit, and the periodic jobs (the rpm window, the ramp applies) all hold at
+every clock. A caller's 20 ms bound on an answer is scaled by the most slots a pass has stood for.
 
 ```
 0. confirm a stop written in an earlier pass, or write it again
@@ -501,7 +519,7 @@ schedule re-anchored, never replayed.
 
 **Stopping time and distance** are the driver's own stop plan (§4), read from the status run:
 the front cog computes nothing and only reads and compares. `frontStopTicks()` is
-`drv_stop_fp` in whole hall ticks; `frontStopMs()` is `drv_stop_passes` at 522.7 µs a pass,
+`drv_stop_fp` in whole hall ticks; `frontStopMs()` is `drv_stop_passes` at the drive pass's time (522.7 µs at 270 MHz) a pass,
 rounded up. The plan counts from the published pass's own time, and the run is read after
 that, so its age can only make a limit's stop early, never late. The plan is the jerk-limited
 stop's phases (unwinding any acceleration still speeding up, the rise, the plateau at
@@ -520,7 +538,7 @@ driver acts on it internally; no public method reports it.
   modulation depth, averages it over about a second, and switches `i_limit_k` to the 27 A
   continuous limit when the average exceeds it, back to 40 A once it falls below 80 % of 27 A.
 - **Blocked motor.** A motor commanded to move that stands with no hall transition for
-  `BLOCKED_PASSES` (1,000 front passes, about a second) is secured, and a protective stop
+  `BLOCKED_PASSES` (1,000 front slots, about a second at any clock) is secured, and a protective stop
   (`ERR_PLATFORM_BLOCKED`) latches until `clearProtectiveStop()`. A pass counts when the
   rotor is held `LAG_SOFT` or more from the field, or when the current limit has acted on the
   wheel since its last hall tick (a wheel at its limit is held at `LAG_LIM`, below `LAG_SOFT`,

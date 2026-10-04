@@ -45,7 +45,7 @@ each one is compiled in:
   reads current at 150 mV/A against Rev A's 5 mV/A. The hall zero can also be measured cold, from the
   motor's back-EMF, on either (step 5).
 - **The motor free to turn**: wheel lifted, or shaft unloaded, and clamped so it cannot walk.
-- **The P2 at 270 MHz**, as every demo runs.
+- **The P2 at a clock the motor objects support**: see [Choosing a clock](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#choosing-a-clock). The demos run at 270 MHz.
 - **The debug terminal**, since these steps read the driver through `debug()` output.
 
 **Two commutation models, and which one to start with.** The driver places the field in one of two ways:
