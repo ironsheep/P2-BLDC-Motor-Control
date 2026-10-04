@@ -113,9 +113,12 @@ cp -p "$WORK/tree/tools/bench-run.sh" "$WORK/$NAME/bench-run.sh"
         tier="${entry%%@*}"; clock=""
         [ "$entry" != "$tier" ] && clock="${entry#*@}"
         desc=$(sed -n "s/^ \{19\}$tier  *\(.*\)/\1/p" "$WORK/tree/tools/bench-run.sh" | head -1)
-        # the Doco tiers share one usage line, doco-demo-<voltage>
+        # the Doco tiers share one usage line per family, <family>-<voltage> (doco-demo-v12p0 -> doco-demo-<voltage>,
+        #  single-ladder-v24p0 -> single-ladder-<voltage>)
         [ -z "$desc" ] && case "$tier" in
-            doco-demo-*) desc=$(sed -n "s/^ \{19\}doco-demo-<voltage>  *\(.*\)/\1/p" "$WORK/tree/tools/bench-run.sh" | head -1) ;;
+            doco-demo-*|single-*-v*)
+                family="${tier%-v*}"
+                desc=$(sed -n "s/^ \{19\}$family-<voltage>  *\(.*\)/\1/p" "$WORK/tree/tools/bench-run.sh" | head -1) ;;
         esac
         echo "$entry"
         echo "    binary:   $entry.bin"
