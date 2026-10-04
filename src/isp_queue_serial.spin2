@@ -374,7 +374,7 @@ PUB getLine(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedSt
 ''  if {bShouldWait} is TRUE wait until string arrives before returning
 ''
 '' @param pUserDest - pointer to the caller's buffer that receives the line
-'' @param lenDest - size of the caller's buffer, in bytes
+'' @param lenDest - the most characters to copy; the caller's buffer holds lenDest + 1 bytes (the terminator)
 '' @param bShouldWait - TRUE to wait until a line arrives
 '' @returns pStr - {pUserDest} holding the line, or 0 when none was waiting
 
@@ -396,7 +396,7 @@ PUB getLine(pUserDest, lenDest, bShouldWait) : pStr | bStringArrived, pWrappedSt
         pWrappedStr := dequeueRxStr()
         bytefill(pUserDest, 0, lenDest)
         copyWrappedStr(pUserDest, pWrappedStr, lenDest)
-        nLen := strsize(pUserDest)
+        nLen := wrappedStrSize(pWrappedStr)                  ' the QUEUED line's length: the copy may be truncated
         freeWrappedString(pWrappedStr, nLen)
         'debug("gcs: str=[", zstr_(pUserDest), "]")
         'debug("- gtln: str(", udec_(nLen), ")=[", zstr_(pUserDest), "]")
@@ -788,6 +788,26 @@ PRI zeroWrappedStr(pRmStr, nLen) | nIdx, pSrc
     if bDbgShoMem
         debug("-- zws: ", uhex_long(pRmStr), udec(nLen), udec(nRxByteCount))
 
+PRI wrappedStrSize(pSrcStr) : nLen | pSrc
+' Return the length of a line in the circular buffer, which may wrap, up to (not counting) its terminator.
+'  The receive task counted every byte of the line, so the free must release all of them even when the
+'  caller's copy was truncated (a line longer than the caller's buffer).
+'
+' @param pSrcStr - pointer to the line in the circular buffer (it may wrap)
+' @returns nLen - the line's length, in bytes
+
+' Local Variables:
+' @local pSrc - pointer to the next byte (wraps at the buffer's end)
+
+    nLen := 0
+    pSrc := pSrcStr
+    repeat RX_CHR_Q_MAX_BYTES
+        if pSrc > @BYTE[@serialRxBffr][RX_CHR_Q_MAX_BYTES-1]
+          pSrc -= RX_CHR_Q_MAX_BYTES
+        if BYTE[pSrc++] == 0
+            quit
+        nLen++
+
 PRI copyWrappedStr(pUserDest, pSrcStr, lenDest) | nIdx, pSrc, pDest
 ' copy possible wrapped string {pSrcStr} to {pUserDest} (use min(strlen,lenDest) as bytes to move)
 '  NOTE handle buffer wrap!
@@ -795,7 +815,7 @@ PRI copyWrappedStr(pUserDest, pSrcStr, lenDest) | nIdx, pSrc, pDest
 '
 ' @param pUserDest - pointer to the caller's buffer that receives the line
 ' @param pSrcStr - pointer to the line in the circular buffer (it may wrap)
-' @param lenDest - size of the caller's buffer, in bytes
+' @param lenDest - the most characters to copy; the caller's buffer holds lenDest + 1 bytes (the terminator)
 
 ' Local Variables:
 ' @local nIdx - count of bytes copied

@@ -544,3 +544,8 @@ must reflect and runs in the D1 wait; the refusal follows D1's front-cog cost; d
 - **2026-10-03** — tasked: §17. Anchors re-opened at generation; four corrected in place (`offsetsForMotor()` `:5103`,
   `confgurePowerLimits()` `:5206`, the demos' `CLK_FREQ` / `END_HOLD_MS` wording, `MOTOR_CHOICE.md:37` dropped) and the
   PL-14 sweep's three sites named in §5.
+- **2026-10-04** — §9 finding fixed in «#3681»: `isp_queue_serial` freed only the truncated length of a line longer than
+  `MAX_SINGLE_STRING_LEN`, leaking character-queue capacity until input stopped; it now frees the queued line's whole
+  length (`wrappedStrSize()`), and `serial_certify.py`'s R20-SER-BACKTOBACK gains OVERLONG_LINES_ANSWERED. §4.1 gained
+  the harness's edited-constants list («#3679»); D1's run sheet is `DOCs/analyses/bench/VISIT-D1-RUNSHEET.md` (pack
+  `b30171a`).
