@@ -82,6 +82,10 @@
 ''               each ending itself at ALIGN_TARGET_CROSS crossings one way; no pace asked or shown; CLIP judged per kept
 ''               crossing; each crossing records its own speed (cps) for the lag the log shows. B1-AGUIDE, -ACROSS, -ALEG,
 ''               -ALEG2, -MOTOR6 change
+''               05 Oct 2026 -- task 3682 (SRC_REV 14, fmt 11): the test current limit is the library's 40 / 27 A (was 2 / 2,
+''               3 A on the 11.1 V ladder) and the offset scan spans +-20 deg (was 30). The 2 A fold-back fired on Rev A's
+''               sense noise and cost the drive its following at every voltage; at 40 A, 7.4 V followed cleanly
+''               (TEST_PEAK_A gives the logs). STEPHEN 2026-10-05: "yes A"
 ''
 
 '' =================================================================================================
@@ -121,7 +125,7 @@
     SINGLE_PART_STOPS     L-stops (L8): stopAfterRotation(N) and stopAfterTime(T) armed at rest, at the top and at a
                           crawl, each sign; the encoder's rest against the limit (R23-SGL-STOPROT, -STOPTIME)
     SINGLE_PART_OFFSCAN   L-offscan (L3, at every row; run right after the hall map): at 25, 50 and 100 %, each sign, the offset
-                          stepped 5 degrees at a time over +-30 of the shipped one; the DC link, duty and the hall zero
+                          stepped 5 degrees at a time over +-20 of the shipped one; the DC link, duty and the hall zero
                           at speed per point; the current minimum per speed (the magnet reference for Z), and whether
                           it moves with speed (R23-SGL-LEADMOVE, the lead check). The shipped offsets are restored on
                           every exit
@@ -197,7 +201,7 @@
   leg climbs no higher in that entry; every measuring window checks the encoder against the driver's hall position
   (bWindowEncOk()) and a disagreement ends the run; no hands-off command passes PK1_CAP_INCR at a row from 12 V up (a
   power-commanded drive reads the increment the library wrote back and ends the run if it does). The test limit is
-  2 A in every leg but the ladder at 11.1 V, which needs 3 A (DAT rowLadderA, why there).
+  the library's own 40 A since SRC_REV 14 (TEST_PEAK_A, why): the absolute abort is the bench's current protection.
   In the 2b legs (phase 2b): the same guards. L-offscan changes the commutation offsets; it reads what was in force
   before it, restores it on its one exit whatever ended it, reads it back, and ends the run (AR_SETTING) if the restore
   did not take.
@@ -210,7 +214,7 @@
   shaft is driven. The run's time cap counts only the time a step runs (runIdleMs: a screen waiting on him is not
   an unwatched motor).
   Task 3686: L-wiring's walk (checkWiring(), the library's own: power 10, one electrical cycle each way, a leg that
-  draws more than a healthy walk is ended by shorting the phases) runs under the 2 A test limit before the rest zero
+  draws more than a healthy walk is ended by shorting the phases) runs under the test limit before the rest zero
   is read, so no harness guard samples during its ~1.3 s; a walk that does not pass ends the run before anything else
   drives (AR_WIRING). L-power drives as the ladder does: every guard, the row's ladder test limit, bCheckTop().
 
@@ -252,7 +256,7 @@ CON { timing }
 
 CON { build identity }
 
-    SRC_REV     = 13                                        ' hand-bumped whenever this file changes
+    SRC_REV     = 14                                        ' hand-bumped whenever this file changes
     FMT_VERSION = 11                                        ' B1- record-format version (11: B1-ACROSS pair, dir, cps, x_mv, y_mv, lo_mv, hi_mv for phase, t_us, dur_us; B1-AGUIDE target, band_uv/vw/wu_mv for speed, turns, ticks, hyst_*, band_railed; B1-ALEG by_target, tick_edges, peak_ma, mean_peak_ma for speed, edge_s_x10, rpm_x10; B1-ALEG2 rise, fall, ref_half, ref_rail, ref_still, against, clip_kept for cross, unusable, band_railed, peak_ma, mean_peak_ma, swing_hz_x10; B1-MOTOR6 al_target, al_max_edges for al_ticks, al_slow_rpm, al_fast_rpm; 10: B1-HALLSEQ, B1-SIGNMAP; 9: B1-AGUIDE, B1-ACROSS, B1-AEDGE, B1-ALEG, B1-ALEG2, B1-ASUM, B1-MOTOR6; 8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
 
 CON { the bench this image is built for }
@@ -313,9 +317,13 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     ' The test current limit, whole amps (testSetCurrentLimits() takes amps): the least that is not under the rated 1.84 A.
     '  MODELED (analysis F9 / P-H2): on Rev A a 2 A limit holds a firm stall to 2.1 A at 12 V and 2.9 A at 24 V, where the
     '  fold's 4 mV floor sets it. 6.5in: the library's I_PEAK_A 40 / I_CONT_A 27, the MOSFETs' (t0-reva lowers them to 2)
-    ' TEMPORARY (task 3682, Stephen 2026-10-05): ONE 7.4 V discriminating run at the library's own limits, to test whether
-    '  the 2 A limit's fold-back firing on Rev A noise causes D1b's loss of following. Committed only to reach the bench;
-    '  a following commit restores 2 / 2 (and rowLadderA's first entry to 2) after that run.
+    ' SRC_REV 14 (task 3682, STEPHEN 2026-10-05 "yes A"): the library's own I_PEAK_A 40 / I_CONT_A 27, not 2 / 2. MEASURED:
+    '  at 2 A the fold-back's threshold sits at its 4 mV floor (FOLD_MIN_MV) at every running duty on Rev A, the Doco's
+    '  0.4 A no-load is 2 mV and one reading is +-3 mV, so the fold fired on noise, armed the limit hold, and the drive lost
+    '  following at every voltage (debug_261004-213146 .. -230018, debug_261005-002048: err_pk 101-111, held passes in the
+    '  thousands, duty at duty_min). At 40 A, 7.4 V followed 1,000 per mille at 25, 50 and 100 % within +-20 deg of the
+    '  shipped offsets, err_pk 72-76, held 0 (debug_261005-005643). The bench's protection is ABS_ABORT_MA, which ended that
+    '  run at a 4.48 A peak on a mistimed scan point -- so OFS_SPAN_DEG is 20. D2's hand legs revisit this limit.
     TEST_PEAK_A             = 40
     TEST_CONT_A             = 27
     ' The absolute current abort, mA of DC link, for ABS_ABORT_SAMPLES consecutive samples: 2 x the rated 1.84 A. DERIVED:
@@ -485,8 +493,8 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
   '  the scan: 6.5in COARSE_STEP_DEG 10, FINE_STEP_DEG 5, HARD_LIMIT_DEG 90 (test_bench_scan.spin2:587-590), SETTLE_MS 1,000
   '  (:508), windows in ticks (WIN_TICKS_FINE 270, :521); the analysis's L3 asks 5 degree steps over +-30
     OFS_STEP_DEG            = 5
-    OFS_SPAN_DEG            = 30
-    OFS_SIDE_POINTS         = OFS_SPAN_DEG / OFS_STEP_DEG + 1   ' 7 a side: 0, 5, ... 30
+    OFS_SPAN_DEG            = 20                                ' SRC_REV 14: was 30 (why: TEST_PEAK_A)
+    OFS_SIDE_POINTS         = OFS_SPAN_DEG / OFS_STEP_DEG + 1   ' 5 a side: 0, 5, ... 20
     OFS_SIDES               = 2
     OFS_POINTS              = OFS_SIDES * OFS_SIDE_POINTS        ' 14 a speed and sign
     OFS_SETTLE_MS           = 1_000
@@ -2031,10 +2039,9 @@ DAT { the Doco's rows and leg tables -- PER-MOTOR, part of the one block (CON { 
 rowMv           LONG    7_400, 11_100, 12_000, 14_800, 18_500, 22_200, 24_000
   ' ... the shipped Rev A ceiling, the increment power 100 commands (MIRRORED: isp_bldc_motor.spin2 :5418-5419) ...
 rowCeilIncr     LONG    282_000_000, 545_000_000, 335_000_000, 376_000_000, 398_000_000, 470_000_000, 391_000_000
-  ' ... and the ladder's test current limit, whole amps: 2 A as every leg, but 3 A at 11.1 V, whose 75 % rung needs 2.57 A
-  '  of phase current (MODELED, analysis 2.1: 2,731 rpm, lead 12, held passes) -- the least whole amp over it. Every other
-  '  row's unloaded rungs draw 0.12-0.25 A of phase (analysis 2.1) and its climbs peak at 0.68 A (24 V, analysis 2.3).
-rowLadderA      LONG    40, 3, 2, 2, 2, 2, 2                ' TEMPORARY (task 3682): 7.4 V at 40 A for one run; restore to 2
+  ' ... and the ladder's test current limit, whole amps: TEST_PEAK_A at every row since SRC_REV 14 (it was 2 A, 3 A at
+  '  11.1 V; why it changed: TEST_PEAK_A). Kept per row so a row can be set apart again.
+rowLadderA      LONG    TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A
 
   ' L-ladder: the table rungs, % of the row's ceiling (LADDER_PCT_COUNT), and the extension rungs (LADDER_EXT_COUNT)
 ladderPcts      LONG    25, 50, 75, 100
