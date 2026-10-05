@@ -25,7 +25,7 @@ bench supply, nothing on the shaft but the encoder. **The supply voltage you set
 
 | # | Supply | Command | What happens | You |
 |---|---|---|---|---|
-| 1 | **11.1 V** | `./bench-run.sh single-align-v11p1` | About 5 minutes. A panel: **four hand passes**, the motor started but never driven (its drive stays off). Each pass: click START STEP, keep the shaft still about a second while it reads the rest level, then at YOUR TURN spin the shaft **looking at the encoder end**, in the direction and at the pace the step names — about **2 turns a second** for the slow passes, **4** for the fast — for about three turns, then DONE. The panel shows your live speed. | Spin as steadily as the small shaft allows. **If a result says NOT RESOLVED, click REDO and spin a little faster** — that is the signal being too small to read, not a fault. NEXT when it says MEASURED |
+| 1 | **11.1 V** | `./bench-run.sh single-align-v11p1` — **from the align pack the hand-back names** (reworked 2026-10-05; the first pack's align could not pass on this board) | A few minutes. A panel: **two steps, one each way**, the motor started but never driven (its drive stays off). Each step: click START STEP, keep the shaft still about a second while it reads the rest level, then at YOUR TURN, **looking at the encoder end**, in the direction the step names, **flick the shaft in bursts, as fast as is comfortable, as many times as it takes** — there is no pace to hold. The panel counts the crossings it has collected against its target of 36 and ends the step by itself when it has them (or click DONE). | Flick in bursts. **If a result says NOT RESOLVED, click REDO and flick a little harder** — the signal was too small to read, not a fault. NEXT when it says MEASURED |
 | 2 | **11.1 V** | `./bench-run.sh single-measure-v11p1 ; ./bench-run.sh single-passprobe-v11p1 clk-floor ; ./bench-run.sh single-passprobe-v11p1 clk-200 ; ./bench-run.sh single-passprobe-v11p1 clk-270 ; ./bench-run.sh single-passprobe-v11p1 clk-350 ; ./bench-run.sh single-passprobe-v11p1 clk-frac` | About 23 minutes of measuring, then five runs of under a minute each (half speed each way at five system clocks) | Nothing. Keep hands clear |
 | 3 | **7.4 V** | `./bench-run.sh single-measure-v7p4` | About 23 minutes | Nothing |
 | 4 | **14.8 V** | `./bench-run.sh single-measure-v14p8` | About 23 minutes | Nothing |
@@ -61,7 +61,7 @@ bench supply, nothing on the shaft but the encoder. **The supply voltage you set
 |---|---|
 | **Purpose** | **Measurement** for the driver's Doco tables (plan §6): the cold hall zero (align, per hall edge); per tested voltage the hall map both ways (the hall order for both power signs), the timing scan's current minimum (the offset, and whether the best timing moves with speed), the slowest steady speed each way, the speed ladder (the duty line, the top speed with the 6.5″'s duty reserve, the feedforward line, the misdial check), the built-in speed-up and stop, the stop limits; at 11.1 V the drive pass at five clocks and the front cog's worst pass. Today's tables are measured as the "before" |
 | **Hardware risk** | Align: the drive is never commanded. Hands-off rows: a 2 A test current limit (3 A at 11.1 V), a run charge cap, and the harness's stops on over-current, stall, time or an encoder disagreement. No hand loads this visit. Stops from top speed return energy to a supply that cannot take it (*What to watch for*) |
-| **Who acts** | You: the four hand passes in row 1; set the supply for each row |
+| **Who acts** | You: the two hand steps in row 1 (bursts, one each way); set the supply for each row |
 | **Runs that carry state** | None |
 | **Run length** | About 2 hours 30 minutes of runs; about 3 hours with set-up |
 | **Repeatability** | Every run is repeatable and independent; a row can be rerun alone |
@@ -75,3 +75,5 @@ bench supply, nothing on the shaft but the encoder. **The supply voltage you set
 ## Revision history
 
 - **2026-10-04** — written («#3696»).
+- **2026-10-05** — row 1 reworked («#3697»): the first align read CLIPPED on every try because Rev A's undriven phases rest
+  on the instrument's low rail; it now reads where the phases cross each other, from bursty flicks, two steps.
