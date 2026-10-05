@@ -82,7 +82,8 @@ logged since 2026-09-27, 35 of them naming the right wheel, after the 2026-09-26
 
 **Found during v6.2.0** (2026-10-03 onward; each heading carries its evidence): PL-197 (a two-stage request's ack
 bound, desk), PL-198 (`moveShaftToAngle()` does nothing), PL-199 (350 MHz sense noise), PL-200 (a timed crawl stop
-rested late once), PL-201 (Rev A fold-back at a low limit fires on noise — user-affecting; its scope is Stephen's).
+rested late once); PL-201 merged into PL-170 (listed under Ancillary above: Rev A's fold at a test-use limit fires on
+noise — measured again on the Doco, and now needed by D2's hand-load limit cell).
 
 **Standing rulings carried from 6.0.0:** the fault-return run faults its wheel with the guarded `testForceFault()`, not
 the wrong-offset write (STEPHEN 2026-09-28, *"fp1: A"*); a test built on a wrong premise is corrected before it runs
@@ -1364,8 +1365,17 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 ### PL-170 -- on Rev A the fold-back's noise margin is sized for ±3 mV, and the board reads 7
 
-> **Status (2026-10-01):** ANCILLARY — reaches only TEST USE current limits; not in 6.1.0's tests. Opened from PL-163's
-> residual when PL-163 itself was archived as certified ([archive](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01b.md)).
+> **Status (2026-10-05): OPEN — measured again, now with a motor that draws real current.** Still reaches only TEST
+> USE limits (`testSetCurrentLimits()`; no public method sets a limit, so a user runs at 40/27 A, ~15 mV on Rev A).
+> D1b's second pass ran the Doco on a Rev A board at a 2 A test limit (`DOCs/analyses/bench/2026-10-05/
+> debug_261004-213146` .. `-230018`, `debug_261005-002048`): the Doco's unloaded draw (0.2-0.5 A, 1-2.5 mV) lifts the
+> mean toward the 5 mV fold, the folds armed the limit hold, and the drive lost following at every voltage (`err_pk`
+> 101-111, held passes in the thousands, duty at duty_min); at 40 A the same row followed 1,000 per mille
+> (`debug_261005-005643`). **The defect is Rev A's**, not a motor's: one frame's noise (driven σ ≈ 1.7 mV, peaks 7-8 mV
+> above the mean, 2026-09-30) leaves no room under a 4 mV floor for any real draw. **It now matters to the plan:** a
+> hand-load "limit holds" cell on the Doco (rated 1.84 A) needs a limit a hand can reach, which Rev A cannot resolve
+> one frame at a time. (PL-201, filed 2026-10-05 for the same defect, is merged here.) Earlier status: ANCILLARY,
+> 2026-10-01, opened from PL-163's residual ([archive](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-01b.md)).
 
 **MEASURED** (`analyses/bench/2026-09-30/reva/REVA-PLATFORM-EVALUATION.md`, `debug_260930-155650.log`; rerun
 `reva2/REVA-RERUN-EVALUATION.md`, `debug_260930-210953.log`): on Rev A the unloaded net reading peaks at 7 mV
@@ -1619,22 +1629,9 @@ crawl's field stops (the hold the stop applies at power 5, against the cell's ri
 
 ### PL-201 -- on a Rev A board a low current limit folds back on sense noise and the motor stops following
 
-> **Status (2026-10-05): OPEN, a user-affecting finding (MEASURED; cause DERIVED and proven by a check run).** D1b's
-> second pass at the bench's 2 A test limit (`debug_261004-213146` .. `-230018`, `debug_261005-002048`) against the
-> check run at 40 A (`debug_261005-005643`); recorded at `src/test_bench_single.spin2` (SRC_REV 14 note on
-> `TEST_PEAK_A`); evaluation D1B-13. Whether it is fixed in v6.2.0, and its Known Issue wording, are Stephen's.
-
-**The defect is Rev A's, not the Doco's.** The fold floor exists only for Rev A (Rev B's threshold is never under 11 mV
-at 1 A). Its premise (`FOLD_MIN_MV`'s note) is that a driven unloaded motor reads at most ~3.9 mV net: the board's
-±3 mV per-frame noise and zero error take ~3.5 mV of it, leaving ~0.5 mV — about 0.1 A at 5 mV/A — for the motor's own
-draw. It held for the 6.5″ (0.087 A unloaded); it fails for any motor drawing more. With a 2 A limit the threshold sits
-at that 4 mV floor at every running duty; the Doco (0.2-0.5 A unloaded, 1-2.5 mV) crossed it on noise, the fold armed
-the limit hold, and the drive lost following at every voltage tried: `err_pk` 101-111, held passes in the thousands,
-duty at duty_min. At the library's own 40 A the same 7.4 V row followed 1,000 per mille. **What a user sees:** a Rev A
-board, any motor that draws more than ~0.1 A unloaded, and a limit under ~10 A — the motor stalls or crawls instead of
-following its command. **Unexplained:** the second pass's 22.2 V row kept following at 2 A. **To close:** root-cause at the desk why a
-threshold at the noise floor is reachable (the floor against Rev A's resolution, and the 22.2 V exception), design it
-out, then certify with D2's hand legs at a low limit.
+> **MERGED into PL-170 (2026-10-05)** — the same defect, measured on the 6.5″ on 2026-09-30. Filed the same day with two
+> errors corrected there: it is not user-affecting (no public method sets a limit; users run at 40/27 A), and the
+> 6.5″ did not escape it (it folded on noise in 0.06-4.3 % of frames on Rev A at 2 A). The number is not reused.
 
 ---
 

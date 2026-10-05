@@ -659,6 +659,7 @@ All tasks carry priority `high` and tag `v620`; `seq` is the order (plan-to-task
 | §1 (6) | Clock floor derived; `ERR_CLOCK_TOO_SLOW` ruled (P5), then built | «#3683» | 14 |
 | §6 | Doco tables and ruled driver changes | «#3684» | 15 |
 | §4, §10 D2 | Single-motor harness repaired from D1b's findings (added mid-sprint) | «#3698» | before 18 |
+| §6 (driver) | Rev A current sensing fitted to its hardware; per-board drive (STEPHEN 2026-10-05; added mid-sprint) | «#3699» | before 18 |
 | §8 | Motor-adoption tool (PL-176) | «#3685» | 16 |
 | §7 | Doco qualification cells | «#3686» | 17 |
 | §10 D2 + 6.5″ | D2 and 6.5″ session run sheets, pack, hand-back | «#3687» | 18 |
@@ -724,3 +725,7 @@ must reflect and runs in the D1 wait; the refusal follows D1's front-cog cost; d
   `D1B-EVALUATION.md`, findings D1B-1..14): «#3684»'s body now carries them, a top-speed regime to root-cause first, and
   the 11.1 V row left to D2. «#3698» added (§17) for the harness repairs. **D2's hand legs revisit the 40 A test
   limit** (a hand load at 40 A is guarded only by the harness's abort).
+- **2026-10-05** — STEPHEN: *"our goal is best possible drive for revA and then also for revB boards if we
+  algorithmically are different for each to achieve then we need to be."* «#3699» added (§17): Rev A's current limit
+  decided on a reading its hardware can resolve (PL-170, which PL-201 merged into), Rev B's path unchanged; it lands
+  before D2, whose hand-load limit cell then certifies a low limit on the Doco.
