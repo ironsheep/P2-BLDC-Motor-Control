@@ -701,7 +701,12 @@ must reflect and runs in the D1 wait; the refusal follows D1's front-cog cost; d
   not max charge)"*, then *"ok B then"*): 7.4, 11.1, 14.8, 18.5, 22.2 and 24.0 V — every LiPo pack at its nominal 3.7 V a
   cell, and the maker's rated 24 V, where the data sheet's speeds are stated. **12.0 V is not tested**: its table row
   stays in the driver and is labelled not re-checked in the user docs. The hand loads run at 11.1 V and 24 V (the low and
-  high of the tested set) instead of 12 V and 24 V. Wherever §4, §7 and §10 say "every Doco voltage" or "12 V and 24 V",
+  high of the tested set) instead of 12 V and 24 V.
+- **2026-10-05** — D1b's first try found the Doco does not turn under drive on 6.x: its 2023 commutation pair is in the
+  wrong frame for the 6.x signed-lag mechanisms (root-caused at the desk, «#3682»); fixed in DRIVER_REV 53 (the pair
+  swapped; §6's table work starts from it). The align's rest-level reference cannot work on Rev A (reworked, «#3697»).
+  PL-199: 350 MHz sense noise. D1b re-runs whole on DRIVER_REV 53, with a 300 MHz probe added. v6.0.0 and v6.1.0 carried
+  the Doco fault — its release-note wording is Stephen's at §12. Wherever §4, §7 and §10 say "every Doco voltage" or "12 V and 24 V",
   read this set.
 - **2026-10-04** — D1a evaluated («#3693», `DOCs/analyses/bench/2026-10-04/D1A-RECHECK-EVALUATION.md`): 24 ticks, 4 pole
   pairs, the falling hall order and the hall/encoder direction confirmed; the start, wiring and no-wheel checks pass; the
