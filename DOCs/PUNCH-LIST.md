@@ -60,8 +60,8 @@ characterisation plan takes up the scan.
 - **Serial** (*"serial testing not in this initial release"*, 2026-09-27): PL-111's serial half, PL-148, PL-154, PL-157.
   All three builds are in the tree (`protclear`/`getprot`, the idle poll, the digits check, the 6.0 getters); what each
   waits for is a host-driven hardware run.
-- **DocoEng** (*"doco support in subsequent release"*): PL-27, PL-71. PL-71 is a one-line fix, but it changes how the
-  DocoEng motor starts and cannot be checked without that motor, so it stays with the DocoEng work.
+- **DocoEng** — no longer deferred: the v6.2.0 sprint (the DocoEng qualification) takes PL-27 and PL-71 in «#3684»,
+  from D1b's measurements (2026-10-05).
 - **After v6.0.0:** PL-102 (a "following" getter), PL-164 (clock range), PL-165 (the DEBUG footprint measure), PL-166
   (the inertia term).
 - **Moved here from the task board at 6.1.0 start (2026-10-01)**, so the board carries only the sprint's work:
@@ -79,6 +79,10 @@ logged since 2026-09-27, 35 of them naming the right wheel, after the 2026-09-26
 (the at-rest band, crossed once on each board).
 
 **Ancillary, recorded and not chased:** PL-60, PL-63, PL-103, PL-105, PL-108, PL-109, PL-110, PL-119, PL-135, PL-170.
+
+**Found during v6.2.0** (2026-10-03 onward; each heading carries its evidence): PL-197 (a two-stage request's ack
+bound, desk), PL-198 (`moveShaftToAngle()` does nothing), PL-199 (350 MHz sense noise), PL-200 (a timed crawl stop
+rested late once), PL-201 (Rev A fold-back at a low limit fires on noise — user-affecting; its scope is Stephen's).
 
 **Standing rulings carried from 6.0.0:** the fault-return run faults its wheel with the guarded `testForceFault()`, not
 the wrong-offset write (STEPHEN 2026-09-28, *"fp1: A"*); a test built on a wrong premise is corrected before it runs
@@ -159,7 +163,11 @@ The rule now travels with every dispatch (sprint established decisions, item 13)
 
 ### PL-27 -- the Doco motor's offset and speed-ceiling tables were characterised while board detection was broken
 
-> **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (Doco motor, after 6.0)
+> **Status (2026-10-05): OPEN, being fixed in v6.2.0 «#3684» (the Doco tables).** D1b measured the Rev A columns on
+> DRIVER_REV 53 (`DOCs/analyses/bench/2026-10-05/D1B-EVALUATION.md` §2.2-2.3, D1B-2 / D1B-3): the half-speed current
+> minimum sits at NEG −59.7° / POS +54.1° against the shipped −53° / +53°; the 11.1 V ceiling (545e6) is 116 % of the
+> motor's no-load speed and runs duty-capped; 7.4 V and 14.8 V run NEG duty-capped at their tops. Closes when «#3684»
+> rewrites the Rev A columns from that log. (Earlier status: ANCILLARY for 6.0, 2026-09-26; the v6.2.0 sprint took it.)
 
 **Found 2026-09-12** (DERIVED from `src/isp_bldc_motor.spin2` `offsetsForMotor()` and
 `confgurePowerLimits()`). For `MOTR_DOCO_4KRPM` both tables branch on `eDetectedBoard`: offsets
@@ -606,7 +614,11 @@ next attended log's `BM-PLAN`.
 
 ### PL-71 -- the DocoEng motor's minimum forward increment is `0 - VALUE_NOT_SET`, which is 1
 
-> **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (Doco motor, after 6.0)
+> **Status (2026-10-05): OPEN, being fixed in v6.2.0 «#3684».** D1b measured the slowest steady speed on DRIVER_REV 53
+> (`DOCs/analyses/bench/2026-10-05/D1B-EVALUATION.md` §2.4, D1B-6): forward (the NEG increment, `power_sign,1`) turns
+> steadily at 1.00 ticks/s at 7.4 V and at 0.60 (the lowest rung) from 14.8 V up; reverse (POS) needs 4.00 ticks/s at
+> 7.4 V — the shipped 544,628 (1.46) does not turn steadily there — and 0.60 from 14.8 V up. Closes when «#3684» sets
+> both minimums from that log. (Earlier status: ANCILLARY for 6.0, 2026-09-26; the v6.2.0 sprint took it.)
 
 **Found 2026-09-16 in «#3554»**, while folding `confgurePowerLimits()` onto one power-table lookup. The behaviour was
 kept byte for byte.
@@ -1593,6 +1605,33 @@ reaches it since DRIVER_REV 38. So the method returns `NO_ERROR` and moves nothi
 forever, because nothing clears `targetAngle`. **To close:** either remove the method and the dead block (and the
 launch long's comment), or re-enable a fixed-field path deliberately (cog/LUT space is near full, overlay P13); the
 Doco's hall zero is referenced to the offset scan's current minimum instead (task 3679).
+
+### PL-200 -- a timed crawl stop on the Doco rested 120 ms after its field stopped
+
+> **Status (2026-10-05): OPEN, a finding (MEASURED once).** D1b third pass, 18.5 V
+> (`DOCs/analyses/bench/2026-10-05/debug_261005-132917.log`, `B1-STOP,sign,NEG,kind,CRAWL,by,MS`; evaluation D1B-12).
+
+A 3 s crawl at power 5 (NEG) stopped its field on time (`field_dev_ms,0`) and the shaft came to rest 120 ms later
+(R23-SGL-STOPTIME `measured,120`, band ±100); its position was in band (`dev,120` counts of −240..+180). The other 23
+stop-by-time instances across five voltages read −70..+95 ms. **To close:** D2 re-judges R23-SGL-STOPTIME at every
+voltage on the tuned Doco tables; if the late rest recurs, root-cause at the desk why the shaft moves on after a
+crawl's field stops (the hold the stop applies at power 5, against the cell's rival named in its own note).
+
+### PL-201 -- on a Rev A board a low current limit folds back on sense noise and the motor stops following
+
+> **Status (2026-10-05): OPEN, a user-affecting finding (MEASURED; cause DERIVED and proven by a check run).** D1b's
+> second pass at the bench's 2 A test limit (`debug_261004-213146` .. `-230018`, `debug_261005-002048`) against the
+> check run at 40 A (`debug_261005-005643`); recorded at `src/test_bench_single.spin2` (SRC_REV 14 note on
+> `TEST_PEAK_A`); evaluation D1B-13. Whether it is fixed in v6.2.0, and its Known Issue wording, are Stephen's.
+
+With a 2 A limit the fold-back's threshold sits at its floor (`FOLD_MIN_MV`, 4 mV) at every running duty on Rev A
+(5 mV/A). The Doco's no-load current is about 2 mV there and one reading is ±3 mV, so the fold-back fired on noise,
+armed the limit hold, and the drive lost following at every voltage tried: `err_pk` 101-111, held passes in the
+thousands, duty at duty_min. At the library's own 40 A the same 7.4 V row followed 1,000 per mille. **What a user sees:**
+a Rev A board, a low-current motor and a limit of a few amps, and the motor stalls or crawls instead of following its
+command. **Unexplained:** the second pass's 22.2 V row kept following at 2 A. **To close:** root-cause at the desk why a
+threshold at the noise floor is reachable (the floor against Rev A's resolution, and the 22.2 V exception), design it
+out, then certify with D2's hand legs at a low limit.
 
 ---
 
