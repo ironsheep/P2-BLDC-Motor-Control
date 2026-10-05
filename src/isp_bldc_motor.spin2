@@ -5308,8 +5308,14 @@ PRI offsetsForMotor(eMotorType, eMotorVoltage) : fwdDegrees, revDegrees | ofsDeg
         else
           if (ofsDegr := lookup(index: 52, 53, 53, 53, 54, 54, 53)) == 0
               ofsDegr := 53
-        fwdDegrees := ofsDegr                           ' 0 is bad > 2A!
-        revDegrees := 360 - ofsDegr                     ' vs. using 360?
+        ' DRIVER_REV 53 (task 3682, the 2026-10-05 Doco bench): the pair is (360 - ofs, ofs), NOT (ofs, 360 - ofs). The
+        '  Doco's angle-table halves are shifted the opposite way to the 6.5in's (its T2 = T1 + 60, the 6.5in's T1 - 60), so
+        '  the 2023 pair, measured on the 5.x driver (which used only |err|), read the rotor's signed lag as true lag + 83
+        '  deg in the 6.x frame: the seed kicked the rotor backward, the servo wound up, and the limit hold parked the field
+        '  inside the rotor's own sector -- the motor did not turn under drive. Swapped, the bias is -53 deg, the 6.5in's
+        '  frame (-52 at its full-speed lead). The per-voltage values are re-measured by D1b's offset scan.
+        fwdDegrees := 360 - ofsDegr
+        revDegrees := ofsDegr
       other:
         ' 4 degrees per tic. The pair is built from the hall zero and the lead rather than
         '  from one number and its negation, so an asymmetric pair can be expressed at all.
@@ -7037,7 +7043,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 52      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 53      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7340,6 +7346,10 @@ CON { driver internal Constants }
                                             '     (offsetsForMotor(type, eMotorVoltage)), as the power limits already were;
                                             '     no read of user.DRIVE_VOLTAGE remains in this object (PL-14 class). The 6.5in
                                             '     pair does not depend on voltage and is unchanged
+                                            ' 53: task 3682, the Doco's commutation pair swapped to (360 - ofs, ofs): the
+                                            '     2023 (5.x) pair read the signed lag as true lag + 83 deg in the 6.x
+                                            '     frame and the motor did not turn under drive (D1b logs, 2026-10-05).
+                                            '     Spin2 only; no PASM or ABI change; the 6.5in path is unchanged
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring

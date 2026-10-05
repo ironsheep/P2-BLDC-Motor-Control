@@ -1570,6 +1570,18 @@ could see a timeout where the derivation promises an answer. **To close:** re-de
 in it, and either show it cannot reach 21 or raise the timeout (or the derivation) so it covers it; no bench run is
 needed to decide it.
 
+### PL-199 -- at 350 MHz the Rev A current sense at rest is ten times noisier
+
+> **Status (2026-10-05): OPEN, a finding (MEASURED once).** D1b's pass probe at `clk-350`
+> (`DOCs/analyses/bench/2026-10-05/debug_261004-184638.log`).
+
+Undriven, before any drive, `B1-ZERO ... spread_mv,35` at 350 MHz against 3-5 mV at 200, 270 and 271.25 MHz on the same
+board and motor; the run then tripped the harness's over-current guard at a "5.4 A" reading (27 mV at Rev A's 5 mV/A,
+inside that noise) on a motor that was not turning. A clock-dependent sensing defect falls under doctrine overlay P14.
+**To close:** the next Doco visit's `clk-300` probe records the same rest-zero spread before it drives, which places
+where the noise starts; then root-cause it at the desk (the sense ADC's sampling at the running clock — the frame and
+the SINC window scale with it — before any hardware explanation).
+
 ### PL-198 -- `moveShaftToAngle()` has had no effect since DRIVER_REV 38
 
 > **Status (2026-10-04): OPEN, a finding.** Found during task 3679 (looking for a fixed-field test path for the Doco's
