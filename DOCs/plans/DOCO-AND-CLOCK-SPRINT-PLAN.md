@@ -729,3 +729,5 @@ must reflect and runs in the D1 wait; the refusal follows D1's front-cog cost; d
   algorithmically are different for each to achieve then we need to be."* «#3699» added (§17): Rev A's current limit
   decided on a reading its hardware can resolve (PL-170, which PL-201 merged into), Rev B's path unchanged; it lands
   before D2, whose hand-load limit cell then certifies a low limit on the Doco.
+- **2026-10-05** — the starting point and the work-and-research plan after D1b are `D1B-FOLLOW-ON-PLAN.md` (at
+  Stephen's request); it orders «#3684», «#3699», «#3698», «#3683» and D2 under this plan's gates.
