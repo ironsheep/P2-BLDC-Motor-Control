@@ -1624,12 +1624,15 @@ crawl's field stops (the hold the stop applies at power 5, against the cell's ri
 > check run at 40 A (`debug_261005-005643`); recorded at `src/test_bench_single.spin2` (SRC_REV 14 note on
 > `TEST_PEAK_A`); evaluation D1B-13. Whether it is fixed in v6.2.0, and its Known Issue wording, are Stephen's.
 
-With a 2 A limit the fold-back's threshold sits at its floor (`FOLD_MIN_MV`, 4 mV) at every running duty on Rev A
-(5 mV/A). The Doco's no-load current is about 2 mV there and one reading is ±3 mV, so the fold-back fired on noise,
-armed the limit hold, and the drive lost following at every voltage tried: `err_pk` 101-111, held passes in the
-thousands, duty at duty_min. At the library's own 40 A the same 7.4 V row followed 1,000 per mille. **What a user sees:**
-a Rev A board, a low-current motor and a limit of a few amps, and the motor stalls or crawls instead of following its
-command. **Unexplained:** the second pass's 22.2 V row kept following at 2 A. **To close:** root-cause at the desk why a
+**The defect is Rev A's, not the Doco's.** The fold floor exists only for Rev A (Rev B's threshold is never under 11 mV
+at 1 A). Its premise (`FOLD_MIN_MV`'s note) is that a driven unloaded motor reads at most ~3.9 mV net: the board's
+±3 mV per-frame noise and zero error take ~3.5 mV of it, leaving ~0.5 mV — about 0.1 A at 5 mV/A — for the motor's own
+draw. It held for the 6.5″ (0.087 A unloaded); it fails for any motor drawing more. With a 2 A limit the threshold sits
+at that 4 mV floor at every running duty; the Doco (0.2-0.5 A unloaded, 1-2.5 mV) crossed it on noise, the fold armed
+the limit hold, and the drive lost following at every voltage tried: `err_pk` 101-111, held passes in the thousands,
+duty at duty_min. At the library's own 40 A the same 7.4 V row followed 1,000 per mille. **What a user sees:** a Rev A
+board, any motor that draws more than ~0.1 A unloaded, and a limit under ~10 A — the motor stalls or crawls instead of
+following its command. **Unexplained:** the second pass's 22.2 V row kept following at 2 A. **To close:** root-cause at the desk why a
 threshold at the noise floor is reachable (the floor against Rev A's resolution, and the 22.2 V exception), design it
 out, then certify with D2's hand legs at a low limit.
 
