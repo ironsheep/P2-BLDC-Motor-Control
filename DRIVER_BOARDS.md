@@ -80,6 +80,10 @@ resolves about 7 mA.
   to **27 A** when the average stays high, on either revision. These limits protect the board's transistors, not
   the motor, and they are not user settings. Each logs an event when it acts (`EV_FOLDBACK`, `EV_CURRENT_LIMIT`;
   see [Drive Objects](DRIVE-OBJECTS.md)). A wheel at its limit keeps its torque and gives up speed only there.
+  Rev A reads current 30 times more coarsely than Rev B, so its fold-back decides on the current smoothed over about
+  a third of a millisecond, and a brief noise spike does not trip it; Rev B decides one PWM frame at a time. On both
+  a sudden large surge is acted on in the frame it appears
+  ([how](DRIVER-THEORY-OF-OPERATIONS.md#the-frame-loop--current-limit)).
 - **Against a blocked wheel.** A motor commanded to move that does not turn for about a second, with its rotor
   held far behind the field or the current limit acting on it, is stopped and latched (the protective stop; see
   [Drive Objects](DRIVE-OBJECTS.md)).

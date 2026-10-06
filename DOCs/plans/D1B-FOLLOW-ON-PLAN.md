@@ -64,6 +64,40 @@ the tables cite their logs; Rev A's limit holds a low limit without folding on n
 neither folds nor arms; a real overload does within the stated time) and Rev B is byte-identical; the harness repairs
 show their negatives; the batch gates once; the D2 sheet is ready with every load naming the decision it feeds.
 
+## 6. Progress (2026-10-05)
+
+**R1 — stated cause, fix built (DRIVER_REV 54, «#3684»).** The field advanced once a pass, a whole `drv_incr` at a
+step, and the error was read against that stepped field, so each frame's error swung half a step either side of its
+mean. At 30 e-deg a pass (s > 21.4 counts, 358e6) the swing alone carried the frame's lag past `LAG_SOFT` (80) at every
+pass, and `servoBoost` added duty no load asked for: the knee D1b measured between 352.5e6 and 376e6. A driver defect,
+reached by any motor whose step per pass passes ~30 e-deg; the 6.5″'s top step (12.8 counts) never does. **Fix:**
+`fieldSteps` spreads each pass's advance over its 23 frames, centred, so the pass's mean field is unchanged (every
+measured offset and the servo setpoint keep their meaning) and the swing is gone. Certified by D2's ladder (Doco) and
+the 6.5″ session.
+
+**«#3684» tables.** Rev A per-direction offsets from D1b's half-speed minima (11.1 / 12 V DERIVED); minimum increments
+with forward's sign (PL-71); the Doco's feedforward is its own back-EMF line, 688e6 at 18.5 V (POS rungs median 37.2e6 a
+volt, the sheet's Ke predicts 37.2e6; it was the ceiling table, ~73 % too much); Rev A ceilings by the 6.5″'s 92.5 %
+reserve rule on the needier direction (NEG 75 % rungs, 33.4e6 a volt), capped at 419e6: 247e6, 370.5e6, 400.5e6, then
+419e6 from 14.8 V. The harness mirror (`rowCeilIncr`) follows.
+
+**R2 — fix built (DRIVER_REV 55, «#3699», PL-170).** Rev A's fold-back compares a filtered DC link (`senseFilter`, a
+16-frame / 0.36 ms time constant, a new appended parameter `sense_shift`: ABI 27 → 28) against a 3 mV floor, plus a
+one-frame hard trip 14 mV over the threshold; Rev B's shift is 0. **Proven:** the work tree with `fieldSteps`'s call
+neutralised is frame-for-frame equal to DRIVER_REV 53 at shift 0 (`pasm_equiv`, 92 scenarios, 442,952 frames), so
+Rev B's folds and everything else in the batch's PASM are unchanged. **Desk model** (white noise, the premise D2's
+`B1-NOISE` capture tests): unloaded at a low limit with the Doco's 2 mV mean, the one-frame rule folds 1,705-4,231
+times a second (σ 1.7-2.3 mV: D1b's lost following), the filtered rule none in 20 s; a one-frame +12 mV spike folds
+nothing; a real overload to 1.2 / 1.8 / 4 A of DC link folds in 0.30 / 0.09 / 0 ms. PL-202 records T0-27's one-frame
+premise, superseded on Rev A.
+
+**Cost.** Cog RAM 463 → 491 of 496 (5 free); the LUT run image 505 → 510 of 512. Worst frame window (`pasm_equiv`, worst
+case waits) 2,177 → 2,204 clocks (planner stage 9; the pass frame takes `fieldSteps`' ~92 clocks and stays under it):
+the driver's clock floor ≈ 97 MHz raw, ≈ 129 MHz under the 75 % rule — above the front cog's 74.4 MHz, so the driver
+sets the floor «#3683» asks about. (§1's MODELED 1,959 clocks was under the emulator's 2,177 already at DRIVER_REV 53.)
+
 ## Revision history
 
 - **2026-10-05** — written from the D1b evaluation and the Q&A that followed it (Rev A noise, per-board ruling).
+- **2026-10-05 (later)** — §6: R1's cause and fix (DRIVER_REV 54), the Doco tables, R2's fix (DRIVER_REV 55) with its
+  equivalence proof and desk model, and the cost.

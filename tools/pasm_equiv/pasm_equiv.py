@@ -35,7 +35,12 @@ _G = {}
 def _worker_init(base_img, cand_img, coverage):
     _G['base'] = base_img
     _G['cand'] = cand_img
-    _G['lay'] = drvenv.Layout(base_img)
+    # The parameter run is append-only ABI, so the shorter run is a prefix of the longer: the shared layout is the
+    #  longer one's (DRIVER_REV 55 appended sense_shift), and the baseline never reads the longs it lacks. The values
+    #  stay the baseline's (base_img.con), so an appended long the baseline has no formula for is 0: the candidate
+    #  runs as the baseline's configuration would set it (sense_shift 0 is the old one-frame fold, exactly)
+    longer = cand_img if cand_img.con['DRVR_PARAMS_LONGS_COUNT'] > base_img.con['DRVR_PARAMS_LONGS_COUNT'] else base_img
+    _G['lay'] = drvenv.Layout(longer)
     _G['con'] = base_img.con
     _G['cov'] = coverage
     _G['named'] = {s.name: s for s in scenarios.named_scenarios(base_img.con)}

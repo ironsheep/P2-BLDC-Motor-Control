@@ -169,7 +169,8 @@ ptra`) and reports a fault by writing `ptra[DRVR_STATUS_LONGS_COUNT]`. A reader 
 | 23 | `probe_sink` | test use: the phase whose low side the probe holds on |
 | 24 | `probe_y` | test use: the probed phase's high-side duty |
 | 25 | `drv_release` | TRUE asks the driver to release the bridge and park; only `stop()` writes it |
-| 26 | `sense_zero` | the DC-link rest offset the fold-back nets out, mV — the last long |
+| 26 | `sense_zero` | the DC-link rest offset the fold-back nets out, mV |
+| 27 | `sense_shift` | the fold-back's filter: 0 on a Rev B board (one frame's reading), 4 on Rev A — the last long |
 
 Read every frame by `setq #DRVR_PARAMS_LONGS_COUNT-1` / `rdlong params_ptr_+1, params_ptr_`.
 `frame_cnt` sits after the block and is deliberately outside it.
@@ -298,6 +299,14 @@ The driver runs two nested loops.
 7. compute the duty feedforward for this pass's speed
 ```
 
+**The field moves a frame at a time.** The pass advances `angle_` by a whole `drv_incr`, but
+the frames drive the field at `angle_ + (k − 11) × drv_incr ÷ 23` on frame k (0 to 22) of the
+pass, so the field turns smoothly and its mean over the pass is `angle_` itself. A held pass
+does not move it. A field that jumped once a pass would swing the error by half a step either
+way: by 30 electrical degrees a pass (about 2,400 rpm on the DocoEng motor) that swing alone
+reached the servo's fast-response threshold every pass, and the drive spent duty no load
+asked for.
+
 **The ramp is jerk-limited.** One trajectory generator, `jerkStep` (in
 the LUT), runs every pass the motor is not at rest, whatever the state, and takes every command
 as it stands; the states are now only what it reports. Four parameter longs drive it:
@@ -401,7 +410,8 @@ the index selects the forward or reverse half. Per-motor tables are chosen in `i
 | 6.5″ hub (`MOTR_6_5_INCH`) | 90 | 4° | `hltbAngles` | `deltas65` |
 | DocoEng 4 kRPM (`MOTR_DOCO_4KRPM`) | 24 | 15° | `hltbAngl4k` | `deltas4k` |
 
-The error is `err_ = angle_ − (hall_angle + offset)`, in 256ths of an electrical cycle, with
+The error is `err_ = field − (hall_angle + offset)`, where `field` is the frame's field angle
+(above), in 256ths of an electrical cycle, with
 `offset_fwd` applied to negative increments and `offset_rev` to positive ones. **For the 6.5″
 motor the front cog rewrites the offset pair as speed changes**: a hall zero of −4° plus or
 minus a lead taken from a four-point table against the increment (§5). The DocoEng motor keeps
@@ -412,7 +422,8 @@ one fixed pair.
 The applied duty is a **feedforward** from the field's speed plus an integral **trim**:
 
 - **Feedforward**: `|drv_incr| × duty_max ÷ ff_ceiling`, where `ff_ceiling` is the motor's
-  back-EMF line (for the 6.5″ motor, measured at 18.5 V and scaled by voltage). It gives the
+  back-EMF line (for each motor, measured at 18.5 V and scaled by voltage; the DocoEng motor's
+  agrees with its data sheet's back-EMF constant). It gives the
   duty a speed needs before the error has to ask for it.
 - **Trim**: each frame adds `(|err_| − SERVO_SETPOINT) × (duty >> 4)` to an accumulator,
   applied shifted right by `servo_shift` (`SERVO_ACC_SHIFT`, 16: a gain sized so the loop
@@ -447,6 +458,16 @@ resolution, which is one count per frame: a count is worth more millivolts the f
 has. The least net reading the fold-back and the walk guard accept is therefore 4 mV or 7 ADC counts at
 the running clock, whichever is more: 4 mV at 270 MHz, higher below about 254 MHz (11 mV at 100 MHz).
 
+**On a Rev A board the fold-back reads a filtered current.** Rev A's sense resistor gives 5 mV per amp,
+against Rev B's 150, and one frame's reading carries noise of about 1.5-2.3 mV — up to half an amp on
+Rev A. Compared one frame at a time, a low limit folded on that noise alone. So on Rev A the reading
+is first smoothed with a time constant of 16 frames (0.36 ms; `sense_shift` 4), and the fold compares
+the smoothed reading, against a floor of 3 mV. A brief spike folds nothing; a real overload folds
+within a fraction of a millisecond (0.3 ms at 1.2 A over the threshold, 0.1 ms at 1.8 A). On both
+boards a single frame more than 14 mV over the threshold also folds at once, so a fast surge is never
+waited for. A Rev B board's filter is off (`sense_shift` 0): it folds on one frame's reading, as it
+always has.
+
 **The limit hold.** A wheel at its current limit keeps its torque and must not lag-fault when it is
 pushed back. From the fold-back's first action, the drive pass holds the field no more than
 `LAG_LIM` (64 counts, 90°, the motor's strongest angle) ahead of the rotor's sector (`holdGate`):
@@ -461,7 +482,7 @@ hold: past the voltage the pack can give, a wheel keeps up by letting its lag gr
 ### PWM, the phase levels and the dead gap
 
 Triangle PWM at **44 kHz** (`PWM_RATE_IN_HZ`), one ADC sample per frame. The three phase
-levels are `duty × sin(angle_ + 0°/120°/240°)` from the CORDIC, then **re-centred** on the
+levels are `duty × sin(field + 0°/120°/240°)` from the CORDIC, at the frame's field angle, then **re-centred** on the
 midpoint of their largest and smallest value, which lets the amplitude reach `(F − dead_gap) ÷
 √3`. `duty_max` is derived from exactly that bound, less a 4-count guard, so the PWM cannot
 clip: at 270 MHz, with a 3,068-count half-frame, that is 27,648. The duty floor, `duty_min`, is a fixed

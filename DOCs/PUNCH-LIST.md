@@ -83,7 +83,8 @@ logged since 2026-09-27, 35 of them naming the right wheel, after the 2026-09-26
 **Found during v6.2.0** (2026-10-03 onward; each heading carries its evidence): PL-197 (a two-stage request's ack
 bound, desk), PL-198 (`moveShaftToAngle()` does nothing), PL-199 (350 MHz sense noise), PL-200 (a timed crawl stop
 rested late once); PL-201 merged into PL-170 (listed under Ancillary above: Rev A's fold at a test-use limit fires on
-noise — measured again on the Doco, and now needed by D2's hand-load limit cell).
+noise — measured again on the Doco, and now needed by D2's hand-load limit cell); PL-202 (T0-27's one-frame premise,
+superseded on Rev A by DRIVER_REV 55's filtered fold).
 
 **Standing rulings carried from 6.0.0:** the fault-return run faults its wheel with the guarded `testForceFault()`, not
 the wrong-offset write (STEPHEN 2026-09-28, *"fp1: A"*); a test built on a wrong premise is corrected before it runs
@@ -1365,6 +1366,12 @@ the driver caps each rate at what the current limit can deliver, validated on th
 
 ### PL-170 -- on Rev A the fold-back's noise margin is sized for ±3 mV, and the board reads 7
 
+> **Status (2026-10-05, later): FIX BUILT, DRIVER_REV 55 («#3699»), awaiting D2.** Rev A's fold-back now compares a
+> filtered DC-link reading (16-frame time constant) against a 3 mV floor, with a one-frame hard trip 14 mV over the
+> threshold; Rev B's shift is 0, so its folds are unchanged frame for frame. The values are DERIVED on the premise that
+> the noise is independent frame to frame; D2's per-frame capture (`B1-NOISE`, single-measure's first leg) tests the
+> premise and sizes the window, and D2's hand-load cells at a low limit certify it. **To close:** both.
+>
 > **Status (2026-10-05): OPEN — measured again, now with a motor that draws real current.** Still reaches only TEST
 > USE limits (`testSetCurrentLimits()`; no public method sets a limit, so a user runs at 40/27 A, ~15 mV on Rev A).
 > D1b's second pass ran the Doco on a Rev A board at a 2 A test limit (`DOCs/analyses/bench/2026-10-05/
@@ -1632,6 +1639,20 @@ crawl's field stops (the hold the stop applies at power 5, against the cell's ri
 > **MERGED into PL-170 (2026-10-05)** — the same defect, measured on the 6.5″ on 2026-09-30. Filed the same day with two
 > errors corrected there: it is not user-affecting (no public method sets a limit; users run at 40/27 A), and the
 > 6.5″ did not escape it (it folded on noise in 0.06-4.3 % of frames on Rev A at 2 A). The number is not reused.
+
+### PL-202 -- T0-27 judges Rev A's fold-back on one frame's reading, which DRIVER_REV 55 no longer folds on
+
+> **Status (2026-10-05): OPEN, a harness defect (DESK, by construction).** Found while building «#3699».
+
+DRIVER_REV 55 (PL-170's fix) makes Rev A's fold-back compare a FILTERED DC-link reading (`senseFilter`, a 16-frame
+time constant) against a 3 mV floor (`FOLD_MIN_FILT_MV`), plus a one-frame trip 14 mV over the threshold. T0-27
+(`test_bench_t0.spin2` `t0vLeg()` / `t0vKickLeg()`, tier `t0-reva`, R22-T0-REVA-FOLD) still judges the old premise:
+its threshold must equal `testGetFoldMinMv()` (4 mV) and one frame's net reading of that floor + 1 counts as a
+measurement. On REV 55 Rev A's threshold sits at the new floor, and one frame's net reading over 4 mV is ordinary
+noise that folds nothing, so the cell would FAIL a correct driver. The parameter-run read itself is fixed (SRC_REV 35:
+`sense_zero` at `motor.DRVR_PARAMS_SENSE_ZERO_IDX`). **To close:** redesign T0-27 on the filtered premise
+(`testGetFoldFloorMv()`, the floor and the shift) before tier `t0-reva` runs again; the sprint plan runs no Rev A
+floor tier for the 6.5″ (`DOCO-AND-CLOCK-SPRINT-PLAN.md` "Not in this plan"), so nothing runs it this cycle.
 
 ---
 

@@ -34,9 +34,10 @@ class Layout:
         con = img.con
         self.n_status = con['DRVR_STATUS_LONGS_COUNT']
         self.n_params = con['DRVR_PARAMS_LONGS_COUNT']
-        if self.n_params != len(initmodel.PARAM_NAMES):
-            raise EmuError('DRVR_PARAMS_LONGS_COUNT is %d; initmodel.PARAM_NAMES has %d'
-                           % (self.n_params, len(initmodel.PARAM_NAMES)))
+        try:
+            self.param_names = initmodel.param_names(self.n_params)
+        except ValueError as e:
+            raise EmuError(str(e))
         self.launch = LAUNCH
         self.target_incre = LAUNCH + 12
         self.status = LAUNCH + 16
@@ -50,7 +51,7 @@ class Layout:
             k = (off - base) // 4
             if 0 <= k < self.n_status and (off - base) % 4 == 0:
                 self.sidx[name] = k
-        for i, n in enumerate(initmodel.PARAM_NAMES):
+        for i, n in enumerate(self.param_names):
             if v.get(n) != v['OFFSET_FWD'] + 4 * i:
                 raise EmuError('the parameter run in the listing is not initmodel.PARAM_NAMES (at %s)' % n)
         for need in ('DUTY', 'DRV_STATE', 'FAULT_RESYNCS', 'LOOP_TICKS', 'LOOP_CTCKS', 'DRV_INCR_NOW'):
@@ -226,7 +227,7 @@ class Env:
         h[(L.launch >> 2) + 3] = 0                        # setTargetAccel(0, false)
         for k in range(L.n_status + 1):
             h[(L.status >> 2) + k] = 0
-        self.param_index = {n: i for i, n in enumerate(initmodel.PARAM_NAMES)}
+        self.param_index = {n: i for i, n in enumerate(L.param_names)}
         for n, v in self.params0.items():
             h[(L.params >> 2) + self.param_index[n]] = v & M32
         h[L.frame_cnt >> 2] = self.derived['frame_cnt']
