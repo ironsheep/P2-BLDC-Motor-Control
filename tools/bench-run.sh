@@ -1208,7 +1208,7 @@ fi   # the source tree's compile; a prebuilt package resumes here, at the run
 # every tier carries one rather than the run that happened to be repeated with it.
 LOG_BEFORE="$(newest_log)"
 
-run "$PNUT_TERM" -u -r "$BINARY" --exit-on-end-session
+run "$PNUT_TERM" -p P6yh4spg -u -r "$BINARY" --exit-on-end-session
 STATUS=$?
 if [ $STATUS -ne 0 ]; then
     echo "ERROR: command failed (exit $STATUS): $PNUT_TERM -u -r $BINARY --exit-on-end-session" >&2
