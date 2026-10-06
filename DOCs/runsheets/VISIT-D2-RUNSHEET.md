@@ -1,10 +1,14 @@
 # Doco visit D2 — qualify the tuned driver, and measure a second motor (your only instructions)
 
 **Plan:** `DOCs/plans/DOCO-AND-CLOCK-SPRINT-PLAN.md` §10 step 5, `DOCs/plans/D1B-FOLLOW-ON-PLAN.md` §6 (task «#3687»).
-**Driver:** DRIVER_REV 55 — the field now moves a frame at a time (the top-speed fix), the Doco's tables from D1b, and
-Rev A's current limit reads a filtered current. Start refuses a clock under 130 MHz. **Harness:** `test_bench_single`
-SRC_REV 15; the adoption tool `util_adopt_motor` TOOL_REV 2. **Pack:** the `dist/bench-<commit>.zip` the hand-back
-names for the **Doco bench**; this sheet travels inside it.
+**Driver:** DRIVER_REV 56 — the field moves a frame at a time (the top-speed fix), the Doco's tables, Rev A's current
+limit reads a filtered current, the 7.4–12 V slowest speeds raised to what turned steadily both ways. Start refuses a
+clock under 130 MHz. **Harness:** `test_bench_single` SRC_REV 16; the adoption tool `util_adopt_motor` TOOL_REV 3.
+**Pack:** the `dist/bench-<commit>-doco.zip` the hand-back names for the **Doco bench**; this sheet travels inside it.
+
+**SECOND PASS (2026-10-06 evening): what is DONE stays done.** From the first pass these stand and are NOT run again:
+11.1 V's qualification and the two clock runs (130 MHz, and the refused 120 MHz), 7.4 V's qualification. Rows 1 and 3
+below now hold only what must run again after the fixes, plus two short checks; rows 2 and 4–9 are as before.
 
 **What this visit is for:** D1b measured the Doco; this visit **qualifies** the driver built from those measurements, at
 every tested voltage, judged on the encoder: power steps hold speed, ramps arrive on time, stops come to rest where they
@@ -32,23 +36,26 @@ Rows 1–8 are unit 1. Row 9 is unit 2, after the swap.
 
 | # | Supply | Command | What happens | You |
 |---|---|---|---|---|
-| 1 | **11.1 V** | `./bench-run.sh single-qualify-v11p1 ; ./bench-run.sh single-measure-v11p1 ; ./bench-run.sh doco-adopt-v11p1 ; ./bench-run.sh single-passprobe-v11p1 clk-floor ; ./bench-run.sh single-passprobe-v11p1 clk-under` | About 1 hour: the qualification (~12 min), the 11.1 V measurements D1b could not finish (~23 min), the adoption tool (15–30 min), then two short clock runs. **The last one is meant to be refused**: built at 120 MHz, under the driver's floor, it must stop at its start with nothing turning | Nothing. Keep hands clear |
-| 2 | **11.1 V** | `./bench-run.sh single-handload-v11p1 ; ./bench-run.sh single-heldpush-v11p1` | About 7 minutes, on a panel. **The hand load:** the shaft turns slowly; at YOUR TURN slow it by hand to a stop and hold it — at a 4 A limit, then 2 A, then briefly the default limits. **The held stop:** the stopped motor holds the shaft; turn it slowly by hand until the hold gives way, one way then the other | Follow the panel. At the 4 A and 2 A steps the motor should keep pushing smoothly until you stop it — **say in your notes if it stutters or gives up early** |
-| 3 | **7.4 V** | `./bench-run.sh single-qualify-v7p4 ; ./bench-run.sh single-mininc-v7p4 ; ./bench-run.sh doco-adopt-v7p4` | 30–45 minutes | Nothing |
+| 1 | **11.1 V** | `./bench-run.sh single-measure-v11p1 ; ./bench-run.sh doco-adopt-v11p1` | About 45 minutes: the 11.1 V measurements (~23 min; the first pass's ended in its timing scan, a harness fault now fixed), then the adoption tool (15–30 min, now at the library's limits) | Nothing. Keep hands clear |
+| 2 | **11.1 V** | ✋ **ATTENDED — your hand on the shaft.** `./bench-run.sh single-handload-v11p1 ; ./bench-run.sh single-heldpush-v11p1` | About 7 minutes, on a panel. **The hand load:** the shaft turns slowly; at YOUR TURN slow it by hand to a stop and hold it — at a 4 A limit, then 2 A, then briefly the default limits. **The held stop:** the stopped motor holds the shaft; turn it slowly by hand until the hold gives way, one way then the other | Follow the panel. At the 4 A and 2 A steps the motor should keep pushing smoothly until you stop it — **say in your notes if it stutters or gives up early** |
+| 3 | **7.4 V** | `./bench-run.sh single-mininc-v7p4 ; ./bench-run.sh single-stops-v7p4 ; ./bench-run.sh doco-adopt-v7p4` | 20–35 minutes: the slowest speed on the raised minimum (~1 min), the stop limits again with the new decision record (~2.5 min: where POS stops land early), then the adoption tool | Nothing |
 | 4 | **14.8 V** | `./bench-run.sh single-qualify-v14p8 ; ./bench-run.sh single-mininc-v14p8 ; ./bench-run.sh doco-adopt-v14p8` | 30–45 minutes | Nothing |
 | 5 | **18.5 V** | `./bench-run.sh single-qualify-v18p5 ; ./bench-run.sh single-mininc-v18p5 ; ./bench-run.sh doco-adopt-v18p5` | 30–45 minutes | Nothing |
 | 6 | **22.2 V** | `./bench-run.sh single-qualify-v22p2 ; ./bench-run.sh single-mininc-v22p2 ; ./bench-run.sh doco-adopt-v22p2` | 30–45 minutes | Nothing |
 | 7 | **24.0 V** | `./bench-run.sh single-qualify-v24p0 ; ./bench-run.sh single-mininc-v24p0 ; ./bench-run.sh single-noise-v24p0 ; ./bench-run.sh doco-adopt-v24p0` | 30–45 minutes | Nothing |
-| 8 | **24.0 V** | `./bench-run.sh single-handload-v24p0 ; ./bench-run.sh single-heldpush-v24p0` | About 7 minutes, on the panel, as row 2 (no default-limit step at 24 V) | As row 2 |
-| 9 | **14.8 V**, **unit 2** | **First: supply OFF. Swap unit 1 for unit 2** — its three phase leads and its hall connector on the P16 board, and the encoder coupled to **its** shaft. Then: `./bench-run.sh single-hallmap-v14p8 ; ./bench-run.sh single-offscan-v14p8` | About 12 minutes: eight short crawls (the hall map), then the timing scan | Nothing after the swap |
+| 8 | **24.0 V** | ✋ **ATTENDED — your hand on the shaft.** `./bench-run.sh single-handload-v24p0 ; ./bench-run.sh single-heldpush-v24p0` | About 7 minutes, on the panel, as row 2 (no default-limit step at 24 V) | As row 2 |
+| 9 | **14.8 V**, **unit 2** | ✋ **ATTENDED SET-UP — the motor swap.** **First: supply OFF. Swap unit 1 for unit 2** — its three phase leads and its hall connector on the P16 board, and the encoder coupled to **its** shaft. Then: `./bench-run.sh single-hallmap-v14p8 ; ./bench-run.sh single-offscan-v14p8` | About 12 minutes: eight short crawls (the hall map), then the timing scan | Nothing after the swap |
+
+**Attended work in this pass, all of it:** row 2 (~7 min, hand on the shaft), row 8 (~7 min, hand on the shaft), and the
+motor swap before row 9. Everything else is hands off. About 4 hours of runs in all.
 
 **What to watch for, named in advance:**
 - **The top speed is higher than at D1b** — about 2,800 rpm from 14.8 V up (D1b's rows topped at 2,500–2,660). That is
   the top-speed fix being qualified. If the top of a ladder roughens or faults, that is a measurement: let it run.
 - **The bench supply when the motor stops from its top speed.** A bench supply cannot take current back. If it trips or
   drops out during a stop, the run stops itself; send the logs and note the row.
-- **Row 1's last run ends at once, nothing turns.** That is the pass: the terminal shows `B1-START` with `err,-1_023`
-  and the run ends. If the motor turns in that run, stop and send the log.
+- **POS stops from the top may still rest early** (stop limits in rows 3–7): that is the known finding the new
+  `B1-STOPDEC` record is there to explain; it is not a reason to stop.
 - **Unit 2 (row 9):** if its first crawl does not turn, or the terminal shows `B1-CHECK ... FAIL`, its hall or phase
   wiring differs from unit 1's — supply off and send the log; nothing is harmed.
 - **The encoder check:** a `B1-CHECK ... FAIL` on unit 1 means the encoder and the halls disagreed; send the log.
@@ -64,9 +71,8 @@ Rows 1–8 are unit 1. Row 9 is unit 2, after the swap.
 
 | Test | The banner must read |
 |---|---|
-| every harness run | `B1-BANNER,src_rev,15,commit,<the commit in the pack's name>,fmt,12,driver_rev,55,...`, `told_mv` equal to the supply you set, and `B1-BOARD` reading Rev A |
-| the adoption tool | `MA-BANNER` with `tool_rev,2` and `clk_hz,270_000_000` |
-| row 1's two clock runs | `clkfreq` 130000000, then 120000000 (the refused one) |
+| every harness run | `B1-BANNER,src_rev,16,commit,<the commit in the pack's name>,fmt,13,driver_rev,56,...`, `told_mv` equal to the supply you set, and `B1-BOARD` reading Rev A |
+| the adoption tool | `MA-BANNER` with `tool_rev,3` and `clk_hz,270_000_000`, and `MA-RECORD ... scan_a,40,ladder_a,40` |
 
 ## The visit, declared
 
@@ -76,7 +82,7 @@ Rows 1–8 are unit 1. Row 9 is unit 2, after the swap.
 | **Hardware risk** | The library's own 40 A current limit, so the bench's protection is the harness's stop at 3.68 A of supply current, a run charge cap, and its stops on stall, time or an encoder disagreement. The tops now reach about 2,800 rpm (D1b reached 2,660 hands-off). Hand loads at a 4 A and 2 A limit, and at 11.1 V briefly the default limits (about 110 mN·m), as D1b's plan sized them. Stops from top speed return energy to a supply that cannot take it. **If a run ends `GUARD ... OVER_CURRENT`, that is the stop working: send the log and go on to the next row** |
 | **Who acts** | You: set the supply for each row; the two panel rows (2 and 8); the motor swap before row 9 |
 | **Runs that carry state** | None |
-| **Run length** | About 4 hours 30 minutes of runs; 5 to 5½ hours with set-up and the swap. Rows are independent: it can be split across sittings at any row boundary |
+| **Run length** | Second pass: about 4 hours of runs; 4½ to 5 hours with set-up and the swap. Rows are independent: it can be split across sittings at any row boundary |
 | **Repeatability** | Every run is repeatable and independent; a row can be rerun alone |
 | **Variant matrix** | Rev A board (P16), DocoEng motor units 1 and 2, 7.4, 11.1, 14.8, 18.5, 22.2 and 24.0 V (12.0 V is not tested), 270 MHz (and 130 / 120 MHz in row 1), DRIVER_REV 55 |
 
@@ -99,3 +105,7 @@ for the model.
 
 - **2026-10-06** — written («#3687»), after the batch that fixed the top-speed regime, tuned the Doco's tables, filtered
   Rev A's current limit and set the 130 MHz floor; unit 2 added at Stephen's direction.
+- **2026-10-06 (evening)** — second pass after the first rows' evaluation (`DOCs/analyses/bench/2026-10-06/
+  D2-PARTIAL-EVALUATION.md`): 11.1 V's qualification and clock runs and 7.4 V's qualification stand; row 1 reruns the
+  measure run (the scan's walk fixed) and the tool (at 40 A); row 3 reruns the tool, the slowest speed on the raised
+  minimum, and the stop limits with their decision recorded. Attended work named per row.

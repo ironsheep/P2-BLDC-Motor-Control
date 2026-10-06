@@ -3273,6 +3273,37 @@ PUB testGetFoldMinMv() : nFoldMinMv
 
     nFoldMinMv := foldMinMv
 
+PUB testGetIncrLimits() : nMaxFwd, nMinFwd, nMinRev, nMaxRev
+'' TESTING USE: the drive's increment limits for the voltage start() was given (confgurePowerLimits()), so a bench
+'' judges against the shipped table rather than a copy of it (PL-208). Forward is the NEGATIVE increment.
+''
+'' @returns nMaxFwd - the fastest forward increment (power +100), negative
+'' @returns nMinFwd - the slowest forward increment (power +1), negative
+'' @returns nMinRev - the slowest reverse increment (power -1), positive
+'' @returns nMaxRev - the fastest reverse increment (power -100), positive
+
+    nMaxFwd := maxFwdIncreAtPwr
+    nMinFwd := minFwdIncreAtPwr
+    nMinRev := minRevIncreAtPwr
+    nMaxRev := maxRevIncreAtPwr
+
+PUB testGetLimitFire() : nFireTrk, nStopTicks, nFirePos, nBasePos
+'' TESTING USE: the last distance limit's decision (PL-203): what it counted, what it allowed for, where the motor was
+''
+'' The limit fires when nFireTrk + nStopTicks reaches the limit. nFireTrk sums |steps| (a hall code stepping back and
+'' forth counts both ways); |nFirePos - nBasePos| is the net travel at the same instant, so their difference is
+'' travel counted that the shaft did not make. The rest position less nFirePos, against nStopTicks, is the plan's error.
+''
+'' @returns nFireTrk - the tracked hall ticks since the limit was armed, when it fired; -1 if it has not fired since
+'' @returns nStopTicks - the stopping distance the decision allowed for, hall ticks
+'' @returns nFirePos - pos when it fired
+'' @returns nBasePos - pos when the limit was armed
+
+    nFireTrk := limitFireTrk
+    nStopTicks := limitStopTicks
+    nFirePos := limitFirePos
+    nBasePos := limitBasePos
+
 PUB testGetFoldFloorMv() : nFloorMv, nShift
 '' TESTING USE: the fold-back's threshold floor and its filter, as set by the last start (DRIVER_REV 55)
 ''
@@ -3490,6 +3521,7 @@ PUB frontSetLimits(nTicks, nMsDeadline)
     if nTicks > 0
         limitBaseTicks := frontTravelNow()                                      ' first: the limit counts from here
         limitBasePos := pos
+        limitFireTrk := -1                                                      ' PL-203: not fired yet
     motorStopHallTicks := nTicks
     motorStopMSecs := nMsDeadline
 
@@ -3535,6 +3567,8 @@ PUB bFrontLimitsDue(nowMs) : bFired
         if bFrontStopTicksReaches(trkTravelTicks - limitBaseTicks, motorStopHallTicks) == TRUE  ' PL-153: travel since arming
             motorStopHallTicks := 0                                             ' and clear user request
             limitStopTicks := frontStopTicks()                                  ' PL-137: the decision's own figure (one hub read)
+            limitFireTrk := trkTravelTicks - limitBaseTicks                     ' PL-203: what the decision counted, and where the
+            limitFirePos := pos                                                 '  motor was (testGetLimitFire()); before the stop's write, a few us
             bLimitByTime := FALSE
             bFired := TRUE
 
@@ -4068,6 +4102,8 @@ PRI walkRecordReset() | eLeg
 
     walkWatchLeg := WLEG_NONE
     limitStopTicks := 0
+    limitFireTrk := -1                                                          ' PL-203
+    limitFirePos := 0
     repeat eLeg from WLEG_OUT to WLEG_BACK
         walkLegOpen(eLeg, WALK_NA)
         wlPostMs[eLeg] := 0
@@ -5476,7 +5512,11 @@ PRI confgurePowerLimits(userVoltage) | index
             minFwdIncreAtPwr := -544_628
             minRevIncreAtPwr := 544_628
         else
-            minFwdIncreAtPwr := lookup(index: -374_182, -374_182, -374_182, -224_509, -224_509, -224_509, -224_509)
+            ' PL-208 (DRIVER_REV 56): D2 (DRIVER_REV 55, the per-direction pair; debug_261006-161319) measured 7.4 V the
+            '  other way round -- forward 4.00 (3.00 not), reverse 1.00 (0.75 not). One 2 s sample a rung at the duty
+            '  floor does not repeat to a rung, so 7.4 V (and 11.1 / 12.0 V, DERIVED from it) take the larger of both
+            '  runs each way: 4.00 ticks/s (1_496_731). 14.8 V up stay D1b's 0.60 until D2 rows 4-7 read them again
+            minFwdIncreAtPwr := lookup(index: -1_496_731, -1_496_731, -1_496_731, -224_509, -224_509, -224_509, -224_509)
             minRevIncreAtPwr := lookup(index: 1_496_731, 1_496_731, 1_496_731, 224_509, 224_509, 224_509, 224_509)
     else
         ' rows: PWR_6p0V, PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
@@ -7109,7 +7149,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 55      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 56      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7429,6 +7469,10 @@ CON { driver internal Constants }
                                             '     one-frame hard trip 14 mV over the threshold on both boards. Rev B's
                                             '     shift is 0, so its folds are unchanged. ABI: the parameter run gains
                                             '     sense_shift (DRVR_PARAMS_LONGS_COUNT 27 -> 28)
+                                            ' 56: D2's first rows. PL-208: the Doco's Rev A slowest increments at 7.4, 11.1
+                                            '     and 12.0 V are 4.00 ticks/s each way (forward was 1.00, which D2 showed
+                                            '     not steady). PL-203: the distance limit keeps what it fired on
+                                            '     (testGetLimitFire()). Spin2 only; no PASM or ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7995,7 +8039,9 @@ VAR { PL-137: the wiring walk's per-leg record (testGetWalkLeg()) -- Spin2 only,
     '  cog in checkWiring(), through walkNoteLeg()): the end fields, bWlRan LAST. Every long has exactly one writer.
     LONG    walkWatchLeg                ' front-written: the WLEG_* whose position is being watched, WLEG_NONE for none
     LONG    limitStopTicks              ' front-written: the stopping ticks the distance limit allowed for when it last fired
-    LONG    wlPostMs[WALK_LEGS]         ' front-written: getms() when the leg's command was written and taken
+    LONG    limitFireTrk                ' front-written, PL-203: the tracked ticks (summed |steps|) the distance limit fired on; -1 until it fires
+    LONG    limitFirePos                ' front-written, PL-203: pos when the distance limit fired
+    LONG    wlPostMs[WALK_LEGS]        ' front-written: getms() when the leg's command was written and taken
     LONG    wlPostPos[WALK_LEGS]        ' front-written: pos the leg's distance limit counts from (the tracking reset)
     LONG    wlPeakPos[WALK_LEGS]        ' front-written: the pos furthest from wlPostPos while watched
     LONG    wlLimMs[WALK_LEGS]          ' front-written: ms from the post to the distance limit firing; WALK_NA if it did not

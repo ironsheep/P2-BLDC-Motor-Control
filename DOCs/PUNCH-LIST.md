@@ -1671,9 +1671,21 @@ than the plan (7.4 V −300 counts, 11.1 V −185; NEG −18..+95); crawl stops 
 early, not overrun: the front cog decides on the driver's plan, so the plan's POS travel or the decision's use of it is
 biased. **To close:** the cause stated from the source and these logs; the fix, then R23-SGL-STOPROT at D2's remaining
 voltages.
+> **Desk, 2026-10-06:** the logs cannot separate three rivals — (a) the plan's POS stopping distance overstates the
+> field's real one, (b) the front cog's travel sum (`trkTravelTicks`, summed |steps| a pass) over-counts in POS when a
+> hall code steps back and forth at a sample, (c) the rotor ends short of its field. (c) cannot reach 5–12 ticks: a rotor
+> that far behind its field would have tripped the 176° fault test. DRIVER_REV 56 keeps the decision's own figures
+> (`testGetLimitFire()`), and the harness prints them (`B1-STOPDEC`, SRC_REV 16): `fire_trk − fire_net` is (b),
+> `(rest_net − fire_net) − stop_tk` is (a). The next D2 stops runs read them; the fix follows from that reading.
 
 ### PL-204 -- the timing scan's walk past its span walks into the torque wall (harness)
 
+> **Status (2026-10-06, later): FIXED in SRC_REV 16, awaiting the rerun of `single-measure-v11p1`.** The walk goes on
+> only while each point is at least `OFS_WALK_FALL_MA` (50 mA) BELOW the one before; PL-205 (a held pass makes a point
+> unclean), PL-206 (MISDIAL judges the signs' mean), PL-207 (the tool's Doco record at 40 A, TOOL_REV 3) and PL-208 (the
+> 7.4–12 V minimums 4.00 ticks/s each way, DRIVER_REV 56; MININC's bound read from the library) are fixed in the same
+> change.
+>
 > **Status (2026-10-06): OPEN, a harness defect (MEASURED, D2 row 1).** Mine («#3698», D1B-11).
 
 The walk continues while a side's current is "not rising by more than 50 mA" (`bOfsNotRising()`), where the design (the

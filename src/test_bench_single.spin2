@@ -95,6 +95,12 @@
 ''               fold counts are the driver's folded FRAMES. L-noise (-D SINGLE_PART_NOISE, in single-measure): consecutive
 ''               frames of the raw sense count, coasting and driven, with their statistics (B1-NOISE) -- task 3699's input.
 ''               DAT rowCeilIncr mirrors DRIVER_REV 54's Rev A ceilings (task 3684): 247e6 .. 419e6
+''               06 Oct 2026 -- SRC_REV 16, fmt 13: D2's first rows (DOCs/analyses/bench/2026-10-06/
+''               D2-PARTIAL-EVALUATION.md). PL-204: the scan walks past its span only while the current STILL FALLS by
+''               OFS_WALK_FALL_MA (SRC_REV 15 walked a flat or rising edge into the torque wall). PL-205: a scan point
+''               with a held pass is not clean. PL-206: R23-SGL-MISDIAL judges the two signs' mean (one instance, PAIR) and
+''               prints their half-difference as the asymmetry. PL-203: B1-STOPDEC, the distance limit's decision.
+''               PL-208: R23-SGL-MININC's bound is the library's own shipped minimum per sign (testGetIncrLimits()).
 ''
 
 '' =================================================================================================
@@ -265,8 +271,8 @@ CON { timing }
 
 CON { build identity }
 
-    SRC_REV     = 15                                        ' hand-bumped whenever this file changes
-    FMT_VERSION = 12                                        ' B1- record-format version (12: B1-OFSSIDE and B1-NOISE are new; B1-BUILD noise; B1-MOTOR4 ofs_walk, walk_rise_ma; B1-OFSPT/-OFSPTD may carry points past ofs_span; folds fields count FRAMES (testGetFoldFrames()); 11: B1-ACROSS pair, dir, cps, x_mv, y_mv, lo_mv, hi_mv for phase, t_us, dur_us; B1-AGUIDE target, band_uv/vw/wu_mv for speed, turns, ticks, hyst_*, band_railed; B1-ALEG by_target, tick_edges, peak_ma, mean_peak_ma for speed, edge_s_x10, rpm_x10; B1-ALEG2 rise, fall, ref_half, ref_rail, ref_still, against, clip_kept for cross, unusable, band_railed, peak_ma, mean_peak_ma, swing_hz_x10; B1-MOTOR6 al_target, al_max_edges for al_ticks, al_slow_rpm, al_fast_rpm; 10: B1-HALLSEQ, B1-SIGNMAP; 9: B1-AGUIDE, B1-ACROSS, B1-AEDGE, B1-ALEG, B1-ALEG2, B1-ASUM, B1-MOTOR6; 8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
+    SRC_REV     = 16                                        ' hand-bumped whenever this file changes
+    FMT_VERSION = 13                                        ' B1- record-format version (13: B1-STOPDEC is new; B1-MOTOR4 walk_rise_ma -> walk_fall_ma; B1-MOTOR2 loses mininc_hi_x100 (the MININC bound is the library's own minimum, in the SIGNOFF); B1-MISDIAL gains pair_dev_pm, asym_pm, the cell judges the two signs' mean; 12:B1-OFSSIDE and B1-NOISE are new; B1-BUILD noise; B1-MOTOR4 ofs_walk, walk_rise_ma; B1-OFSPT/-OFSPTD may carry points past ofs_span; folds fields count FRAMES (testGetFoldFrames()); 11: B1-ACROSS pair, dir, cps, x_mv, y_mv, lo_mv, hi_mv for phase, t_us, dur_us; B1-AGUIDE target, band_uv/vw/wu_mv for speed, turns, ticks, hyst_*, band_railed; B1-ALEG by_target, tick_edges, peak_ma, mean_peak_ma for speed, edge_s_x10, rpm_x10; B1-ALEG2 rise, fall, ref_half, ref_rail, ref_still, against, clip_kept for cross, unusable, band_railed, peak_ma, mean_peak_ma, swing_hz_x10; B1-MOTOR6 al_target, al_max_edges for al_ticks, al_slow_rpm, al_fast_rpm; 10: B1-HALLSEQ, B1-SIGNMAP; 9: B1-AGUIDE, B1-ACROSS, B1-AEDGE, B1-ALEG, B1-ALEG2, B1-ASUM, B1-MOTOR6; 8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
 
 CON { the bench this image is built for }
 
@@ -517,9 +523,13 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     '  1,294 -> 982), so the lead check read NOMEAS by construction there (doctrine overlay P10). A falling current is the
     '  walk's own safety: the edge that cost the check run 4.48 A was a rising one.
     OFS_WALK_MAX_DEG        = 40
-    ' "Not rising" allows this much: twice a typical fit's point scatter (B1-OFSFIT rms 24-90 mA, most near 30) and about
-    '  the 5 s mean's own drift (ref_drift_ma 30-150): a flat bottom keeps walking, so the fit sees both sides of it.
-    OFS_WALK_RISE_MA        = 50
+    ' "Still falling" means by at least this much: the later point at least OFS_WALK_FALL_MA BELOW the earlier, so the
+    '  minimum lies further out. PL-204 (SRC_REV 16): SRC_REV 15 walked while the later was "not above the earlier by more
+    '  than 50 mA", so a flat or slowly rising edge walked on: D2's 11.1 V 50 % NEG side rose -15 -> -20 -> -25 (326 ->
+    '  350 -> 370 mA) and walked into the torque wall at -30, 5.24 A, ending the run (debug_261006-140240). A fall of 50
+    '  is about twice a fit's point scatter (B1-OFSFIT rms 24-90 mA, most near 30); D1b's edges that the walk is for fell
+    '  by hundreds of mA a step
+    OFS_WALK_FALL_MA        = 50
     OFS_SIDE_POINTS         = OFS_WALK_MAX_DEG / OFS_STEP_DEG + 1   ' 9 a side: 0, 5, ... 20 always, 25 .. 40 while falling
     OFS_SIDES               = 2
     OFS_POINTS              = OFS_SIDES * OFS_SIDE_POINTS        ' 18 slots a speed and sign (10 always run)
@@ -1290,8 +1300,9 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     '  MININC_NONE_TPS_X100 when the first did not.
     ' PRECONDITION: the sweep's first rung was driven (to its window's end, or to a fault); each verdict needs its whole
     '  window, timed by getms(); the encoder sees a stall the drive cannot hide. A sign whose first rung never ran: NOMEAS.
-    ' BOUND: 0 .. MININC_HI_TPS_X100 (146): the shipped minimum, 544_628 = 1.4555 ticks/s by the drive law, rounded up so
-    '  its own rung passes: PASS says the table's floor turns steadily.
+    ' BOUND: 0 .. the library's own shipped minimum for this voltage and sign as a rate (minIncHiTpsX100(), SRC_REV 16,
+    '  PL-208; it was a fixed 146, the old 544_628 everywhere): PASS says the table's floor turns steadily. Rev A Doco:
+    '  400 at 7.4-12 V each way, 60 from 14.8 V (DRIVER_REV 56).
     ' CORRECT CASE: a synchronous crawl down to 0.6 ticks/s reads 60 -> PASS; the 2023 note ("anything below yields NO
     '  rotation") predicts 146 (its rung steady, 1 tick/s not) -> PASS at the edge. Broken: a rotor that stalls below 3
     '  ticks/s reads 300; one that slips a pole pair at 2 ticks/s (travel 360 short) reads 300; a first rung that stutters
@@ -1301,7 +1312,6 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     '  drive's: B1-MININC's duty and held separate them -- stalled at the duty floor with no held pass is the floor's torque;
     '  duty risen and passes held is the lag limiter.
     MININC_LO_TPS_X100   = 0
-    MININC_HI_TPS_X100   = 146
     MININC_NONE_TPS_X100 = 99_999
 
     ' R23-SGL-FOLLOW (L-ladder), crit FOL_DEV_PM, units PERMILLE, one instance per increment sign: the worst |encoder speed
@@ -1319,11 +1329,14 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     FOLLOW_LO_PM  = 0
     FOLLOW_TOL_PM = 30
 
-    ' R23-SGL-MISDIAL (L-ladder), crit VPRED_DEV_PM, units PERMILLE, one instance per increment sign: (the supply the duty
-    '  line predicts - TOLD_MV) / TOLD_MV. The line is least squares of duty against the encoder's speed over the clean rungs
+    ' R23-SGL-MISDIAL (L-ladder), crit VPRED_DEV_PM, units PERMILLE, ONE instance, PAIR (SRC_REV 16, PL-206; was one per
+    '  sign): the MEAN over the two increment signs of (the supply each sign's duty line predicts - TOLD_MV) / TOLD_MV. A
+    '  misdial moves both signs alike; the direction asymmetry moves them apart, and failed the per-sign cell at D2 (11.1 V
+    '  -22 / +37, 7.4 V -80 / +93: means +7.5 / +6.5, the told supplies right); the half-difference prints as asym_pm.
+    '  Each line is least squares of duty against the encoder's speed over the clean rungs
     '  (arrived, no fault, no held, capped or folded pass, following within FOLLOW_TOL_PM).
-    ' PRECONDITION: MISDIAL_MIN_POINTS clean rungs spanning MISDIAL_MIN_SPAN_PM of the fastest one's speed, the line rising;
-    '  otherwise NOMEAS. A FAIL marks every B1-RUNG of this run usable FALSE (both signs: the supply is one).
+    ' PRECONDITION: for EACH sign, MISDIAL_MIN_POINTS clean rungs spanning MISDIAL_MIN_SPAN_PM of the fastest one's speed,
+    '  the line rising; otherwise NOMEAS. A FAIL marks every B1-RUNG of this run usable FALSE (the supply is one).
     ' BOUND: -MISDIAL_TOL_PM .. +MISDIAL_TOL_PM: 130 while KE_IS_FITTED is FALSE (all of D1, in the run), 30 once a build
     '  sets it TRUE (D2); D1's evaluation applies the 30 offline to the logged ratio_ppm (arbiter decision D5, CON { the
     '  Doco's numbers }, THE MISDIAL CHECK).
@@ -2197,6 +2210,7 @@ sRungSlow       BYTE    "SLOW", 0
 sRungFast       BYTE    "FAST", 0
 sSignNeg        BYTE    "NEG", 0
 sSignPos        BYTE    "POS", 0
+sSignPair       BYTE    "PAIR", 0                           ' PL-206: R23-SGL-MISDIAL's one instance, the two signs' mean
 sDirRise        BYTE    "RISE", 0
 sDirFall        BYTE    "FALL", 0
 sDirNone        BYTE    "NONE", 0
@@ -2519,6 +2533,7 @@ VAR { phase 2a: the cells' accumulators }
     LONG    sfMinTps[SIGN_COUNT], bSfMinMeas[SIGN_COUNT]
     LONG    sfFolWorst[SIGN_COUNT], sfFolN[SIGN_COUNT]
     LONG    sfMisPm[SIGN_COUNT], bSfMisMeas[SIGN_COUNT]
+    LONG    misPairPm, misAsymPm, bMisPairMeas                    ' PL-206: the two signs' mean (judged) and half-difference
     LONG    sfSmooth[SMOOTH_COUNT], sfSmoothN[SMOOTH_COUNT]
     LONG    sfArrPm[SIGN_COUNT * CHG_COUNT], sfArrN[SIGN_COUNT * CHG_COUNT]
     LONG    sfRotDev[SIGN_COUNT * KIND_COUNT], sfRotN[SIGN_COUNT * KIND_COUNT]
@@ -4304,6 +4319,21 @@ PRI incrForTpsX100(nTpsX100) : nIncr
 
     nIncr := muldiv64(nTpsX100 * wheel.DRIVE_PASS_FRAMES * 2, $8000_0000, wheel.HALL_TICKS_PER_CYCLE * wheel.PWM_RATE_IN_HZ * X100)
 
+PRI minIncHiTpsX100(eSign) : nTpsX100 | nMinFwd, nMinRev
+' R23-SGL-MININC's bound for {eSign} (PL-208, SRC_REV 16): the library's own shipped minimum for this voltage and sign,
+' as a rate, so PASS says the table's floor turns steadily -- read from the library (testGetIncrLimits()), not copied.
+' NEG is the forward increment (power +1 maps to minFwd).
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @returns nTpsX100 - hall ticks/s x 100
+
+' Local Variables:
+' @local nMinFwd - the slowest forward (negative) increment
+' @local nMinRev - the slowest reverse (positive) increment
+
+    _, nMinFwd, nMinRev, _ := wheel.testGetIncrLimits()
+    nTpsX100 := tpsX100ForIncr((eSign == SIGN_NEG) ? nMinFwd : nMinRev)
+
 PRI tpsX100ForIncr(nIncr) : nTpsX100
 ' The drive law: the hall-tick rate of an increment, x 100, rounded.
 '
@@ -5145,11 +5175,16 @@ PRI ladderFinish() | eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown, nDe
     repeat eSign from SIGN_NEG to SIGN_POS
         fitSign(eSign)
         misdialSign(eSign)
-    bUsableKnown := bSfMisMeas[SIGN_NEG] or bSfMisMeas[SIGN_POS]
-    bUsable := TRUE
-    repeat eSign from SIGN_NEG to SIGN_POS
-        if bSfMisMeas[eSign] and (abs(sfMisPm[eSign]) > MISDIAL_TOL_PM)
-            bUsable := FALSE
+    ' PL-206 (SRC_REV 16): a misdialled supply moves both signs' predictions alike; the direction asymmetry moves them
+    '  apart (D2: 11.1 V -22 / +37, 7.4 V -80 / +93 per mille). So the misdial reading is their MEAN, and the half-
+    '  difference is the asymmetry, printed, not judged here. Both signs are needed: one alone cannot tell the two apart
+    bMisPairMeas := bSfMisMeas[SIGN_NEG] and bSfMisMeas[SIGN_POS]
+    misPairPm := misAsymPm := 0
+    if bMisPairMeas
+        misPairPm := divRound(sfMisPm[SIGN_NEG] + sfMisPm[SIGN_POS], 2)
+        misAsymPm := divRound(sfMisPm[SIGN_POS] - sfMisPm[SIGN_NEG], 2)
+    bUsableKnown := bMisPairMeas
+    bUsable := bMisPairMeas and (abs(misPairPm) <= MISDIAL_TOL_PM)
     repeat eSign from SIGN_NEG to SIGN_POS
         repeat eEntry from ENTRY_REST to ENTRY_STEP
             repeat ladRungs with rungIdx
@@ -5381,6 +5416,8 @@ PRI emitMisdial(eSign, bUsable, bUsableKnown)
     benchLog.naNumField(@"vpred_mv", fitVpredMv[eSign], LIM_MID, bSfMisMeas[eSign])
     benchLog.numField(@"told_mv", TOLD_MV, LIM_MID)
     benchLog.naNumField(@"dev_pm", sfMisPm[eSign], LIM_MID, bSfMisMeas[eSign])
+    benchLog.naNumField(@"pair_dev_pm", misPairPm, LIM_MID, bMisPairMeas)          ' PL-206: judged (the signs' mean)
+    benchLog.naNumField(@"asym_pm", misAsymPm, LIM_MID, bMisPairMeas)              '  and the asymmetry, POS - NEG over 2
     benchLog.naNumField(@"ratio_ppm", fitRatioPpm[eSign], LIM_BIG, bSfMisMeas[eSign])
     benchLog.naNumField(@"slope_e9", clampedRound(fitB[eSign] *. 1.0e9, LIM_BIG), LIM_BIG, fitOk[eSign])
     benchLog.numField(@"tol_pm", MISDIAL_TOL_PM, LIM_SMALL)
@@ -5787,7 +5824,7 @@ PRI bRunStopsLeg() : bCompleted | nPowIdx, eKind, rotIdx, bGoOn
                 bGoOn := bStopRun(1 - 2 * nPowIdx, eKind, 0, TRUE)
     bCompleted := bGoOn
 
-PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs, nEnc0, nPos0, nDeadline, eErr, nCmd, eSign, eRo, nFinal, nRestMs, bRingShort, eReason, nTravel, nDev, bJudged, instIdx, eOutcome, nZeroMs
+PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs, nEnc0, nPos0, nDeadline, eErr, nCmd, eSign, eRo, nFinal, nRestMs, bRingShort, eReason, nTravel, nDev, bJudged, instIdx, eOutcome, nZeroMs, nFireTrk, nStopTk, nFirePos, nBasePos
 ' One limited drive, armed at rest: stopAfterRotation(N, DRU_HALL_TICKS) or stopAfterTime(T, DTU_MILLISEC), then
 ' driveAtPower() at the top or the crawl; wait, guarded, until isMoveDone(); the shaft's rest (restQuiet()); the stop
 ' reason. ROTATION: the encoder's travel from the arming less N x 60 counts. TIME: the shaft's rest instant less the
@@ -5822,6 +5859,10 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
 ' @local instIdx - the cell's instance
 ' @local eOutcome - a reading's outcome
 ' @local nZeroMs - the field's zero instant, getms() (0 none)
+' @local nFireTrk - ROTATION: the tracked ticks the limit fired on (testGetLimitFire(), PL-203); -1 not fired
+' @local nStopTk - ROTATION: the stopping ticks the decision allowed for
+' @local nFirePos - ROTATION: the driver's pos when it fired
+' @local nBasePos - ROTATION: the driver's pos when the limit was armed
 
     bGoOn := TRUE
     nPower := ((eKind == KIND_TOP) ? rowTopPower : STOPS_CRAWL_POWER) * nPowSign
@@ -5904,6 +5945,22 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
     benchLog.boolField(@"judged", bJudged)
     benchLog.boolField(@"ring_short", bRingShort)
     lineEmit()
+    if not bByTime
+        ' PL-203 (SRC_REV 16): the distance limit's decision, to separate the three rivals for POS stops resting early --
+        '  fire_trk - fire_net is travel the decision counted that the shaft did not make (a hall code stepping back
+        '  and forth); (rest_net - fire_net) - stop_tk is the stopping plan's error; both 0 leaves the rotor short of
+        '  its field. Ticks; the nets are |pos - the armed pos|
+        nFireTrk, nStopTk, nFirePos, nBasePos := wheel.testGetLimitFire()
+        benchLog.begin(@"B1-STOPDEC")
+        benchLog.tokenField(@"sign", (eSign == SIGN_NEG) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
+        benchLog.tokenField(@"kind", (eKind == KIND_TOP) ? @sKindTop : @sKindCrawl, TOKMAX_SET)
+        benchLog.numField(@"limit", nTicks, LIM_MID)
+        benchLog.boolField(@"fired", nFireTrk >= 0)
+        benchLog.numField(@"fire_trk", nFireTrk, LIM_MID)
+        benchLog.numField(@"fire_net", abs(nFirePos - nBasePos), LIM_MID)
+        benchLog.numField(@"stop_tk", nStopTk, LIM_MID)
+        benchLog.numField(@"rest_net", abs(smpPos - nBasePos), LIM_MID)
+        lineEmit()
 #endif
 
 CON { --- L-offscan (the analysis's L3): the offset scan, the lead check, the hall zero at speed --- }
@@ -6132,7 +6189,7 @@ PRI bOfsSide(eSign, pctIdx, eSide) : bGoOn | nIncr, nWholeMs, eUp, ptIdx, slotId
         if eSide == SIDE_MINUS
             nD := -nD
         if (ptIdx * OFS_STEP_DEG > OFS_SPAN_DEG) and bWalkOn
-            bWalkOn := bOfsNotRising(slotIdx)               ' D1B-11: past the span only while the DC link is not rising
+            bWalkOn := bOfsStillFalling(slotIdx)            ' D1B-11 / PL-204: past the span only while the DC link still falls
         if (ptIdx * OFS_STEP_DEG <= OFS_SPAN_DEG) or bWalkOn
             opD[slotIdx] := nD
             if bGoOn and (bEnded == FALSE) and (eUp == RO_DONE)
@@ -6173,15 +6230,16 @@ PRI bOfsSide(eSign, pctIdx, eSide) : bGoOn | nIncr, nWholeMs, eUp, ptIdx, slotId
     applyOffset(eSign, 0)                                   ' at rest (or stopped): the shipped pair again
     emitOfsSide(eSign, pctIdx, eSide, eUp, nLastD, eBack, bGoOn)
 
-PRI bOfsNotRising(slotIdx) : bOn
-' T when the two points before {slotIdx} on its side are clean and the later is not above the earlier by more than
-' OFS_WALK_RISE_MA: the DC link is still falling (or flat) at the side's edge, so the walk past the span may go on
-' (D1B-11). Called only for points past OFS_SPAN_DEG, whose two predecessors are on the same side.
+PRI bOfsStillFalling(slotIdx) : bOn
+' T when the two points before {slotIdx} on its side are clean and the later is at least OFS_WALK_FALL_MA below the
+' earlier: the DC link is still falling at the side's edge, so the minimum lies further out and the walk past the span
+' may go on (D1B-11; PL-204: SRC_REV 15 walked on a flat or slowly rising edge). Called only for points past
+' OFS_SPAN_DEG, whose two predecessors are on the same side.
 '
 ' @param slotIdx - the point about to be walked
 ' @returns bOn - T/F where T means walk on
 
-    bOn := bOpClean[slotIdx - 1] and bOpClean[slotIdx - 2] and (opDcMa[slotIdx - 1] <= opDcMa[slotIdx - 2] + OFS_WALK_RISE_MA)
+    bOn := bOpClean[slotIdx - 1] and bOpClean[slotIdx - 2] and (opDcMa[slotIdx - 1] + OFS_WALK_FALL_MA <= opDcMa[slotIdx - 2])
 
 PRI ofsReturn(eSign, nFromD) : eRo | nD
 ' Walk the sign's offset from {nFromD} degrees back to the shipped one while driven, OFS_STEP_DEG at a time with
@@ -6299,7 +6357,10 @@ PRI ofsPoint(slotIdx, nIncr, nLimitMa) : eRo | nResync0, nResync1, nOver, nCeil,
     opResyncs[slotIdx] := nResync1 - nResync0
     opDcMa[slotIdx] := winDcMa
     opN[slotIdx] := winN
-    bOpClean[slotIdx] := bWinRan and (eRo == RO_DONE) and (opResyncs[slotIdx] == 0) and (abs(opFolPm[slotIdx] - PM) <= FOLLOW_TOL_PM)
+    ' PL-205 (SRC_REV 16): and no held pass -- a point where the drive held its field is a hunting point, not a reading of
+    '  the current at that timing (D2 11.1 V 25 % NEG -15: held 54, err_pk 104, fitted, the vertex moved to +9.5 deg);
+    '  the adoption tool already rules it HUNT
+    bOpClean[slotIdx] := bWinRan and (eRo == RO_DONE) and (opResyncs[slotIdx] == 0) and (abs(opFolPm[slotIdx] - PM) <= FOLLOW_TOL_PM) and (opHeld[slotIdx] == 0)
 
 PRI ofsFit(eQuantity) : bResolved, nVertX10, nVseX10, nTx10, nPts, nRmsX10 | slotIdx, fU, fY, fS0, fS1, fS2, fS3, fS4, fT0, fT1, fT2, fDet, fA, fB, fC, fSsr, fResVar, fCaa, fCbb, fCab, fSeA, fVert, fVse, nFarX10
 ' The parabola y = a u^2 + b u + c through the speed's clean points, u = degrees from the shipped offset / 10, y the DC
@@ -9870,7 +9931,6 @@ PRI emitMotor()
     benchLog.numField(@"duty_volt_div", DUTY_VOLT_DIV, LIM_TINY)
     benchLog.numField(@"reserve_pm", DUTY_RESERVE_PM, LIM_SMALL)
     benchLog.numField(@"mininc_sync", MININC_SYNC_TOL_COUNTS, LIM_SMALL)
-    benchLog.numField(@"mininc_hi_x100", MININC_HI_TPS_X100, LIM_SMALL)
     benchLog.numField(@"crawl_power", STOPS_CRAWL_POWER, LIM_TINY)
     benchLog.numField(@"rot_early", STOPROT_EARLY_COUNTS, LIM_SMALL)
     benchLog.numField(@"rot_late", STOPROT_LATE_COUNTS, LIM_SMALL)
@@ -9892,7 +9952,7 @@ PRI emitMotor()
     benchLog.numField(@"ofs_step", OFS_STEP_DEG, LIM_TINY)
     benchLog.numField(@"ofs_span", OFS_SPAN_DEG, LIM_TINY)
     benchLog.numField(@"ofs_walk", OFS_WALK_MAX_DEG, LIM_TINY)
-    benchLog.numField(@"walk_rise_ma", OFS_WALK_RISE_MA, LIM_SMALL)
+    benchLog.numField(@"walk_fall_ma", OFS_WALK_FALL_MA, LIM_SMALL)
     benchLog.numField(@"ofs_win_ms", OFS_WINDOW_MS, LIM_SMALL)
     benchLog.numField(@"ofs_x100", OFS_POINT_X100, LIM_SMALL)
     benchLog.numField(@"ofs_floor_ma", OFS_POINT_FLOOR_MA, LIM_SMALL)
@@ -10107,15 +10167,14 @@ PRI emitDeclaredSignoffs() | setIdx, eSign, eIdx, hl, eDir, nPowIdx
 #ifdef SINGLE_PART_MININC
     repeat eSign from SIGN_NEG to SIGN_POS
         emitSignoff(@sSfCellMinInc, signToken(eSign), @sSfCritMinTps, bSfMinMeas[eSign], sfMinTps[eSign], ...
-                    MININC_LO_TPS_X100, MININC_HI_TPS_X100, @sSfUnitsTps, 1)
+                    MININC_LO_TPS_X100, minIncHiTpsX100(eSign), @sSfUnitsTps, 1)
 #endif
 #ifdef SINGLE_PART_LADDER
     repeat eSign from SIGN_NEG to SIGN_POS
         emitSignoff(@sSfCellFollow, signToken(eSign), @sSfCritFolDev, sfFolN[eSign] > 0, sfFolWorst[eSign], ...
                     FOLLOW_LO_PM, FOLLOW_TOL_PM, @sSfUnitsPm, sfFolN[eSign])
-    repeat eSign from SIGN_NEG to SIGN_POS
-        emitSignoff(@sSfCellMisdial, signToken(eSign), @sSfCritVpred, bSfMisMeas[eSign], sfMisPm[eSign], ...
-                    -MISDIAL_TOL_PM, MISDIAL_TOL_PM, @sSfUnitsPm, fitPts[eSign])
+    emitSignoff(@sSfCellMisdial, @sSignPair, @sSfCritVpred, bMisPairMeas, misPairPm, ...      ' PL-206: the signs' mean
+                -MISDIAL_TOL_PM, MISDIAL_TOL_PM, @sSfUnitsPm, fitPts[SIGN_NEG] + fitPts[SIGN_POS])
 #endif
     if PART_LADDER_BUILT or PART_RAMP_BUILT
         repeat eSign from SIGN_NEG to SIGN_POS
