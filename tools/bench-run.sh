@@ -100,7 +100,8 @@ PACK_DIR="${BENCH_PACK_DIR:-}"
 # THE CLOCK TABLE (task 3674): every clock a run can name, in ONE place. A name maps to Hz here and nowhere else, so a
 # later task that rules a clock changes ONE line. Since task 3674 test_bench_dual's CLOCK part and test_bench_t0 judge
 # any clock (the expected frame is computed from the running clock), so the names are chosen to cover the range:
-#   clk-floor  the lowest supported clock. PROVISIONAL 120 MHz: task 3683 rules the real floor and sets it HERE, this line only.
+#   clk-floor  the lowest supported clock: 130 MHz, the library's MIN_CLKFREQ_HZ (task 3683, STEPHEN 2026-10-06 "yes a";
+#              was a provisional 120 MHz, which start() now refuses).
 #   clk-200    200 MHz, as the original dual-clock-200
 #   clk-270    270 MHz, the files' own default, as dual-clock-270
 #   clk-300    300 MHz, as dual-clock-300
@@ -112,7 +113,7 @@ PACK_DIR="${BENCH_PACK_DIR:-}"
 CLOCK_NAMES="clk-floor clk-200 clk-270 clk-300 clk-350 clk-frac"
 clock_hz() {
     case "$1" in
-        clk-floor) echo "120000000" ;;
+        clk-floor) echo "130000000" ;;
         clk-200)   echo "200000000" ;;
         clk-270)   echo "270000000" ;;
         clk-300)   echo "300000000" ;;
@@ -186,7 +187,7 @@ usage() {
 Usage:  tools/bench-run.sh <tier> [<clock>]
   <clock>     -- optional, for the tiers of test_bench_dual, test_bench_t0, test_bench_single and util_adopt_motor only: the clock the run is built at, by NAME
                  (nothing numeric is typed). One of:
-                   clk-floor  120 MHz  the lowest supported clock (PROVISIONAL: task 3683 rules it)
+                   clk-floor  130 MHz  the lowest supported clock (start() refuses below it)
                    clk-200    200 MHz
                    clk-270    270 MHz  (what a run without a clock uses)
                    clk-300    300 MHz

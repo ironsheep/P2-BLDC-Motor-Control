@@ -186,6 +186,7 @@ CON { Public Interface Constants }
     '   ERR_START_CHECK_FAILED - start: a start check still failed after its retries, so the motor was not started (getHealth() says which)
     '   ERR_NOT_IMPLEMENTED    - the method is kept so programs compile, but does nothing (calibrate())
     '   ERR_BAD_MOTOR_TABLE    - start: a motor's hall delta table holds a step outside -1..+1; no driver launched
+    '   ERR_CLOCK_TOO_SLOW     - start: the system clock is under MIN_CLKFREQ_HZ (130 MHz); nothing claimed, no cog started
     '   ERR_PROTECTIVE_STOP   - a protective stop is latched for a cause outside the named ones
     '   ERR_PLATFORM_BLOCKED   - a protective stop is latched: a commanded motor held at its current limit did not move
     NO_ERROR                = 0
@@ -211,6 +212,7 @@ CON { Public Interface Constants }
     ERR_START_CHECK_FAILED  = -1_020
     ERR_NOT_IMPLEMENTED     = -1_021
     ERR_BAD_MOTOR_TABLE     = -1_022
+    ERR_CLOCK_TOO_SLOW      = -1_023
     ERR_PROTECTIVE_STOP     = -2_000
     ERR_PLATFORM_BLOCKED    = -2_001
 
@@ -4314,7 +4316,13 @@ PRI launchDriver(eMotorBasePin, eMotorVoltage, eDetectionMode, bParked) : eError
 ' Local Variables:
 ' @local driverCogId - the value coginit() returned
 
-    eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    if clkfreq < MIN_CLKFREQ_HZ
+        ' Task 3683 (STEPHEN 2026-10-06 "yes a"): refused before setupForStart(), so no pin group is claimed, no pin is
+        '  driven and no cog starts (MIN_CLKFREQ_HZ says why the floor is where it is)
+        eError := recordError(ERR_CLOCK_TOO_SLOW)
+        debug[user.DBGCH_ERROR]("! ERROR: start refused, the system clock is under the driver's floor ", udec_long(clkfreq), udec_long(MIN_CLKFREQ_HZ))
+    else
+        eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
     if (eError == NO_ERROR) and (eDetectedBoard == REV_Unknown)
         ' PL-73: with no board detected there is no current-sense scale, so the driver would run with no
         '  current limit at all. A board is driven only when detected, or when the user forced a revision
@@ -7064,6 +7072,14 @@ CON { driver internal Constants }
 '    FRAME   = 12_273            ' 22.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
     PWM_RATE_IN_HZ   = 44_000
     DRIVE_PASS_FRAMES   = 23        ' PL-50/C-1: one drive pass every 23 PWM (ADC) frames, about 1913 passes/s
+    ' Task 3683 (STEPHEN 2026-10-06 "yes a"): THE LOWEST CLOCK start() accepts; under it, ERR_CLOCK_TOO_SLOW. The frame is
+    '  fixed in TIME (PWM_RATE_IN_HZ), the driver's work in it is fixed in CLOCKS: its worst frame window is 2,204 clocks
+    '  (tools/pasm_equiv, worst-case hub and CORDIC waits, DRIVER_REV 55: planner stage 9). It must fit 75 % of the
+    '  frame (the project's margin, pasm_equiv's guard): 2,204 / 0.75 x 44 kHz = 129.3 MHz, so 130. With no margin it
+    '  fits to 97 MHz; the other floors are lower (Rev A's continuous limit vs the ADC count 102 MHz, driveinit's dead
+    '  gap 80, the front cog's worst pass 74.4 for responsiveness only). A driver change that grows the worst window
+    '  re-derives this
+    MIN_CLKFREQ_HZ      = 130_000_000
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
     ' DRIVER_REV 50: the duty floor's share of the frame, as a fraction: 100 counts of the 6_136-clock frame (270 MHz) = 1.63 %
     DUTY_MIN_FRAME_NUM   = 100
