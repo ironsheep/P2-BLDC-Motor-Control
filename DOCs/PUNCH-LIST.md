@@ -84,7 +84,9 @@ logged since 2026-09-27, 35 of them naming the right wheel, after the 2026-09-26
 bound, desk), PL-198 (`moveShaftToAngle()` does nothing), PL-199 (350 MHz sense noise), PL-200 (a timed crawl stop
 rested late once); PL-201 merged into PL-170 (listed under Ancillary above: Rev A's fold at a test-use limit fires on
 noise — measured again on the Doco, and now needed by D2's hand-load limit cell); PL-202 (T0-27's one-frame premise,
-superseded on Rev A by DRIVER_REV 55's filtered fold).
+superseded on Rev A by DRIVER_REV 55's filtered fold); from D2's first rows (2026-10-06): PL-203 (POS stops by rotation
+rest early at the top), PL-204 / PL-205 / PL-206 (harness: the scan's walk, a hunting point fitted, MISDIAL per sign),
+PL-207 (the adoption tool's stale 2 A record), PL-208 (the 7.4 V slowest speed swapped direction).
 
 **Standing rulings carried from 6.0.0:** the fault-return run faults its wheel with the guarded `testForceFault()`, not
 the wrong-offset write (STEPHEN 2026-09-28, *"fp1: A"*); a test built on a wrong premise is corrected before it runs
@@ -1371,6 +1373,10 @@ the driver caps each rate at what the current limit can deliver, validated on th
 > threshold; Rev B's shift is 0, so its folds are unchanged frame for frame. The values are DERIVED on the premise that
 > the noise is independent frame to frame; D2's per-frame capture (`B1-NOISE`, single-measure's first leg) tests the
 > premise and sizes the window, and D2's hand-load cells at a low limit certify it. **To close:** both.
+> **2026-10-06 — the premise MEASURED (D2 row 1, `B1-NOISE`, 11.1 V):** one frame's sd 0.50 mV coasting, 0.61–0.64 mV
+> driven (4.8 mV peak to peak); neighbouring frames anti-correlated (lag-1 −0.19..−0.26), a slow wander of ~0.2–0.3 mV.
+> A 16-frame average leaves < 0.4 mV against the 3 mV floor: the values hold, with margin. The 1.5–2.3 mV above was an
+> over-statement. Remaining: the 24 V capture and the hand-load cells.
 >
 > **Status (2026-10-05): OPEN — measured again, now with a motor that draws real current.** Still reaches only TEST
 > USE limits (`testSetCurrentLimits()`; no public method sets a limit, so a user runs at 40/27 A, ~15 mV on Rev A).
@@ -1653,6 +1659,66 @@ noise that folds nothing, so the cell would FAIL a correct driver. The parameter
 `sense_zero` at `motor.DRVR_PARAMS_SENSE_ZERO_IDX`). **To close:** redesign T0-27 on the filtered premise
 (`testGetFoldFloorMv()`, the floor and the shift) before tier `t0-reva` runs again; the sprint plan runs no Rev A
 floor tier for the 6.5″ (`DOCO-AND-CLOCK-SPRINT-PLAN.md` "Not in this plan"), so nothing runs it this cycle.
+
+### PL-203 -- a POS stop by rotation from the Doco's top speed rests up to 12 hall ticks early
+
+> **Status (2026-10-06): OPEN, a drive finding (MEASURED, D2 rows 1 and 3).** Root-cause at the desk before any rerun.
+
+`stopAfterRotation()` at the top, POS increment: the driver's own count rests at 7,196 / 9,596 ticks of 7,200 / 9,600 at
+11.1 V and 7,194 / **9,588** at 7.4 V (R23-SGL-STOPROT −254 and −723 counts, band −240..+180); NEG lands within one tick
+at both. DRIVER_REV 53 (D1b, 7.4 V) showed the same direction smaller (−186 / −120). The POS ramp-down also covers less
+than the plan (7.4 V −300 counts, 11.1 V −185; NEG −18..+95); crawl stops and stops by time pass. The stop is commanded
+early, not overrun: the front cog decides on the driver's plan, so the plan's POS travel or the decision's use of it is
+biased. **To close:** the cause stated from the source and these logs; the fix, then R23-SGL-STOPROT at D2's remaining
+voltages.
+
+### PL-204 -- the timing scan's walk past its span walks into the torque wall (harness)
+
+> **Status (2026-10-06): OPEN, a harness defect (MEASURED, D2 row 1).** Mine («#3698», D1B-11).
+
+The walk continues while a side's current is "not rising by more than 50 mA" (`bOfsNotRising()`), where the design (the
+constant's own note) says "still FALLING", and it walks even after the vertex resolved inside the span. At 11.1 V 50 %
+NEG it went −20 (350 mA) → −25 (370) → −30, the motor's torque wall, and the harness's absolute guard ended the run at
+5.24 A (`debug_261006-140240`): the 11.1 V measure row lost its POS scan, top-speed scan, slowest speed, ladder, ramp and
+stops for the third time. **To close:** walk only while the last point is lower than the one before AND the vertex is not
+resolved inside the span; rerun `single-measure-v11p1`.
+
+### PL-205 -- the timing scan fits a point where the drive hunted (harness)
+
+> **Status (2026-10-06): OPEN, a harness defect (MEASURED, D2 row 1).**
+
+At 11.1 V 25 % NEG the −15° point held the field 54 passes with `err_pk` 104 and mean error 32 (the drive hunting), yet
+`B1-OFSPT ... clean,TRUE`, so `ofsFit()` took it: the vertex moved to +9.5° (50 %: −2.7°) and R23-SGL-LEADMOVE FAILed on a
+12.2° spread. **To close:** a point with held passes is not clean (as the adoption tool already rules: HUNT).
+
+### PL-206 -- R23-SGL-MISDIAL judges each sign alone, so the direction asymmetry fails it (harness)
+
+> **Status (2026-10-06): OPEN, a cell defect (MEASURED, D2 rows 1 and 3).**
+
+The cell predicts the supply from each sign's duty line and fails either beyond ±30 ‰: 11.1 V NEG −22 / POS +37, 7.4 V
+NEG −80 / POS +93. A misdialled supply moves both signs alike; the direction asymmetry moves them apart. Their mean,
++7.5 ‰ and +6.5 ‰, is the misdial reading (PASS); the half-difference is the asymmetry. **To close:** judge the mean of
+the two signs; print the half-difference as the asymmetry, not judged here.
+
+### PL-207 -- the adoption tool's Doco record scans at 2 A, a limit the harness left at D1b (tool)
+
+> **Status (2026-10-06): OPEN, a stale record value (MEASURED, D2 rows 1 and 3).**
+
+`util_adopt_motor.spin2`'s DocoEng record carries scan 2 A / ladder 3 A, the harness's test limits until SRC_REV 14 moved
+it to the library's 40 A (STEPHEN 2026-10-05 "yes A"). At 2–3 A on Rev A this motor's crawl-speed phase current reaches
+the limit: 5° from the start a point hunts and the next droops (7.4 V 560 rpm NEG: d+5 HUNT held 73, d+10 DROOP 469 ‰),
+and the 280 rpm rung droops (488 ‰), so no fit resolves and no ceiling is found. **To close:** the record at the
+library's limits, its abort at 3.68 A as the harness's; rerun `doco-adopt-v11p1` and `-v7p4`.
+
+### PL-208 -- the Doco's slowest steady speed at 7.4 V swapped direction between D1b and D2
+
+> **Status (2026-10-06): OPEN, a table value (MEASURED, D2 row 3).**
+
+D1b (REV 53): NEG 1.00 ticks/s steady, POS 4.00. D2 (REV 55, the per-direction pair): NEG 4.00 (3.00 not), POS 1.00
+(0.75 not) — so the shipped forward minimum (1.00, `confgurePowerLimits()`) did not crawl steadily, and R23-SGL-MININC
+NEG FAILed. Each rung is one 2 s sample at the duty floor; the edge is not repeatable to one rung. **To close:** the
+7.4 V minimum (and 11.1 / 12.0 V, DERIVED from it) set to the larger of both runs, 4.00 ticks/s each way, until a
+repeated measurement shows a lower one steady every time.
 
 ---
 
