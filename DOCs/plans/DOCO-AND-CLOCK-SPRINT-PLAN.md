@@ -527,7 +527,12 @@ bolted-on shaft encoder judges every speed, direction and rest position.
    the commutation offsets by current minimum, cross-checked against the encoder's hall zero; the speed ladder on the
    encoder (the duty line, the top speed with the 6.5″'s duty reserve, the feedforward line, the slowest steady speed each
    way); the ramps and stops as the "before". At one voltage, the §1.4 pass-period probe at each test clock.
-4. **Desk — the driver's Doco tables updated (§6)**; anything beyond a table value goes to Stephen first.
+   **Done 2026-10-05 (third pass, 40 A limit; `DOCs/analyses/bench/2026-10-05/D1B-EVALUATION.md`):** five rows complete,
+   11.1 V ended in its offset scan (its later legs are D2's to measure, its table values DERIVED meanwhile). The drive
+   follows, ramps and stops on plan at every voltage; the tables' inputs are measured; above ≈ 2,400 rpm the drive enters
+   a two-state high-duty regime that the ceilings must be set against (root-caused at the desk first, in «#3684»).
+4. **Desk — the driver's Doco tables updated (§6)**, with the harness repairs D1b found («#3698») in the same batch;
+   anything beyond a table value goes to Stephen first.
 5. **Session D2 — qualify at every voltage on the updated driver (§7), judged on the encoder**: power rungs within 3 %;
    ramps within 10 %; the stop limits; top speed smooth forward, reverse and through reversals; **the lowest speed the
    motor is controllable at and the highest speed it reaches, confirmed once the offsets are right** (STEPHEN 2026-10-04:
@@ -653,6 +658,8 @@ All tasks carry priority `high` and tag `v620`; `seq` is the order (plan-to-task
 | §10 D1b | D1b (offsets, ladder, pass probe) evaluation | «#3682» | 13 |
 | §1 (6) | Clock floor derived; `ERR_CLOCK_TOO_SLOW` ruled (P5), then built | «#3683» | 14 |
 | §6 | Doco tables and ruled driver changes | «#3684» | 15 |
+| §4, §10 D2 | Single-motor harness repaired from D1b's findings (added mid-sprint) | «#3698» | before 18 |
+| §6 (driver) | Rev A current sensing fitted to its hardware; per-board drive (STEPHEN 2026-10-05; added mid-sprint) | «#3699» | before 18 |
 | §8 | Motor-adoption tool (PL-176) | «#3685» | 16 |
 | §7 | Doco qualification cells | «#3686» | 17 |
 | §10 D2 + 6.5″ | D2 and 6.5″ session run sheets, pack, hand-back | «#3687» | 18 |
@@ -712,3 +719,15 @@ must reflect and runs in the D1 wait; the refusal follows D1's front-cog cost; d
   pairs, the falling hall order and the hall/encoder direction confirmed; the start, wiring and no-wheel checks pass; the
   six hall sectors are uneven (13.5°-16.7°), so §6 gains a priced per-sector question and the hall map's SECTOR cell is
   re-defined to judge repeatability before D1b's pack. The motor docs carry what was verified.
+- **2026-10-05** — D1b's second pass lost following at every voltage at the bench's 2 A test limit (Rev A's fold-back
+  floor fires on noise; PL-201). STEPHEN *"yes A"*: the library's 40 A limit, the harness's 3.68 A stop as the bench's
+  protection, the timing scan at ±20°. **The third pass measured the tables' inputs** (§10 step 3; evaluation
+  `D1B-EVALUATION.md`, findings D1B-1..14): «#3684»'s body now carries them, a top-speed regime to root-cause first, and
+  the 11.1 V row left to D2. «#3698» added (§17) for the harness repairs. **D2's hand legs revisit the 40 A test
+  limit** (a hand load at 40 A is guarded only by the harness's abort).
+- **2026-10-05** — STEPHEN: *"our goal is best possible drive for revA and then also for revB boards if we
+  algorithmically are different for each to achieve then we need to be."* «#3699» added (§17): Rev A's current limit
+  decided on a reading its hardware can resolve (PL-170, which PL-201 merged into), Rev B's path unchanged; it lands
+  before D2, whose hand-load limit cell then certifies a low limit on the Doco.
+- **2026-10-05** — the starting point and the work-and-research plan after D1b are `D1B-FOLLOW-ON-PLAN.md` (at
+  Stephen's request); it orders «#3684», «#3699», «#3698», «#3683» and D2 under this plan's gates.

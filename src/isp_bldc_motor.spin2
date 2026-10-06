@@ -186,6 +186,7 @@ CON { Public Interface Constants }
     '   ERR_START_CHECK_FAILED - start: a start check still failed after its retries, so the motor was not started (getHealth() says which)
     '   ERR_NOT_IMPLEMENTED    - the method is kept so programs compile, but does nothing (calibrate())
     '   ERR_BAD_MOTOR_TABLE    - start: a motor's hall delta table holds a step outside -1..+1; no driver launched
+    '   ERR_CLOCK_TOO_SLOW     - start: the system clock is under MIN_CLKFREQ_HZ (130 MHz); nothing claimed, no cog started
     '   ERR_PROTECTIVE_STOP   - a protective stop is latched for a cause outside the named ones
     '   ERR_PLATFORM_BLOCKED   - a protective stop is latched: a commanded motor held at its current limit did not move
     NO_ERROR                = 0
@@ -211,6 +212,7 @@ CON { Public Interface Constants }
     ERR_START_CHECK_FAILED  = -1_020
     ERR_NOT_IMPLEMENTED     = -1_021
     ERR_BAD_MOTOR_TABLE     = -1_022
+    ERR_CLOCK_TOO_SLOW      = -1_023
     ERR_PROTECTIVE_STOP     = -2_000
     ERR_PLATFORM_BLOCKED    = -2_001
 
@@ -2432,6 +2434,15 @@ PUB testGetTelemetry() : nDuty, nErr, nSenseI, nSenseU, nSenseV, nSenseW, eDrvrS
     eDrvrState := drv_state
     bDidFault := (fault <> false) ? true : false
 
+PUB testGetFoldFrames() : nFrames
+'' TESTING USE: the frames the driver's per-frame current fold-back has lowered the duty since it started (the driver's
+''  own count, unbounded; EV_FOLDBACK reports an engage only after a quiet second, so a fold that never rests is one
+''  event however long it lasts)
+''
+'' @returns nFrames - folded frames since the driver started (mod 2^32)
+
+    nFrames := foldback_frames
+
 PUB testGetFollowing() : nMeasTicksSec, nCmdTicksSec, nPctOfCmd, bValid
 '' TESTING USE: whether the drive is FOLLOWING its command -- the measured tick rate against the
 '' commanded one, as a percentage
@@ -3255,11 +3266,24 @@ PUB testGetFoldMinMv() : nFoldMinMv
 ''
 '' FOLD_MIN_MV, or FOLD_MIN_COUNTS ADC counts at this clock (max(4, ceil(7 x 3300 / frame_cnt))) when that is more, which it is below
 '' 254.1 MHz. FOLD_MIN_MV stays the constant 4; this is the value init() derived for the running clock, so a bench criterion on the
-'' fold's effective threshold judges against this, not the constant.
+'' fold's effective threshold judges against this, not the constant. DRIVER_REV 55: on Rev A the fold-back reads its filtered DC
+'' link and its floor is FOLD_MIN_FILT_MV instead; this stays the walk guard's floor on both boards and the fold's on Rev B.
 ''
 '' @returns nFoldMinMv - the floor, mV; as set by the last start (init())
 
     nFoldMinMv := foldMinMv
+
+PUB testGetFoldFloorMv() : nFloorMv, nShift
+'' TESTING USE: the fold-back's threshold floor and its filter, as set by the last start (DRIVER_REV 55)
+''
+'' Rev B: testGetFoldMinMv()'s floor on one frame's reading, shift 0. Rev A: FOLD_MIN_FILT_MV on the filtered reading,
+'' shift SENSE_FILT_SHIFT_REVA (a time constant of 2^shift frames).
+''
+'' @returns nFloorMv - the floor setFoldLimit() keeps the threshold at or above, mV
+'' @returns nShift - the filter's shift, 0 for one frame's reading
+
+    nFloorMv := foldFloorMv
+    nShift := sense_shift
 
 PUB isWalkWatched() : bWatched
 '' INTERNAL USE: whether a wiring walk leg's position is being watched -- from its post until the next drive command (PL-137)
@@ -4292,7 +4316,13 @@ PRI launchDriver(eMotorBasePin, eMotorVoltage, eDetectionMode, bParked) : eError
 ' Local Variables:
 ' @local driverCogId - the value coginit() returned
 
-    eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
+    if clkfreq < MIN_CLKFREQ_HZ
+        ' Task 3683 (STEPHEN 2026-10-06 "yes a"): refused before setupForStart(), so no pin group is claimed, no pin is
+        '  driven and no cog starts (MIN_CLKFREQ_HZ says why the floor is where it is)
+        eError := recordError(ERR_CLOCK_TOO_SLOW)
+        debug[user.DBGCH_ERROR]("! ERROR: start refused, the system clock is under the driver's floor ", udec_long(clkfreq), udec_long(MIN_CLKFREQ_HZ))
+    else
+        eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
     if (eError == NO_ERROR) and (eDetectedBoard == REV_Unknown)
         ' PL-73: with no board detected there is no current-sense scale, so the driver would run with no
         '  current limit at all. A board is driven only when detected, or when the user forced a revision
@@ -4633,13 +4663,14 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' R18.4 D-1: the feedforward's scale is the increment at which the motor's back-EMF would use the whole
     '  duty range. Task 3603 (PL-107): it is the MOTOR's back-EMF line, not the speed ceiling. Until now it
     '  was read from maxFwdIncreAtPwr, so raising the ceiling (LIMITS-RESET-PLAN.md L1) would silently have
-    '  weakened the feedforward. The 6.5in line is measured at 18.5 V and scales with the bus voltage.
-    '  The Doco motor has no measured line, so its ceiling table stands in, and its ceilings are not moved.
+    '  weakened the feedforward. Each motor's line is measured at 18.5 V and scales with the bus voltage.
+    '  Task 3684: the Doco's is D1b's (DOCO_FF_INCR_AT_NOMINAL), on either board -- a duty fraction is the motor's,
+    '  not the board's; until DRIVER_REV 54 its ceiling table stood in, ~73 % more feedforward than the motor needs.
     '  Never 0: the driver divides by it.
     if user.MOTOR_TYPE == MOTR_6_5_INCH
         ff_ceiling := muldiv64(HUB_FF_INCR_AT_NOMINAL, nominalMilliVolts(eMotorVoltage), HUB_FF_NOMINAL_MV)
     else
-        ff_ceiling := abs(maxFwdIncreAtPwr)
+        ff_ceiling := muldiv64(DOCO_FF_INCR_AT_NOMINAL, nominalMilliVolts(eMotorVoltage), HUB_FF_NOMINAL_MV)
     ' Task 3604: the driver scales by duty_max, and the line reaches dutyAtFfLine at ff_ceiling, so ff_ceiling
     '  moves with duty_max and the slope does not (1_728 / 1_516 of the line's own figure at 270 MHz).
     ff_ceiling := muldiv64(ff_ceiling, duty_max, dutyAtFfLine)
@@ -4653,6 +4684,14 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' DRIVER_REV 51 (task 3671): the least reading that is a measurement, at this clock's ADC count (FOLD_MIN_COUNTS): 4 mV
     '  at 270 MHz as before, more where a count is coarser (11 mV at 100 MHz)
     foldMinMv := FOLD_MIN_MV #> mulDivUp(FOLD_MIN_COUNTS, ADC_FULL_SCALE_MV, frame_cnt)
+    ' DRIVER_REV 55 (PL-170, the per-board ruling): Rev A's fold-back reads its FILTERED DC link (sense_shift), whose noise
+    '  is a fraction of one frame's, so its floor is FOLD_MIN_FILT_MV; Rev B's reads one frame, as before (shift 0)
+    if eDetectedBoard == REV_A
+        sense_shift := SENSE_FILT_SHIFT_REVA
+        foldFloorMv := FOLD_MIN_FILT_MV
+    else
+        sense_shift := 0
+        foldFloorMv := foldMinMv
     ' DRIVER_REV 40: the walk's current guard, WALK_I_LIMIT_MA on this board's sense scale (Rev B 150 mV, Rev A 5 mV), never
     '  under foldMinMv + 1, the least reading that is a measurement. No board, no scale: that least reading (no driver
     '  starts on an undetected board, so no walk runs on it)
@@ -5199,6 +5238,20 @@ CON { 6.5in hub commutation: hall zero and per-direction lead }
     ' Task 3605 (Visit 9): the 6.5in speed ceiling at HUB_FF_NOMINAL_MV and the floor, both MEASURED; the other
     '  voltages' ceilings scale from the first (confgurePowerLimits() gives the rule and the evidence)
     HUB_CEIL_INCR_AT_NOMINAL = 165_000_000
+    ' Task 3684: the Doco's back-EMF line and Rev A ceilings, at HUB_FF_NOMINAL_MV and scaled by the supply as the 6.5in's
+    '  are. MEASURED by D1b's ladder (D1B-EVALUATION.md 2.3, B1-RUNGD REST entry, the 25-75 % rungs of every row, below
+    '  the top-speed knee): the POS rungs reach dutyAtFfLine at 34.4-38.2e6 increments a volt, median 37.2e6 -- the
+    '  sheet's Ke (3.53 V/krpm) predicts 37.2e6 -- so the motor's line at 18.5 V is 688e6. NEG needs 5-20 % more duty
+    '  at the same speed (the direction asymmetry, D2's R3); the trim carries it.
+    DOCO_FF_INCR_AT_NOMINAL   = 688_000_000
+    '  The ceiling rule is the 6.5in's -- the fastest speed that keeps 92.5 % of the duty cap unloaded -- read on the
+    '  needier direction: NEG's 75 % rungs reach dutyAtFfLine at 31.7-32.4e6 a volt, so 92.5 % of duty_max at 33.4e6
+    '  a volt (7.4 V's NEG duty, 21_730 at 211.5e6, extrapolates to the reserve at 249e6). DERIVED, and capped at
+    '  DOCO_CEIL_INCR_MAX, the fastest D1b ran with no fault at every row that reached it (22.2 V's top rung, 2_799
+    '  rpm; PK-1). Above ~352e6 D1b's duty ran +44..+81 % over the line: DRIVER_REV 54's fieldSteps is that
+    '  defect's fix, and D2's ladder certifies these tops on it.
+    DOCO_CEIL_INCR_AT_NOMINAL = 618_000_000
+    DOCO_CEIL_INCR_MAX        = 419_000_000
     HUB_CEIL_ROUND           = 500_000
     HUB_FLOOR_INCR           = 100_000
 
@@ -5286,36 +5339,34 @@ PRI offsetsForMotor(eMotorType, eMotorVoltage) : fwdDegrees, revDegrees | ofsDeg
 ' @returns revDegrees - commutation offset for positive increments, in degrees
 
 ' Local Variables:
-' @local ofsDegr - the chosen offset, in degrees
+' @local ofsDegr - the chosen offset, in degrees (the Rev B pair's one value)
 ' @local index - the drive voltage's row in the Doco offset table
 
     case eMotorType
       MOTR_DOCO_4KRPM:
         index := lookdown(eMotorVoltage: PWR_7p4V..PWR_24p0V)
-        ' 15 degrees per tic so +- 15 is our offset?
-{
-            ' 7.4V:  51-54 best, 55 fault?! (Verif) 52 starts better!  B: 28, 33
-            ' 11.1V: 52-54 best, 55 fault?! (Verif)                    B: 33, 42, 44, 38
-            ' 12V:   52-54 best (Verif)                                B: 39, 42
-            ' 14.8V: 51-55 best (Verif)                                B: 40, 44
-            ' 18.5V: 51-55 best (Verif)                                B: 36, 24, 44
-            ' 22.2V: 51-54 best (Verif)                                B: 37, 51
-            ' 24V:   52-58 best (Verif)                                B: 45, 48
-}
+        ' rows: PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
+        ' DRIVER_REV 53 (task 3682): the pair is in the 6.x frame, (360 - ofs, ofs) for one value ofs; the 2023 pair
+        '  (ofs, 360 - ofs) read the rotor's signed lag as true lag + 83 deg and the motor did not turn under drive.
         if eDetectedBoard == REV_B
+          ' NOT RE-CHECKED: the 2023 Rev B values, in the 6.x frame; no Rev B Doco bench since (plan 2026-10-04 ruling)
           if (ofsDegr := lookup(index: 33, 33, 39, 40, 36, 37, 45)) == 0
               ofsDegr := 45
+          fwdDegrees := 360 - ofsDegr
+          revDegrees := ofsDegr
         else
-          if (ofsDegr := lookup(index: 52, 53, 53, 53, 54, 54, 53)) == 0
-              ofsDegr := 53
-        ' DRIVER_REV 53 (task 3682, the 2026-10-05 Doco bench): the pair is (360 - ofs, ofs), NOT (ofs, 360 - ofs). The
-        '  Doco's angle-table halves are shifted the opposite way to the 6.5in's (its T2 = T1 + 60, the 6.5in's T1 - 60), so
-        '  the 2023 pair, measured on the 5.x driver (which used only |err|), read the rotor's signed lag as true lag + 83
-        '  deg in the 6.x frame: the seed kicked the rotor backward, the servo wound up, and the limit hold parked the field
-        '  inside the rotor's own sector -- the motor did not turn under drive. Swapped, the bias is -53 deg, the 6.5in's
-        '  frame (-52 at its full-speed lead). The per-voltage values are re-measured by D1b's offset scan.
-        fwdDegrees := 360 - ofsDegr
-        revDegrees := ofsDegr
+          ' Rev A, task 3684 (DRIVER_REV 54): each direction its own measured value, the DC-link current minimum of D1b's
+          '  timing scan at half speed (DOCs/analyses/bench/2026-10-05/D1B-EVALUATION.md 2.2; B1-OFSFIT q DC, resolved):
+          '  NEG (fwd) 7.4 V -55.5 (debug_261005-123104), 11.1 V -61.1 (-124754), 14.8 V -62.2 (-125549), 18.5 V -58.3
+          '  (-132917), 22.2 V -61.3 (-135735); POS (rev) 7.4 V +54.9, 14.8 V +53.4, 22.2 V +55.6, 24.0 V +52.4 (-143149).
+          '  DERIVED where no fit resolved: the resolved rows' mean, NEG -59.7 (300), POS +54.1 (54); 12.0 V is not tested.
+          '  The shipped pair was -53/+53: NEG sat ~6.5 deg short of its minimum, and needed 5-20 % more duty than POS at
+          '  the same speed (D1B-4), which this pair is expected to close (D2 judges it).
+          fwdDegrees := lookup(index: 305, 299, 300, 298, 302, 299, 300)
+          revDegrees := lookup(index:  55,  54,  54,  53,  54,  56,  52)
+          if fwdDegrees == 0
+              fwdDegrees := 300
+              revDegrees := 54
       other:
         ' 4 degrees per tic. The pair is built from the hall zero and the lead rather than
         '  from one number and its negation, so an asymmetric pair can be expressed at all.
@@ -5398,7 +5449,7 @@ PRI confgurePowerLimits(userVoltage) | index
     index := powerTableIndex(userVoltage)
     debug[user.DBGCH_LIFECYCLE]("* ENTRY CFG ", sdec_long(userVoltage), sdec_long(index))
 
-    minFwdIncreAtPwr := VALUE_NOT_SET   ' preset: the DocoEng branch below derives its minimum from this value
+    minFwdIncreAtPwr := VALUE_NOT_SET   ' preset: every branch below sets both
     minRevIncreAtPwr := VALUE_NOT_SET
 
     if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
@@ -5407,24 +5458,26 @@ PRI confgurePowerLimits(userVoltage) | index
             maxFwdIncreAtPwr := lookup(index: -385_000_000, -287_500_000, -485_000_000, -388_000_000, -449_500_000, -420_000_000, -460_000_000)
             maxRevIncreAtPwr := lookup(index:  385_000_000,  287_500_000,  485_000_000,  388_000_000,  449_500_000,  420_000_000,  460_000_000)
         else
-            ' 282_000_000 100% anything above yields RPM 1885.0, cts/Sec 754, @0.11A
-            ' 545_000_000 100% anything above yields RPM 3645.0, cts/Sec 1458, @0.50A
-            ' 335_000_000 100% anything above yields RPM 2242.0, cts/Sec 897, @0.14A
-            ' 376_000_000 100% anything above yields RPM 2517.0, cts/Sec 1007, @0.88A
-            ' 376_000_000 100% anything above yields RPM 2_745, cts/sec 1_098
-            ' 100% anything above yields RPM 2_810, cts/sec 1_124
-            ' 100% anything above yields RPM 2_877, cts/sec 1_151
-            ' 100% anything above yields RPM 2_940, cts/sec 1_178
-            ' 100% anything above yields RPM 3_010, cts/sec 1_204
-            ' 100% anything above yields RPM 3_077, cts/sec 1_231
-            ' 100% anything above yields RPM 3_145, cts/sec 1_258
-            ' 470_000_000 100% anything above yields RPM 2662.0, cts/Sec 1065, @0.89A
-            ' 100% anything above yields RPM 3145.0, cts/Sec 1258, @0.78A
-            ' 391_000_000 100% anything above yields RPM 2615.0, cts/Sec 1046, @0.620A
-            maxFwdIncreAtPwr := lookup(index: -282_000_000, -545_000_000, -335_000_000, -376_000_000, -398_000_000, -470_000_000, -391_000_000)
-            maxRevIncreAtPwr := lookup(index:  282_000_000,  545_000_000,  335_000_000,  376_000_000,  398_000_000,  470_000_000,  391_000_000)
-        minFwdIncreAtPwr := 0 - minFwdIncreAtPwr
-        minRevIncreAtPwr := 544_628                 ' anything below yields NO rotation
+            ' Task 3684: the reserve ceiling (DOCO_CEIL_INCR_AT_NOMINAL gives the rule and the evidence), rounded DOWN
+            '  so no row promises more: 7.4 V 247e6, 11.1 V 370.5e6, 12.0 V 400.5e6, 14.8 V up 419e6. The 2023 table
+            '  (282e6, 545e6, 335e6, 376e6, 398e6, 470e6, 391e6) was each row's no-load top: D1b measured 11.1 V's
+            '  545e6 at 116 % of the motor's no-load speed (one FAULT) and 7.4 / 14.8 V NEG at the duty cap
+            maxFwdIncreAtPwr := muldiv64(DOCO_CEIL_INCR_AT_NOMINAL, nominalMilliVolts(userVoltage), HUB_FF_NOMINAL_MV) <# DOCO_CEIL_INCR_MAX
+            maxFwdIncreAtPwr := 0 - (maxFwdIncreAtPwr / HUB_CEIL_ROUND * HUB_CEIL_ROUND)
+            maxRevIncreAtPwr := 0 - maxFwdIncreAtPwr
+        ' Task 3684 (PL-71): the slowest steady increment each way. FORWARD is the negative increment (power +1 maps to
+        '  minFwd, so it carries maxFwd's sign; it was 0 - VALUE_NOT_SET = +1, the wrong sign and no rotation). MEASURED
+        '  on Rev A by D1b's min-increment leg (D1B-EVALUATION.md 2.4, B1-MININC, steady on the encoder): 7.4 V forward
+        '  1.00 ticks/s (374_182; 0.75 not steady), reverse 4.00 (1_496_731; 3.00 not steady, debug_261005-123104); 14.8,
+        '  18.5, 22.2 and 24.0 V both ways 0.60 (224_509), the lowest rung tried. DERIVED: 11.1 V (its run ended before
+        '  the leg) and 12.0 V (not tested) take 7.4 V's, the values a lower supply already turned at. The Rev B rows
+        '  are not re-checked and keep the shipped 544_628 each way.
+        if eDetectedBoard == REV_B
+            minFwdIncreAtPwr := -544_628
+            minRevIncreAtPwr := 544_628
+        else
+            minFwdIncreAtPwr := lookup(index: -374_182, -374_182, -374_182, -224_509, -224_509, -224_509, -224_509)
+            minRevIncreAtPwr := lookup(index: 1_496_731, 1_496_731, 1_496_731, 224_509, 224_509, 224_509, 224_509)
     else
         ' rows: PWR_6p0V, PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
         ' Task 3605 (LIMITS-RESET-PLAN.md L1, L5), from Visit 9 (DOCs/analyses/bench/2026-09-23/VISIT-9-EVALUATION.md).
@@ -5504,8 +5557,9 @@ PRI isAbiLayoutValid() : bValid
     bValid &= (@drv_stop_passes - @drive_u) == DRVR_STATUS_STOP_PASSES_IDX * 4
     bValid &= (@drv_stop_fp - @drive_u) == DRVR_STATUS_STOP_FP_IDX * 4
     bValid &= DRVR_STATUS_STOP_FP_IDX == DRVR_STATUS_LONGS_COUNT - 1
-    ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd, the last sense_zero (PL-146)
-    bValid &= (@sense_zero - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    ' the driver block-copies DRVR_PARAMS_LONGS_COUNT longs starting at offset_fwd, the last sense_shift (PL-170)
+    bValid &= (@sense_shift - @offset_fwd) == (DRVR_PARAMS_LONGS_COUNT - 1) * 4
+    bValid &= (@sense_zero - @offset_fwd) == DRVR_PARAMS_SENSE_ZERO_IDX * 4
     ' every Spin2-only array the error contract and the front cog add lies outside both runs, so the
     '  driver can never touch it. The stack matters most: it is the only new memory written at 1 kHz.
     bValid &= bOutsideDriverRuns(@lastError[0], @lastError[COG_SLOT_COUNT - 1])
@@ -5531,7 +5585,7 @@ PRI isAbiLayoutValid() : bValid
     bValid &= bOutsideDriverRuns(@pendStage, @pendTicks)                         ' PL-161: the front cog's in-flight request
     bValid &= bOutsideDriverRuns(@frontPassSlots, @foldMinMv)                    ' DRIVER_REV 51: the front cog's slots, the fold floor
     if bValid == FALSE
-        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@drv_stop_fp - @drive_u), udec_long(@sense_zero - @offset_fwd))
+        debug[user.DBGCH_ERROR]("! ERROR: driver ABI mismatch: ", udec_long(@drive_u - @pinbase), udec_long(@fault - @drive_u), udec_long(@drv_stop_fp - @drive_u), udec_long(@sense_shift - @offset_fwd))
 
 PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' Return TRUE when the longs from {pFirst} to {pLast} overlap neither PASM-addressed run.
@@ -5541,8 +5595,8 @@ PRI bOutsideDriverRuns(pFirst, pLast) : bOutside
 ' @returns bOutside - T/F where F means the driver could read or write part of the array
 
     ' the launch and status run is @pinbase..@fault (fault follows drv_stop_fp since DRIVER_REV 39); the parameter
-    '  run is @offset_fwd..@sense_zero
-    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @sense_zero))
+    '  run is @offset_fwd..@sense_shift
+    bOutside := ((pLast < @pinbase) or (pFirst > @fault)) and ((pLast < @offset_fwd) or (pFirst > @sense_shift))
 
 CON ' --- HDMI Debug Support ---
 
@@ -6541,7 +6595,7 @@ PRI currentLimitK(amps) : nK
 ' Return the driver's fold-back factor for a phase-current limit: threshold mV = duty x nK >> 16.
 '
 ' The driver folds on a whole-mV reading ABOVE that floored threshold (DRIVER_REV 38), i.e. at or above its ceiling.
-' The threshold's duty floor comes with it from setFoldLimit(), which keeps it at or above foldMinMv (PL-163).
+' The threshold's duty floor comes with it from setFoldLimit(), which keeps it at or above foldFloorMv (PL-163).
 '
 ' The driver compares the DC-link reading against 0.75 x m x amps x rSense, m = duty / (4 x frame_cnt),
 ' so nK = 3 x amps x rSense x 65536 / (16 x frame_cnt). With no board detected there is no scale, and
@@ -6558,10 +6612,11 @@ PRI currentLimitK(amps) : nK
 
 PRI setFoldLimit(amps) | nK, nFloor
 ' Set the driver's fold-back to a phase-current limit: i_limit_k, and the fold's duty floor that keeps its threshold at
-' or above foldMinMv (PL-163, DRIVER_REV 40; DRIVER_REV 51: FOLD_MIN_MV, or more at a clock whose ADC count is coarser).
+' or above foldFloorMv (PL-163, DRIVER_REV 40; DRIVER_REV 51: FOLD_MIN_MV, or more at a clock whose ADC count is coarser;
+' DRIVER_REV 55: FOLD_MIN_FILT_MV on Rev A, whose fold reads the filtered DC link).
 ' init() before the driver runs, then the front cog only.
 '
-' The floor is max(dutyFloorEst, ceil(foldMinMv << 16 / nK)), so floor x nK >> 16 is at least foldMinMv (and, nK
+' The floor is max(dutyFloorEst, ceil(foldFloorMv << 16 / nK)), so floor x nK >> 16 is at least foldFloorMv (and, nK
 ' under $1_0000, exactly it when raised); SCA takes 16 bits, so it is capped at $FFFF. The two longs are written in the
 ' order whose one-frame mix is the lower threshold: a lower nK first (its floor then rises), else the floor first.
 '
@@ -6572,7 +6627,7 @@ PRI setFoldLimit(amps) | nK, nFloor
 ' @local nFloor - the fold's duty floor for it
 
     nK := currentLimitK(amps)
-    nFloor := dutyFloorEst #> (((foldMinMv << 16) + nK - 1) / nK) <# $FFFF
+    nFloor := dutyFloorEst #> (((foldFloorMv << 16) + nK - 1) / nK) <# $FFFF
     if nK < i_limit_k
         i_limit_k := nK
         duty_floor := nFloor
@@ -7017,6 +7072,14 @@ CON { driver internal Constants }
 '    FRAME   = 12_273            ' 22.00 KHz: (---) 1 ADC sample = 1 PWM frame, divide by two for triangle PWM
     PWM_RATE_IN_HZ   = 44_000
     DRIVE_PASS_FRAMES   = 23        ' PL-50/C-1: one drive pass every 23 PWM (ADC) frames, about 1913 passes/s
+    ' Task 3683 (STEPHEN 2026-10-06 "yes a"): THE LOWEST CLOCK start() accepts; under it, ERR_CLOCK_TOO_SLOW. The frame is
+    '  fixed in TIME (PWM_RATE_IN_HZ), the driver's work in it is fixed in CLOCKS: its worst frame window is 2,204 clocks
+    '  (tools/pasm_equiv, worst-case hub and CORDIC waits, DRIVER_REV 55: planner stage 9). It must fit 75 % of the
+    '  frame (the project's margin, pasm_equiv's guard): 2,204 / 0.75 x 44 kHz = 129.3 MHz, so 130. With no margin it
+    '  fits to 97 MHz; the other floors are lower (Rev A's continuous limit vs the ADC count 102 MHz, driveinit's dead
+    '  gap 80, the front cog's worst pass 74.4 for responsiveness only). A driver change that grows the worst window
+    '  re-derives this
+    MIN_CLKFREQ_HZ      = 130_000_000
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
     ' DRIVER_REV 50: the duty floor's share of the frame, as a fraction: 100 counts of the 6_136-clock frame (270 MHz) = 1.63 %
     DUTY_MIN_FRAME_NUM   = 100
@@ -7030,7 +7093,10 @@ CON { driver internal Constants }
     DRVR_STATUS_ACCEL_NOW_IDX   = 21        ' drv_accel_now, the generator's acceleration
     DRVR_STATUS_STOP_PASSES_IDX = 22        ' drv_stop_passes, the driver's stop plan: drive passes to rest
     DRVR_STATUS_STOP_FP_IDX     = 23        ' drv_stop_fp, the driver's stop plan: field travel to rest, 1/256 hall tick
-    DRVR_PARAMS_LONGS_COUNT     = 27        ' offset_fwd .. sense_zero (PL-138 appended drv_release, PL-146 sense_zero)
+    DRVR_PARAMS_LONGS_COUNT     = 28        ' offset_fwd .. sense_shift (PL-138 appended drv_release, PL-146 sense_zero,
+                                            '  PL-170 sense_shift at DRIVER_REV 55)
+    DRVR_PARAMS_SENSE_ZERO_IDX  = 26        ' DRIVER_REV 55: sense_zero's index in the run, for a reader of the raw run (a
+                                            '  bench harness): it is NO LONGER the run's last long
 
     ' PL-138 (W4): the driver's release, which stop() asks for before its cogstop (driverRelease, stop())
     RELEASE_WAIT_FRAMES         = 2         ' PWM frames the release holds the bridge COASTING before it drops the gate modes
@@ -7043,7 +7109,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 53      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 55      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7350,6 +7416,19 @@ CON { driver internal Constants }
                                             '     2023 (5.x) pair read the signed lag as true lag + 83 deg in the 6.x
                                             '     frame and the motor did not turn under drive (D1b logs, 2026-10-05).
                                             '     Spin2 only; no PASM or ABI change; the 6.5in path is unchanged
+                                            ' 54: task 3684, the field advances a frame at a time (fieldSteps): frame k of a
+                                            '     pass drives angle_ + (k - 11) x drv_incr / 23, and err_ reads that frame's
+                                            '     field. The once-a-pass step swung err_ s/2 either way and, past 30 e-deg a
+                                            '     pass, woke servoBoost at every pass (the Doco's top-speed regime, D1b).
+                                            '     The pass's mean field is unchanged. The Doco: its own back-EMF line for
+                                            '     the feedforward (was its ceiling table); on Rev A, per-direction offsets
+                                            '     from D1b's minima, reserve ceilings capped at 419e6, and the minimum
+                                            '     increments with forward's sign (PL-71). No ABI change
+                                            ' 55: task 3699 (PL-170), the fold-back reads a filtered DC link on Rev A
+                                            '     (senseFilter, a 16-frame time constant) against a 3 mV floor, with a
+                                            '     one-frame hard trip 14 mV over the threshold on both boards. Rev B's
+                                            '     shift is 0, so its folds are unchanged. ABI: the parameter run gains
+                                            '     sense_shift (DRVR_PARAMS_LONGS_COUNT 27 -> 28)
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7608,6 +7687,26 @@ CON { driver internal Constants }
     '  constant floor a caller can name (test_bench_t0's T0-27 judges it); the floor in force is foldMinMv.
     FOLD_MIN_MV                 = 4
     FOLD_MIN_COUNTS             = 7         ' the fold floor in ADC counts (3300 / frame_cnt mV each), DRIVER_REV 51
+    ' DRIVER_REV 55 (PL-170; STEPHEN 2026-10-05, "best possible drive for revA and then also for revB boards if we
+    '  algorithmically are different for each to achieve then we need to be"): REV A'S FOLD-BACK READS A FILTERED DC LINK.
+    '  MEASURED (PL-170; the 2026-09-30 Rev A evaluations' exact per-frame fold counts): one driven frame's reading has
+    '  sigma 1.5-2.3 mV, 0.3-0.46 A at 5 mV/A, with peaks 6-8 mV over its mean, so a limit under ~10 A folded on noise
+    '  and each fold armed the limit hold (D1b's second pass lost following at every voltage at 2 A). Rev B (150 mV/A)
+    '  resolves the same amps 30x coarser in noise and keeps its one-frame fold: its shift is 0.
+    '  SENSE_FILT_SHIFT_REVA: a time constant of 2^4 = 16 frames, 0.36 ms. DERIVED, if the noise is independent frame to
+    '  frame: sigma x sqrt(1 / 31) = 0.18 sigma, 0.31-0.41 mV; a step to twice the threshold crosses it in ~11 frames
+    '  (0.25 ms), to 1.2x in ~29 (0.65 ms). Whether it IS independent is D2's per-frame capture to say (B1-NOISE's lag
+    '  correlations and block test): a correlated noise needs a longer window, and this value moves with it.
+    SENSE_FILT_SHIFT_REVA       = 4
+    '  FOLD_MIN_FILT_MV: Rev A's fold floor on the filtered reading. A zero-current net reading is within 0.5 mV + the zero's
+    '  own error (standard error <= 0.12 mV, FOLD_MIN_MV's note) of 0; 6 filtered sigmas at the worst measured 2.3 mV is
+    '  2.5 mV more: 3.1 at most, so 3 folds at about once in 10^9 filtered samples. DERIVED on the premise above; 3 mV is
+    '  0.6 A of DC link, where the one-frame 4 mV floor folded on noise at every driven frame of a low limit.
+    FOLD_MIN_FILT_MV            = 3
+    '  FOLD_HARD_MV: the one-frame trip above the threshold, on both boards. 6 sigma at the worst measured 2.3 mV, 14 mV:
+    '  2.8 A over the limit on Rev A, acted on in one frame (22.7 us). On Rev B the filtered fold IS the one-frame fold, so
+    '  the trip adds no fold there
+    FOLD_HARD_MV                = 14
     ADC_FULL_SCALE_MV           = 3_300     ' VIO - GIO, the ratiometric full scale the driver's numerator carries (3300 << 11)
     BLOCKED_PASSES              = 1_000     ' ~1 s of front SLOTS (DRIVER_REV 51: 1 ms each at any clock) held at the lag limit or
                                             '  a limiter without a hall tick (BLOCKED_PASSES keeps its name: callers name it)
@@ -7743,7 +7842,10 @@ VAR  {  Motor Parameters  }
                             '  cog exists
     LONG    sense_zero      ' PL-146 (DRIVER_REV 37): the DC-link rest offset the fold-back nets out, mV (sense_i_mV's
                             '  units), never negative; written only with restZeroSenseMv (applySenseZero()), 0 when it
-                            '  is unmeasured or out of band. The LAST long of the run
+                            '  is unmeasured or out of band
+    LONG    sense_shift     ' DRIVER_REV 55 (PL-170): the fold-back's filter shift, a time constant of 2^n frames: 0 on
+                            '  Rev B (the fold reads one frame, as before), SENSE_FILT_SHIFT_REVA on Rev A; init() only.
+                            '  The LAST long of the run
 
 ' -----------------------------------
     LONG    frame_cnt       ' clock-tics for period of PWM_RATE_IN_HZ
@@ -7767,7 +7869,9 @@ VAR { the drive pass's time, set by init() (DRIVER_REV 50) }
 VAR { the front cog's slots and the clock-derived fold floor (DRIVER_REV 51, task 3671); init() sets each before any front cog }
     LONG    frontPassSlots       ' front-written (frontSetPassSlots()): the slots each pass now stands for, 1 unless passes run late
     LONG    frontSlotsMax        ' front-written: the most slots a pass has stood for since start; scales REQ_ACK_TIMEOUT_MS
-    LONG    foldMinMv            ' init(): FOLD_MIN_MV, or FOLD_MIN_COUNTS of the ADC's count at this clock if coarser (setFoldLimit())
+    LONG    foldFloorMv          ' init(), DRIVER_REV 55: the fold's threshold floor (setFoldLimit()): foldMinMv on Rev B, on
+                                 '  one frame's reading; FOLD_MIN_FILT_MV on Rev A, on the filtered reading (sense_shift)
+    LONG    foldMinMv           ' init(): FOLD_MIN_MV, or FOLD_MIN_COUNTS of the ADC's count at this clock if coarser (setFoldLimit())
 
 CON { error record }
 
@@ -8020,6 +8124,8 @@ pl_Uh           jmp     #lutCodeStart                   ' enter LUT-resident sta
     ' -------------------------------------------------------------------------
 drvMotor                                                ' global (task 3535): entered via cross-boundary jmp from the LUT-resident loader
                 getct   ctrlSrtTix                      ' remember when we started this loop
+                mov     frm_step, #0                    ' DRIVER_REV 54 (task 3684, R1): the field holds still across this
+                mov     frm_ofs, #0                     '  pass's frames unless .justIncr advances it (fieldSteps)
                 testb   drv_incr, #31               wc  ' C-5: signed lag, + when the rotor trails the field in the
                 negc    lag_s, err_                     '  direction of motion (err_ is angle_ - rotor angle), - when
                                                         '  the rotor leads; read by the holds and the duty ceiling below.
@@ -8118,6 +8224,8 @@ drvMotor                                                ' global (task 3535): en
                                                         '  SPIN_UP / AT_SPEED, the field set back to it when past. Z = no
                                                         '  limiter acted (D-3, for holdDecay). LUT-resident
     if_c        add     angle_, drv_incr
+    if_c        call    #fieldSteps                     ' DRIVER_REV 54 (R1): that advance spread over the pass's frames;
+                                                        '  returns C = 1 as it found it, so the two lines below still skip
     if_nc       add     lag_held_, #1                   ' R18.1: and when it does NOT advance, that is the one thing err
                                                         '  cannot report -- err is pinned at the hold. Count it instead.
     if_nc       call    #holdDecay                      ' R18.4 D-5: a held field falls toward the rate the rotor achieves,
@@ -8219,10 +8327,14 @@ drvMotor                                                ' global (task 3535): en
                 sub     sense_i_, gio_levels+3
                 muls    sense_i_, scl_levels+3
                 sar     sense_i_, #11
+                call    #senseFilter                    ' DRIVER_REV 55: the fold-back's filtered reading (LUT; tmpX)
 
                 mov     tmpY, duty_                     ' feed three CORDIC operations to get phase drive levels
                 shr     tmpY, #4
-                mov     tmpX, angle_                    ' requested angle
+                mov     fld_, angle_                    ' DRIVER_REV 54 (R1): this frame's field, angle_ + (k - 11) x step
+                add     fld_, frm_ofs                   '  on frame k of the pass (fieldSteps); err_ below reads it too
+                add     frm_ofs, frm_step
+                mov     tmpX, fld_                      ' requested angle
                 qrotate tmpY, tmpX
                 add     tmpX, third                     ' 120 degrees further
                 qrotate tmpY, tmpX
@@ -8314,7 +8426,7 @@ drvMotor                                                ' global (task 3535): en
                 mov     err_, 0-0
     if_c        add     err_, offset_fwd_               ' hall sensor offsets
     if_nc       add     err_, offset_rev_
-                subr    err_, angle_                    ' difference from requested angle
+                subr    err_, fld_                      ' difference from this frame's field (DRIVER_REV 54: was angle_)
                 sar     err_, #24
 
                 abs     tmpY, err_                      ' fault? tmpY is absolute difference from hall angle to requested angle
@@ -8341,12 +8453,29 @@ drvMotor                                                ' global (task 3535): en
                 sca     tmpX, i_limit_k_                '  threshold t (mV) = max(duty_, duty_floor_) * i_limit_k_ >> 16
                 mov     tmpX, 0-0                       '  SCA hands t to this S (p2kbPasm2Sca): tmpX := t
                 add     tmpX, sense_zero_               ' PL-146 (DRIVER_REV 37): the DC-link reading is compared NET of
-                cmps    sense_i_, tmpX              wcz '  the board's rest offset, floored at 0. A driven bridge at rest
+                                                        '  the board's rest offset, floored at 0. A driven bridge at rest
                                                         '  (SM_BRAKE) read the raw offset (left ~8 mV) against a ~11 mV
                                                         '  threshold at 1 A: counted on noise. sense_zero_ is the front's
                                                         '  restZeroSenseMv (0 when unmeasured or out of band), mV as sense_i_
                                                         '  is; sense_i_ itself stays raw, since it is reported (sense_i_mV).
-                                                        ' Q: the net reading OVER the limit's count? (NC and NZ) WP3, C3(c):
+                                                        ' DRIVER_REV 55 (PL-170): TWO compares against T = t + z. (1) THE HARD
+                                                        '  TRIP: one frame's reading over T + FOLD_HARD_MV, a level one frame's
+                                                        '  noise cannot reach on either board, folds at once. (2) THE FOLD:
+                                                        '  the FILTERED reading (senseFilter, x256) over T, i.e. sense_f_ >
+                                                        '  (T << 8) + 255, which is floor(sense_f_ / 256) > T. With
+                                                        '  sense_shift_ 0 (Rev B) sense_f_ is sense_i_ << 8, so (2) is
+                                                        '  exactly the old single compare and (1) adds no fold (2) would not
+                                                        '  make: Rev B's folds are unchanged, frame for frame. Rev A's
+                                                        '  one-frame noise (sigma 1.5-2.3 mV against 5 mV/A) folded a limit
+                                                        '  under ~10 A on noise, and each fold armed the limit hold
+                add     tmpX, #FOLD_HARD_MV             ' T + FOLD_HARD_MV (|T| < 2^17, no overflow)
+                cmps    sense_i_, tmpX              wcz ' (1) Q: one frame's net reading over it? (NC and NZ)
+    if_nc_and_nz jmp    #.foldNow                       ' YES: fold, flags kept (JMP writes none, p2kbPasm2Jmp)
+                sub     tmpX, #FOLD_HARD_MV             ' T again
+                shl     tmpX, #8                        ' (T << 8) + 255: |T| < 2^17, so no overflow
+                add     tmpX, #255
+                cmps    sense_f_, tmpX              wcz ' (2) Q: the filtered net reading over T? (NC and NZ)
+.foldNow                                                ' Q: the net reading OVER the limit's count? (NC and NZ) WP3, C3(c):
                                                         '  max(i - z, 0) > t is i > t + z. SCA's result is unsigned, so t >= 0,
                                                         '  and max(d, 0) > t is d > t for any t >= 0; |i| <= 2^19 (the MULS
                                                         '  product SAR 11), t < 2^16 and z in [0, 36] (applySenseZero(), its one
@@ -8363,6 +8492,8 @@ drvMotor                                                ' global (task 3535): en
                                                         '  DRIVER_REV 40 (PL-163): duty_floor_ is raised for such a limit so
                                                         '  t >= FOLD_MIN_MV (4): a reading of 4 mV or less is inside the
                                                         '  chain's noise and zero error, so it folds nothing (setFoldLimit())
+                                                        '  DRIVER_REV 55: on Rev A the floor is FOLD_MIN_FILT_MV, on the
+                                                        '  filtered reading (foldFloorMv)
     if_nc_and_nz mov    tmpY, duty_                     ' YES: fold back ~1.6 % per frame, and skip the servo this frame
     if_nc_and_nz shr    tmpY, #6
     if_nc_and_nz sub    duty_, tmpY
@@ -8454,6 +8585,28 @@ checkstop                                               ' the bridge takes the u
     if_z        mov     bridge, #BR_DRIVE               ' SM_BRAKE: driven -- held at duty_min at rest
     if_nz       mov     bridge, #BR_COAST               ' SM_FLOAT: all six FETs off, a freewheel (was Y = 0 on all six: a short, PL-89)
                 ret
+
+fieldSteps                                              ' DRIVER_REV 54 (task 3684, R1; D1B-EVALUATION.md): called by .justIncr on a pass
+                                                        '  the field advances, after its ADD. The field had moved once a pass, a whole
+                                                        '  drv_incr at a step, so each frame's err_ swung s/2 either side of its mean
+                                                        '  (s = the step in err_ counts); past 30 e-deg a pass (s > 21.4) that swing
+                                                        '  put the frame's lag past LAG_SOFT at the pass's start and servoBoost added
+                                                        '  duty no load asked for -- the Doco's top-speed regime, +44..+81 % duty over
+                                                        '  its back-EMF line above ~352e6. Now frame k (0 .. 22) of the pass drives
+                                                        '  angle_ + (k - 11) x step, step = drv_incr / DRIVE_PASS_FRAMES: the swing is
+                                                        '  gone and the MEAN over the pass is still angle_ (to half a step), so every
+                                                        '  measured commutation offset and the servo's setpoint keep their meaning.
+                                                        '  angle_ stays the field's authority: holdGate, the set-back and the stop
+                                                        '  read and write it as before. Uses tmpY (dead here: holdDecay and passEnd
+                                                        '  write it before reading). Out: C = 1, as .justIncr's caller found it
+                abs     tmpY, drv_incr              wc  ' |v|, C = v < 0 (|v| < 2^30)
+                qdiv    tmpY, #DRIVE_PASS_FRAMES        ' unsigned |v| / 23 (no SETQ: a 32-bit dividend)
+                getqx   frm_step
+                negc    frm_step, frm_step              ' the step, signed as v
+                mov     frm_ofs, frm_step               ' the first frame's offset, (step - v) / 2 = -11 x step
+                sub     frm_ofs, drv_incr               '  (to half a step's remainder)
+                sar     frm_ofs, #1
+    _ret_       modc    _set                        wc  ' C = 1: .justIncr's IF_NC lines still skip
 
 holdRelease                                             ' PL-189 U-2 / U-5 (HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.12.4): holdGate (LUT)
                                                         '  JMPs here to release its armed limit hold, and the RET below returns
@@ -8581,6 +8734,8 @@ initAngleFmHallC                                        ' entry with C already s
                 mov     angle_, 0-0
     if_c        add     angle_, offset_fwd_             ' adjust phase offset for hall sensor
     if_nc       add     angle_, offset_rev_             ' can spin up in either direction
+                mov     frm_step, #0                    ' DRIVER_REV 54: a re-seeded field sits AT the hall angle for the
+                mov     frm_ofs, #0                     '  rest of the pass (faultResponse re-syncs mid-pass)
     _ret_       mov     prior_angle, angle_             ' show we are already here
 '
 ' =========================================================================
@@ -8695,6 +8850,10 @@ jrk_x           res 1       ' x*(E): the largest acceleration a pure ramp-out at
 
 ' driver actual
 angle_          res 1       ' current driver angle
+fld_            res 1       ' DRIVER_REV 54 (R1): this frame's field angle, angle_ + frm_ofs
+sense_f_        res 1       ' DRIVER_REV 55 (PL-170): the filtered DC-link reading x256 (senseFilter), the fold-back's
+frm_step        res 1       ' DRIVER_REV 54: the field's advance per frame, drv_incr / DRIVE_PASS_FRAMES (0 on a held pass)
+frm_ofs         res 1       ' DRIVER_REV 54: the next frame's field less angle_, from -11 x frm_step up by frm_step a frame
 prior_angle     res 1       ' prior driver angle
 fwdrev          res 1       ' driver current direction used for indexing into hall angle table
 bridge          res 1       ' R17.1: the bridge state this frame, one of the BR_* states (see their CON)
@@ -8792,7 +8951,8 @@ fault_clr_  res 1           ' task 3616: advanced by the front cog to clear DCS_
 probe_sink_ res 1           ' R19.4 1e TEST-USE: PRB_* whose low side the probe holds ON, PRB_NONE for none
 probe_y_    res 1           ' R19.4 1e TEST-USE: the probed phase's high-side Y, 0 for 50 % (bias)
 drv_release_ res 1          ' PL-138: non-zero asks for the release (passEnd -> driverRelease)
-sense_zero_ res 1           ' PL-146 (DRIVER_REV 37): the DC-link rest offset, mV, the fold-back nets out; the LAST parameter
+sense_zero_ res 1           ' PL-146 (DRIVER_REV 37): the DC-link rest offset, mV, the fold-back nets out
+sense_shift_ res 1          ' DRIVER_REV 55 (PL-170): senseFilter's shift, 0 on Rev B; the LAST parameter
 
 ' ------------------------------
 '  PRECISE FORMAT:
@@ -8838,8 +8998,11 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
 '                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
 
 ' $1f8 for reg cogs
-    fit     496  ' 463 USED, 33 FREE, 2026-10-03 at DRIVER_REV 49 (PL-189 U-5's holdRelease in cog RAM and the registers
-                 ' lim_n and fold_seen); 446 at DRIVER_REV 48 (PL-179 C4: the registers lim_arm and lim_pos and
+    fit     496  ' 491 USED, 5 FREE, 2026-10-05 at DRIVER_REV 55 (task 3699, PL-170: senseFilter's CALL, the fold's
+                 ' two compares, the registers sense_f_ and sense_shift_); 482 at DRIVER_REV 54 (task 3684 R1:
+                 ' fieldSteps, the frame's three longs, the pass's and initAngleFmHall's zeroing, the registers fld_,
+                 ' frm_step and frm_ofs); 463 at DRIVER_REV 49
+                 ' (PL-189 U-5's holdRelease in cog RAM and the registers lim_n and fold_seen); 446 at DRIVER_REV 48 (PL-179 C4: the registers lim_arm and lim_pos and
                  ' .clearRun's disarm); 443 at DRIVER_REV 47, PL-167: D-2's CALL to servoBoost in .servoTrim and
                  ' D-3's register lim_seen; holdGate's CALL took the place of .justIncr's CMPS; 441 at DRIVER_REV 45,
                  ' memory reduction WP5: planFp's BMASK and planCorner's trims, C5; 449 at DRIVER_REV 44, WP4, the hall
@@ -8848,11 +9011,11 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
                  ' longs back in cog RAM; 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) --
                  ' read from the compiler, never hand-counted (a hand count here once ran ~80 short): `pnut-ts -l
                  ' isp_bldc_motor.spin2`, PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1BA, the last
-                 ' register, so USED is $1BB; $1BD at DRIVER_REV 48, USED $1BE; $1CE at DRIVER_REV 49, USED $1CF). LUT code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but
+                 ' register, so USED is $1BB; $1BD at DRIVER_REV 48, USED $1BE; $1CE at DRIVER_REV 49, USED $1CF; $1E1 at DRIVER_REV 54, USED $1E2; $1EA at DRIVER_REV 55, USED $1EB). LUT code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but
                  ' instruction operands reach only cog RAM, so REGISTERS are what this budget is for; code can live in the
                  ' LUT images below (task 3535), read the same way (2026-10-02): the start image, lutCodeStart $200 to
-                 ' lutCodeEnd $291, 145 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3F9, 505
-                 ' of 512 longs (7 free at DRIVER_REV 49, after PL-187 T-1's fold_seen snapshots and PL-189 U-1 / U-2's
+                 ' lutCodeEnd $292, 146 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3FE, 510
+                 ' of 512 longs (2 free at DRIVER_REV 55, after PL-170's senseFilter; 7 free at DRIVER_REV 49, after PL-187 T-1's fold_seen snapshots and PL-189 U-1 / U-2's
                  ' holdGate; 499 / 13 free at DRIVER_REV 48, after PL-179 C4's holdGate arming and driveFromRest's disarm;
                  ' 486 and 144 at DRIVER_REV 47; 457 at DRIVER_REV 45, before PL-167's 7-long servoBoost (D-2),
                  ' 16-long holdGate (D-5) and the six longs of D-3's lim_seen snapshots in gettgtincr and passEnd; 476
@@ -9059,6 +9222,7 @@ lutCodeStart
                                                         '  gettgtincr, has one caller, .noEStop, which writes it just before
                                                         '  that call on every pass
                 mov     fwdrev, #0                      ' just in case
+                mov     sense_f_, #0                    ' DRIVER_REV 55: the filter starts from 0, settled before any drive
                 mov     angle_, #0                      ' just in case
                 mov     prior_angle, angle_             ' .ctlMotor's first cmpm reads prior_angle; only initAngleFmHall
                                                         '  sets it, and at start checkstop calls it only in SM_BRAKE (its
@@ -9118,7 +9282,7 @@ driveinit                                               ' init drive pwm
 
 lutCodeEnd                                              ' the LUT START IMAGE ends here (task 3535; DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the start image is 145 of 512 longs, read from the compiler 2026-10-02 at DRIVER_REV 48 (PL-179 C4's start disarm; 144 at DRIVER_REV 45-47) (LUTCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the start image is 146 of 512 longs, read from the compiler 2026-10-05 at DRIVER_REV 55 (sense_f_'s zeroing; 145 at DRIVER_REV 48, PL-179 C4's start disarm; 144 at DRIVER_REV 45-47) (LUTCODEEND's VALUE)
 
 ' =========================================================================
 '  THE LUT RUN IMAGE (DRIVER_REV 42, memory reduction WP2, C2): every routine that runs only once the drive loop has
@@ -9259,6 +9423,19 @@ holdGate                                                ' C-5 and PL-167 D-5 (HO
                                                         '  a bare set-back would flip fwdrev for a forward drive, and the
                                                         '  error would be read against the other offset while held
     _ret_       modc    _clr                        wc  ' C = 0: held. lag_held_ and holdDecay follow at .justIncr
+
+senseFilter                                             ' DRIVER_REV 55 (PL-170): called by .ctlMotor every frame, once sense_i_ is
+                                                        '  scaled. sense_f_ is the DC-link reading x256, a first-order low-pass:
+                                                        '  sense_f_ += ((sense_i_ << 8) - sense_f_) SAR sense_shift_, a time
+                                                        '  constant of 2^sense_shift_ frames. 0 (Rev B) makes it sense_i_ << 8
+                                                        '  exactly. Every frame, driven or not, so it is settled when the bridge
+                                                        '  is driven. |sense_i_| <= 2^19, so x256 fits. Uses tmpX (dead here:
+                                                        '  its next read is after the CORDIC's MOV); writes no flag
+                mov     tmpX, sense_i_
+                shl     tmpX, #8
+                sub     tmpX, sense_f_
+                sar     tmpX, sense_shift_
+    _ret_       add     sense_f_, tmpX
 
 servoBoost                                              ' PL-167 D-2 (HOLD-SPEED-UNDER-LOAD-DESIGN.md 4.2): called by .servoTrim each
                                                         '  frame the trim runs, after its own add. With the field ahead of the rotor
@@ -9867,7 +10044,7 @@ rampOut
 
 runCodeEnd                                              ' the LUT RUN IMAGE ends here (DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the run image is 505 of 512 longs, 7 free, read from the compiler 2026-10-03 at DRIVER_REV 49, PL-187 T-1 and PL-189 U-1 / U-2 (RUNCODEEND's VALUE; 499 at DRIVER_REV 48, PL-179 C4; 486 at DRIVER_REV 47, PL-167 D-2, D-3, D-5; 457 at DRIVER_REV 45)
+                fit     $400  ' LUT RAM boundary; the run image is 510 of 512 longs, 2 free, read from the compiler 2026-10-05 at DRIVER_REV 55, PL-170's senseFilter (RUNCODEEND's VALUE; 505 at DRIVER_REV 49, PL-187 T-1 and PL-189 U-1 / U-2; 499 at DRIVER_REV 48, PL-179 C4; 486 at DRIVER_REV 47, PL-167 D-2, D-3, D-5; 457 at DRIVER_REV 45)
 
 CON { license }
 {{

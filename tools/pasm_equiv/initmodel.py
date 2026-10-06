@@ -25,15 +25,29 @@ KNOWN_DAT_WRITES = {'ADC_FRAM', 'FRAM', 'BIAS', 'SYNC_REQUIRED', 'DELTAS', 'HALL
 PARAM_NAMES = ['OFFSET_FWD', 'OFFSET_REV', 'DUTY_MIN', 'DUTY_MAX', 'SERVO_SHIFT', 'FF_CEILING', 'DEAD_GAP',
                'ACCEL_DN', 'CFG_CTCKS', 'STOP_MODE', 'E_STOP', 'ACCEL_UP', 'JERK_UP', 'JERK_DN', 'I_LIMIT_K',
                'DUTY_FLOOR', 'HOLD_DUTY', 'HOLD_SHORT', 'FAULT_MODE', 'BRAKE_ON', 'PROBE_PHASE', 'FORCE_SEQ',
-               'FAULT_CLR', 'PROBE_SINK', 'PROBE_Y', 'DRV_RELEASE', 'SENSE_ZERO']
+               'FAULT_CLR', 'PROBE_SINK', 'PROBE_Y', 'DRV_RELEASE', 'SENSE_ZERO', 'SENSE_SHIFT']
+
+
+def param_names(n):
+    """The parameter run's names for a driver whose run is n longs: 27 until DRIVER_REV 54, 28 from DRIVER_REV 55
+    (sense_shift appended), so a baseline before it and a candidate after it each model their own run."""
+    if n not in (27, 28):
+        raise ValueError('DRVR_PARAMS_LONGS_COUNT is %d; initmodel.py models 27 and 28' % n)
+    return PARAM_NAMES[:n]
+
 
 NOMINAL_MV = {1: 6_000, 2: 7_400, 3: 11_100, 4: 12_000, 5: 14_800, 6: 18_500, 7: 22_200, 8: 24_000, 9: 25_900}
 
-# DocoEng 4k rows (confgurePowerLimits(), offsetsForMotor()), PWR_7p4V .. PWR_24p0V
+# DocoEng 4k rows (offsetsForMotor()), PWR_7p4V .. PWR_24p0V: Rev B the 2023 values as (360 - ofs, ofs) since
+#  DRIVER_REV 53; Rev A its own pair per direction since DRIVER_REV 54. A voltage outside the rows takes the default.
+DOCO_OFS_B = [33, 33, 39, 40, 36, 37, 45]
+DOCO_OFS_B_DEFAULT = 45
+DOCO_OFS_A_FWD = [305, 299, 300, 298, 302, 299, 300]
+DOCO_OFS_A_REV = [55, 54, 54, 53, 54, 56, 52]
+DOCO_OFS_A_DEFAULT = (300, 54)
+# Until DRIVER_REV 54 the Doco's feedforward stood on its ceiling table (a source without DOCO_FF_INCR_AT_NOMINAL)
 DOCO_MAX_B = [385_000_000, 287_500_000, 485_000_000, 388_000_000, 449_500_000, 420_000_000, 460_000_000]
 DOCO_MAX_A = [282_000_000, 545_000_000, 335_000_000, 376_000_000, 398_000_000, 470_000_000, 391_000_000]
-DOCO_OFS_B = [33, 33, 39, 40, 36, 37, 45]
-DOCO_OFS_A = [52, 53, 53, 53, 54, 54, 53]
 
 
 def frac(a, b):
@@ -192,9 +206,13 @@ def ramps_for(up, dn, con):
 
 def offsets(cfg):
     if cfg.motor == '4k':
-        idx = min(max(cfg.voltage - 2, 0), 6)             # lookdown(PWR_7p4V..PWR_24p0V), 1-based -> 0-based
-        o = (DOCO_OFS_B if cfg.board == 'B' else DOCO_OFS_A)[idx]
-        fwd, rev = o, 360 - o
+        idx = cfg.voltage - 2                              # lookdown(PWR_7p4V..PWR_24p0V), 1-based -> 0-based
+        inside = 0 <= idx <= 6
+        if cfg.board == 'B':
+            o = DOCO_OFS_B[idx] if inside else DOCO_OFS_B_DEFAULT
+            fwd, rev = 360 - o, o
+        else:
+            fwd, rev = (DOCO_OFS_A_FWD[idx], DOCO_OFS_A_REV[idx]) if inside else DOCO_OFS_A_DEFAULT
     else:
         fwd, rev = (-4 + 18) % 360, (-4 - 18) % 360       # HUB_HALL_ZERO_DEGR +/- HUB_LEAD_DEGR
     return frac(fwd * 10, 3600), frac(rev * 10, 3600)
@@ -204,16 +222,25 @@ def params(cfg, con):
     d = derived(cfg, con)
     fwd, rev = offsets(cfg)
     ju, au, jd, ad = ramps_for(con['RAMP_ACCEL_BUILTIN_STEP'], con['RAMP_DECEL_BUILTIN_STEP'], con)
-    if cfg.motor == '4k':
-        idx = min(max(cfg.voltage - 2, 0), 6)
-        ff = abs((DOCO_MAX_B if cfg.board == 'B' else DOCO_MAX_A)[idx])
+    # init()'s ff_ceiling: each motor's back-EMF line at its nominal voltage (the Doco's since DRIVER_REV 54; before
+    #  it, the Doco's ceiling table)
+    if cfg.motor == '4k' and 'DOCO_FF_INCR_AT_NOMINAL' not in con:
+        ff = abs((DOCO_MAX_B if cfg.board == 'B' else DOCO_MAX_A)[min(max(cfg.voltage - 2, 0), 6)])
     else:
-        ff = muldiv64(con['HUB_FF_INCR_AT_NOMINAL'], NOMINAL_MV[cfg.voltage], con['HUB_FF_NOMINAL_MV'])
+        line = con['DOCO_FF_INCR_AT_NOMINAL'] if cfg.motor == '4k' else con['HUB_FF_INCR_AT_NOMINAL']
+        ff = muldiv64(line, NOMINAL_MV[cfg.voltage], con['HUB_FF_NOMINAL_MV'])
     ff = max(1, muldiv64(ff, d['duty_max'], d['duty_at_ff']))
     rsense = con['F_REV_A_RSENSE'] if cfg.board == 'A' else con['F_REV_B_RSENSE']
     nk = min(max(1, muldiv64(3 * con['I_PEAK_A'] * rsense, 0x1_0000, 16 * d['frame_cnt'])), 0xFFFF)
     floor_est = muldiv64(d['frame_cnt'], 4 * con['DUTY_FLOOR_PCT'], 100)
-    nfloor = min(max(floor_est, ((con['FOLD_MIN_MV'] << 16) + nk - 1) // nk), 0xFFFF)
+    # init()'s foldMinMv (DRIVER_REV 51: the count term) and the fold floor setFoldLimit() keeps (DRIVER_REV 55: Rev A's
+    #  is FOLD_MIN_FILT_MV, on its filtered reading, with sense_shift SENSE_FILT_SHIFT_REVA; Rev B's shift is 0)
+    fold_min = con['FOLD_MIN_MV']
+    if 'FOLD_MIN_COUNTS' in con:
+        fold_min = max(fold_min, -(-(con['FOLD_MIN_COUNTS'] * con['ADC_FULL_SCALE_MV']) // d['frame_cnt']))
+    filtered = cfg.board == 'A' and 'FOLD_MIN_FILT_MV' in con
+    fold_floor = con['FOLD_MIN_FILT_MV'] if filtered else fold_min
+    nfloor = min(max(floor_est, ((fold_floor << 16) + nk - 1) // nk), 0xFFFF)
     p = {
         'OFFSET_FWD': fwd, 'OFFSET_REV': rev, 'DUTY_MIN': d['duty_min'], 'DUTY_MAX': d['duty_max'],
         'SERVO_SHIFT': con['SERVO_ACC_SHIFT'], 'FF_CEILING': ff, 'DEAD_GAP': d['dead_gap'], 'ACCEL_DN': ad,
@@ -224,6 +251,8 @@ def params(cfg, con):
         'PROBE_PHASE': 0, 'FORCE_SEQ': 0, 'FAULT_CLR': 0, 'PROBE_SINK': 0, 'PROBE_Y': 0, 'DRV_RELEASE': 0,
         'SENSE_ZERO': 0,
     }
+    if con['DRVR_PARAMS_LONGS_COUNT'] >= 28:
+        p['SENSE_SHIFT'] = con['SENSE_FILT_SHIFT_REVA'] if filtered else 0
     return p, d
 
 
