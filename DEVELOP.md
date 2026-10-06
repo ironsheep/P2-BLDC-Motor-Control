@@ -248,7 +248,9 @@ PUB main() | motorCog
 
 ### Choosing a clock
 
-The motor objects work at any system clock from the lowest one `start()` accepts up to 350 MHz. Set your clock the usual way, with `_clkfreq` (or `_xtlfreq` and a PLL setting) in your top-level file; the demos use `_clkfreq = CLK_FREQ`.
+The motor objects work at any system clock from 130 MHz up to 350 MHz. Set your clock the usual way, with `_clkfreq` (or `_xtlfreq` and a PLL setting) in your top-level file; the demos use `_clkfreq = CLK_FREQ`.
+
+**Why 130 MHz.** The driver does a fixed amount of work in every PWM frame — read the current, compute the three phase levels, read the halls, apply the current limit — and the frame lasts a fixed time (44 kHz), so a slower clock leaves fewer clock cycles for the same work. At 130 MHz the driver's busiest frame uses three quarters of the frame, keeping a quarter in reserve; much slower and it would run out of time and miss frames, and the motor would run badly with nothing to say why. So below 130 MHz `start()` refuses and starts nothing: it returns `ERR_CLOCK_TOO_SLOW` (see `getError()`).
 
 Every timing the objects use is derived from the running clock: the PWM frame (44 kHz), the drive pass (23 frames), the dead gap (260 ns, never under the driver boards' 250 ns minimum), the front cog's 1 ms schedule, the board-detection window and the rest of the start-up waits. So the same program behaves the same at a different clock, and the times you ask for (`stopAfterTime()`, command timeouts, ramp rates) are the times you get.
 
