@@ -69,11 +69,9 @@ PRECONDITION
     reply lines. Before them, OK and ERROR replies ended with the two characters "\\n" and no LF: this script then
     stops at once with abort REPLY_NOT_LF_TERMINATED. (getaccel's 1_000 needs DRIVER_REV 38; the walk band
     checkwiring judges, 40.)
-  - THE CLOCK IS CHOSEN BY NAME (--clock), and the P2 must have been built at that clock. The serial top fixes its
-    clock in one line, isp_steering_serial.spin2:23, "CLK_FREQ = 270_000_000"; there is no serial tier in
-    tools/bench-run.sh. For each run: set that line to the Hz this script prints for the chosen clock name (the same
-    names and values as tools/bench-run.sh's clock_hz()), build with pnut-ts (plain build) or pnut-ts -d (debug build),
-    load, and restore the line afterwards. The script cannot read the P2's clock back: the P2 derives its bit period
+  - THE CLOCK IS CHOSEN BY NAME (--clock), and the P2 must have been built at that clock. Load it with
+    tools/bench-run.sh serial-top <clock> (the -d build: --build debug) or serial-top-plain <clock> (--build plain),
+    the same clock name given to both; nothing is edited by hand. The script cannot read the P2's clock back: the P2 derives its bit period
     from the clock it actually runs at, so a wrong build still talks. The name only labels the run (banner, the
     SER-CLOCK line, the log) and gives the expected bit period and baud error for the evaluation to read.
   - A dual-motor configuration has a wheel diameter, so getaccel and getdecel read mm/s^2 (0 only without one).
@@ -147,9 +145,9 @@ PORT_NAMES = {
 }
 
 # Clock names -> the Hz the serial top must be built at (isp_steering_serial.spin2:23, CLK_FREQ). The names and values are
-# tools/bench-run.sh's clock_hz() table; clk-floor is PROVISIONAL (the lowest supported clock is not yet certified).
+# tools/bench-run.sh's clock_hz() table; clk-floor is the library's MIN_CLKFREQ_HZ (start() refuses below it).
 CLOCK_NAMES = {
-    "clk-floor": 120_000_000,       # provisional lowest supported clock
+    "clk-floor": 130_000_000,       # the lowest supported clock
     "clk-200": 200_000_000,
     "clk-270": 270_000_000,         # the serial top's shipped clock
     "clk-300": 300_000_000,
@@ -1365,7 +1363,7 @@ def list_ports_and_exit():
         print("  {:15s} {}".format(name, path if path else "the one USB serial adapter pyserial lists"))
     print("clock names (--clock), the Hz the serial top is built at (isp_steering_serial.spin2:23):")
     for name, hz in CLOCK_NAMES.items():
-        print("  {:10s} {:>12,} Hz{}".format(name, hz, "  (provisional lowest supported clock)" if name == "clk-floor" else ""))
+        print("  {:10s} {:>12,} Hz{}".format(name, hz, "  (the lowest supported clock)" if name == "clk-floor" else ""))
     print("build names (--build): {}".format(", ".join(BUILD_NAMES)))
     try:
         from serial.tools import list_ports
@@ -1421,8 +1419,8 @@ def main():
     log.line("SER-CLOCK,name,{},hz,{},p2_built_at_this_clock,DECLARED_NOT_VERIFIED,bit_clocks,{:.4f},p2_baud,{:.1f},"
              "baud_error_ppm,{:.0f}".format(args.clock, fmt(clk_hz), bit_clocks, eff_baud, (eff_baud - BAUD) / BAUD * 1e6),
              console=True)
-    log.line("SER-CLOCK-NOTE,the P2 must have been built with CLK_FREQ = {} (isp_steering_serial.spin2:23) and loaded; this "
-             "script cannot read the P2's clock back{}".format(fmt(clk_hz), "; clk-floor is a provisional clock" if args.clock == "clk-floor" else ""),
+    log.line("SER-CLOCK-NOTE,the P2 must have been loaded by tools/bench-run.sh serial-top (or serial-top-plain) {}, which builds "
+             "it at {}; this script cannot read the P2's clock back".format(args.clock, fmt(clk_hz)),
              console=True)
     for cell_id in CELLS:
         log.line("SIGNOFF-DECL,sf,{},bin,{},cell,{},task,{}".format(SF_VERSION, SF_BIN, cell_id, args.task), console=True)

@@ -109,10 +109,13 @@ PACK_DIR="${BENCH_PACK_DIR:-}"
 #   clk-frac   271.25 MHz, a clock that is NOT a whole number of MHz (every whole-MHz arithmetic goes wrong on it).
 #              An integer in Hz, and the P2's PLL makes it EXACTLY from the 20 MHz crystal: 20 MHz x 217 / 16 (pnut-ts
 #              writes CLKMODE $013CD8FB: divide 16, multiply 217, VCO / 1) -- verified by compiling it, not on a board.
+#   clk-under  120 MHz, UNDER the floor (task 3687): a run built at it must be REFUSED by start() with ERR_CLOCK_TOO_SLOW
+#              and drive nothing -- the refusal's one hardware check.
 # pnut-ts needs no _errfreq for any of them: each is reached exactly, so the default tolerance is never used.
-CLOCK_NAMES="clk-floor clk-200 clk-270 clk-300 clk-350 clk-frac"
+CLOCK_NAMES="clk-floor clk-200 clk-270 clk-300 clk-350 clk-frac clk-under"
 clock_hz() {
     case "$1" in
+        clk-under) echo "120000000" ;;
         clk-floor) echo "130000000" ;;
         clk-200)   echo "200000000" ;;
         clk-270)   echo "270000000" ;;
@@ -193,6 +196,7 @@ Usage:  tools/bench-run.sh <tier> [<clock>]
                    clk-300    300 MHz
                    clk-350    350 MHz  the fastest clock the P2 makes
                    clk-frac   271.25 MHz  not a whole number of MHz
+                   clk-under  120 MHz  UNDER the floor: start() must refuse (ERR_CLOCK_TOO_SLOW) and nothing moves
   <tier>      -- one of:
                    t0             Tier 0 -- no motor, no motion, no risk
                    panel          PLOT pipeline probe: two windows differing ONLY in name, no motors, reads out in the log  [NOTHING MOVES, ATTENDED]
@@ -254,10 +258,13 @@ Usage:  tools/bench-run.sh <tier> [<clock>]
                    dual-kick      motion harness part KICK: PREFLT, KICK -- the seven top-of-range speed changes per wheel and direction, for the kick fix (PL-78, PL-87), under 2 minutes  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-tokneg    the record labels' self-check's own negative: no part runs, nothing moves, seconds; two token tables are built wrong on purpose (one a token short, one with a token too long) and the R21-DUAL-TOKTAB cell must print FAIL  [NOTHING MOVES, UNATTENDED]
                    demo-single    the single-motor release demo on the RIGHT wheel: wiring check, 15 s forward and 15 s reverse at full power (PL-149), about 1 minute  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
+                   serial-top     the dual-motor SERIAL top level (-d build) for serial_certify.py on the host (USB-serial on P56/P57); takes a <clock> name; close the terminal when the script ends  [WHEELS UP, HOST DRIVES IT]
+                   serial-top-plain  as serial-top, built without -d (the script's --build plain)  [WHEELS UP, HOST DRIVES IT]
                    demo-rc        the FlySky RC demo, driven by you with the transmitter (in this release, Stephen 2026-09-27); SBUS receiver on P58  [ATTENDED]
                    floor-rc       the RC demo's control loop ON THE FLOOR, driven by you with the transmitter, with a 25 Hz telemetry line of both wheels (RC-TEL) and every drive event (RC-EVT); SBUS receiver on P58; runs until you close the terminal  [WHEELS DOWN, ATTENDED]
                    doco-demo-<voltage>  the DOCO BENCH (one motor, P16 board, a Rev A): the single-motor release demo, told its drive voltage by the tier's NAME -- one of doco-demo-v7p4, -v11p1, -v12p0, -v14p8, -v18p5, -v22p2, -v24p0 (7.4 11.1 12 14.8 18.5 22.2 24 V; nothing is sensed on this bench)  [MOTOR CONNECTED, FREE TO TURN, UNATTENDED]
                    single-hallmap-<voltage>  the DOCO BENCH's measurement harness, its hall-map leg: the encoder angle at every hall edge, eight two-revolution crawls (60 and 240 rpm, each way) under the library's 40 A limit; the voltage told by NAME as doco-demo's is (-v7p4 ... -v24p0); takes a <clock> name  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
+                   single-noise-<voltage>    the Doco harness's current-sense capture alone: the sense frame by frame, still and at a quarter and half speed each way (B1-NOISE), under a minute; voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
                    single-mininc-<voltage>   the Doco harness's slowest-steady-speed leg: crawls each way, slower each step, until one does not turn smoothly on the encoder (PL-71); voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
                    single-ladder-<voltage>   the Doco harness's speed ladder: a quarter to all of the voltage's top speed, each from rest and by a step, each held ~6 s, each way; the duty line, the reserve ceiling, the misdial check; voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
                    single-ramp-<voltage>     the Doco harness's built-in speed-up to the top and stop, each way, and a reversal through zero at the top; voltage and clock as above  [MOTOR CONNECTED, ENCODER COUPLED, SHAFT FREE, UNATTENDED]
@@ -328,6 +335,7 @@ fi
 # EXTRA_DEFS is an array so the echoed line is the real argv, not a re-quoted
 # approximation of it.
 EXTRA_DEFS=()
+NO_DEBUG_BUILD=""                     # a tier that sets it is built WITHOUT -d (serial-top-plain); every other tier is a -d build
 PRECONDITION=""
 # The words every floor-* tier's PRECONDITION shares (the fourteen single-action floor commands, SRC_REV 69): what a floor
 # run is, what a spin does, and how it ends. Plain words for Stephen on the floor with the Rev B platform; no window, no key.
@@ -726,6 +734,20 @@ case "$TIER" in
     #  config instead of the end-user one (demo_single_motor drives the bench's RIGHT motor, as it names no single motor)
     #  and prints DEBUG_END_SESSION after its sequence; a normal build of either is unchanged. Built with the library's
     #  full debug channels, as a user's -d build is: what the demos print is what is under test.
+    # serial-top, serial-top-plain (task 3687) -- the dual-motor SERIAL top level (isp_steering_serial.spin2) on the 6.5in
+    #  platform, for pythonSrc/serial_certify.py run on the host through a USB-serial adapter on P56/P57. It takes a clock
+    #  NAME like the harness tops, so the clock is never set by hand in the source (the script's PRECONDITION once asked for
+    #  that). serial-top is the -d build (it prints the receive loop's worst cost on the debug port), serial-top-plain the
+    #  build without -d (NO_DEBUG_BUILD): the script's --build debug / plain.
+    serial-top|serial-top-plain)
+                    BENCH_FILE="isp_steering_serial.spin2"
+                    # BENCH_QUIET: the library's channels down to errors and warnings, as every harness tier, so the -d build
+                    #  fits the DEBUG footprint (13_128 bytes with every channel, over DEBUG_FOOTPRINT_MAX); the top's own
+                    #  debug() lines, the receive loop's cost among them, are not channel-gated and stay
+                    EXTRA_DEFS=(-D BENCH_QUIET)
+                    [ "$TIER" = "serial-top-plain" ] && NO_DEBUG_BUILD=1
+                    PRECONDITION="THE 6.5in PLATFORM, MOTORS CONNECTED, WHEELS UP, BOTH WHEELS FREE TO TURN, HANDS OFF -- the SERIAL top level, for serial_certify.py on your host (USB-serial adapter on P56/P57). This loads the P2 and waits; it drives nothing until the host commands it. Then, on the host, run serial_certify.py with --clock set to the SAME clock name as this command (clk-270 when none was given) and --build ${NO_DEBUG_BUILD:+plain}${NO_DEBUG_BUILD:-debug}; the wheels turn at power 30 when it asks. When the script has finished, CLOSE THIS TERMINAL (the serial top runs until stopped). About 5 minutes"
+                    ;;
     demo-single)    BENCH_FILE="demo_single_motor.spin2"
                     PRECONDITION="MOTORS CONNECTED, WHEELS UP, RIGHT WHEEL FREE TO TURN, HANDS: NONE -- UNATTENDED, YOU DO NOTHING: the single-motor release demo on the RIGHT wheel (the P16 board); the left wheel is never started. The start checks pulse the motor leads with nothing able to move, then the wiring check TURNS THE RIGHT WHEEL A LITTLE FORWARD AND BACK (about 3.5 cm at the tyre). Then the right wheel runs FORWARD AT FULL POWER for 15 seconds, stops, runs IN REVERSE AT FULL POWER for 15 seconds, and stops; the program then waits 20 seconds with the wheel still and ends. It also starts its HDMI output on P8-P15, which the bench config does not use. About 1 minute"
                     ;;
@@ -757,6 +779,16 @@ case "$TIER" in
     #  the hall map, then every 2a leg, in the order the harness runs them -- doctrine P1, a command boundary only where he
     #  must act, and in these he never does). Built as single-hallmap-<voltage> is (-D BENCH_QUIET -D BENCH_DOCO -D <the
     #  voltage's symbol>); each takes a clock NAME. Every one's PRECONDITION opens with the same Doco-bench words.
+    # single-noise-<voltage> (task 3687): L-noise alone, the current sense frame by frame (B1-NOISE), still and at a
+    #  quarter and half speed each way -- Rev A's filtered fold-back's premise (DRIVER_REV 55) at a second bus voltage;
+    #  single-measure carries the same leg first
+    single-noise-v7p4|single-noise-v11p1|single-noise-v12p0|single-noise-v14p8|single-noise-v18p5|single-noise-v22p2|single-noise-v24p0)
+                    BENCH_FILE="test_bench_single.spin2"
+                    DOCO_VNAME="${TIER#single-noise-}"
+                    DOCO_VINFO="$(doco_voltage "$DOCO_VNAME")" || die "unknown Doco voltage '$DOCO_VNAME' -- a voltage is chosen by NAME, one of: $DOCO_VOLTAGE_NAMES"
+                    EXTRA_DEFS=(-D BENCH_QUIET -D BENCH_DOCO -D "${DOCO_VINFO% *}" -D SINGLE_PART_NOISE)
+                    PRECONDITION="THE DOCO BENCH, MOTOR CONNECTED, ENCODER COUPLED TO ITS SHAFT, SHAFT FREE TO TURN, HANDS OFF -- UNATTENDED, YOU DO NOTHING: the Doco harness. It reads the board first and starts NOTHING unless it reads a Rev A. THE DRIVE VOLTAGE IS TOLD, NOT SENSED: this build is told ${DOCO_VNAME} = ${DOCO_VINFO#* } mV (${DOCO_VINFO% *}); this bench has no pack sensor, so set the supply to that voltage before the run. The start checks pulse the motor leads with nothing able to move. It stops itself on an over-current, a charge it did not expect, an encoder that disagrees with the halls, or its time cap. THE LEG: the current-sense capture -- the motor still, then four short runs at a quarter and half speed, each way. Under the library's own current limit (40 A); the harness itself stops the run at 3.68 A of supply current. Under a minute"
+                    ;;
     single-mininc-v7p4|single-mininc-v11p1|single-mininc-v12p0|single-mininc-v14p8|single-mininc-v18p5|single-mininc-v22p2|single-mininc-v24p0)
                     BENCH_FILE="test_bench_single.spin2"
                     DOCO_VNAME="${TIER#single-mininc-}"
@@ -927,8 +959,8 @@ esac
 # tier's source is never patched, so a name beside it would run at the file's own clock while saying otherwise
 if [ -n "$CLOCK_NAME" ]; then
     case "$BENCH_FILE" in
-        test_bench_dual.spin2|test_bench_t0.spin2|test_bench_single.spin2|util_adopt_motor.spin2) ;;   # test_bench_single: the Doco harness (task 3679); util_adopt_motor: the adoption tool (task 3685)
-        *) die "tier '$TIER' (top $BENCH_FILE) takes no clock: a clock name is for the tiers of test_bench_dual.spin2, test_bench_t0.spin2, the Doco harness test_bench_single.spin2 and the adoption tool util_adopt_motor.spin2" ;;
+        test_bench_dual.spin2|test_bench_t0.spin2|test_bench_single.spin2|util_adopt_motor.spin2|isp_steering_serial.spin2) ;;   # test_bench_single: the Doco harness (task 3679); util_adopt_motor: the adoption tool (task 3685); isp_steering_serial: the serial tiers (task 3687)
+        *) die "tier '$TIER' (top $BENCH_FILE) takes no clock: a clock name is for the tiers of test_bench_dual.spin2, test_bench_t0.spin2, the Doco harness test_bench_single.spin2, the adoption tool util_adopt_motor.spin2 and the serial top isp_steering_serial.spin2" ;;
     esac
 fi
 # A prebuilt package and a pack build hold one binary per tier name, its clock built in: <tier>.bin. A tier built at a NAMED
@@ -1100,10 +1132,12 @@ else
         echo "bench-run.sh: not a git checkout -- the commit is unknown"
     fi
     # the bench: the one compile, -d (every tier's debug kernel and records) and -l (the listing kept beside it)
-    run "$PNUT" -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
+    DEBUG_FLAG=(-d)
+    [ -n "$NO_DEBUG_BUILD" ] && DEBUG_FLAG=()     # serial-top-plain: the build a user ships, no debug() compiled in
+    run "$PNUT" -l ${DEBUG_FLAG[@]+"${DEBUG_FLAG[@]}"} -D BENCH_CFG ${EXTRA_DEFS[@]+"${EXTRA_DEFS[@]}"} "$BENCH_FILE"
     STATUS=$?
     if [ $STATUS -ne 0 ] || [ ! -f "$BINARY" ]; then
-        die "command failed (exit $STATUS): $PNUT -l -d -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
+        die "command failed (exit $STATUS): $PNUT -l ${DEBUG_FLAG[@]+${DEBUG_FLAG[@]}} -D BENCH_CFG ${EXTRA_DEFS[@]+${EXTRA_DEFS[@]}} $BENCH_FILE"
     fi
     echo "bench-run.sh: DEBUG footprint not measured at the bench (PL-152) -- it is enforced at commit time by tools/build-check.sh, which measures every tier; image $(wc -c < "$BINARY" | tr -d ' ') bytes"
     if [ -n "$PACK_DIR" ]; then
@@ -1138,6 +1172,10 @@ fi
 DEBUG_FOOTPRINT_MAX=12404
 if [ -n "$MEASURE_ONLY" ]; then
     echo "bench-run.sh: DEBUG footprint $DEBUG_BYTES bytes (limit $DEBUG_FOOTPRINT_MAX; -d $((PLAIN_BYTES + DEBUG_BYTES)) - plain $PLAIN_BYTES)"
+    if [ -n "$NO_DEBUG_BUILD" ]; then
+        echo "bench-run.sh: measure-only -- tier '$TIER' runs WITHOUT -d, so it carries no DEBUG data; the footprint does not apply; not run"
+        exit 0
+    fi
     if [ "$DEBUG_BYTES" -gt "$DEBUG_FOOTPRINT_MAX" ]; then
         die "tier '$TIER' carries $DEBUG_BYTES bytes of DEBUG data, over the $DEBUG_FOOTPRINT_MAX measured to run intact: its last debug() records would be cut or never sent (DBG-1). Shrink the footprint without cutting output (DBG-16, DBG-2, DBG-5/6) before this tier can pass the commit gate and run."
     fi
