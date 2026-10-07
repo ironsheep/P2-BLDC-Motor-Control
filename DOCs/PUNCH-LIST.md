@@ -1671,6 +1671,13 @@ than the plan (7.4 V −300 counts, 11.1 V −185; NEG −18..+95); crawl stops 
 early, not overrun: the front cog decides on the driver's plan, so the plan's POS travel or the decision's use of it is
 biased. **To close:** the cause stated from the source and these logs; the fix, then R23-SGL-STOPROT at D2's remaining
 voltages.
+> **D2 second pass, 2026-10-07 (`B1-STOPDEC`, every voltage):** rivals (b) and (a) ruled out — the travel counted equals
+> the net travel on every stop, and NEG and POS fire at the same travel with the same planned stop. The shortfall is
+> after the decision, POS only, at low supply: 7.4 V −6 ticks, 11.1 V −3/−4, 14.8 V up within ±2 (cell PASS). Two
+> rivals remain, neither in the logs: the field HELD during the stop (lag hold) losing travel, or the rotor stalling in
+> the stop's final slow creep below this motor's slowest steady speed at low supply. **Next:** print the held passes and
+> the encoder's last-moving time across each stop; then the fix.
+>
 > **Desk, 2026-10-06:** the logs cannot separate three rivals — (a) the plan's POS stopping distance overstates the
 > field's real one, (b) the front cog's travel sum (`trkTravelTicks`, summed |steps| a pass) over-counts in POS when a
 > hall code steps back and forth at a sample, (c) the rotor ends short of its field. (c) cannot reach 5–12 ticks: a rotor
@@ -1721,6 +1728,35 @@ it to the library's 40 A (STEPHEN 2026-10-05 "yes A"). At 2–3 A on Rev A this 
 the limit: 5° from the start a point hunts and the next droops (7.4 V 560 rpm NEG: d+5 HUNT held 73, d+10 DROOP 469 ‰),
 and the 280 rpm rung droops (488 ‰), so no fit resolves and no ceiling is found. **To close:** the record at the
 library's limits, its abort at 3.68 A as the harness's; rerun `doco-adopt-v11p1` and `-v7p4`.
+
+### PL-209 -- the adoption tool walks into the Doco's torque wall at 40 A and ends on an over-current (tool)
+
+> **Status (2026-10-07): OPEN, a tool defect (MEASURED, D2 second pass, all six voltages).**
+
+Each side walks outward "to the motor's edge". At 2–3 A the limit capped the current at the edge; at 40 A (PL-207)
+nothing does, and every run ended `MA-END stopped,OVER_CURRENT` (4.5–10.2 A) on the NEG MINUS side at 1,120 rpm stepping
+to ~270°, −30° from the start. The minimum was bracketed well before (11.1 V: 86 mA at 0°, 336 by −20°); the tool's 2.5×
+WALL rule is off below its 400 mA floor, and this motor runs under it. **To close:** a side ends 20° past its lowest
+clean point (the fit uses only ±20° of it), so a falling side walks on and a bracketed one stops short of the wall;
+rerun `doco-adopt-<v>`.
+
+### PL-210 -- the Doco hand load needs something to grip: a bare shaft cannot be held at 2-4 A
+
+> **Status (2026-10-07): OPEN, a test set-up gap (MEASURED, D2 row 2).** The set-up is Stephen's (overlay P1).
+
+At 4 A and 2 A the limit acted with no fault (R23-SGL-LIMHOLD PASS), but the shaft never stopped (standing ≤ 5 ms,
+creeping 48–104 thousand counts under the grip), so R23-SGL-BLKSTOP is NOMEAS at every step. 0.034 N·m/A: 136 mN·m at
+4 A, 68 at 2 A — ~20–45 N at the fingertips on a shaft a few mm across; at a 25 mm radius, 3–6 N. **To close:** rows 2
+and 8 again with a grip of about that radius on the shaft.
+
+### PL-211 -- R23-SGL-MISDIAL fails at 14.8 and 22.2 V and passes at the rows between
+
+> **Status (2026-10-07): OPEN, unexplained (MEASURED, D2 second pass).**
+
+The signs' mean reads +48 ‰ (14.8 V) and +68 ‰ (22.2 V), against +26 / +6 / +19 at 11.1 / 18.5 / 24 V. A Ke error would
+move every row alike; a supply set 5–7 % high at those two rows, the supply rising under regeneration, or the cell's own
+spread all fit. **To close:** the supply's setting at those rows (Stephen); then either nothing, or the cell's tolerance
+re-derived from its measured spread.
 
 ### PL-208 -- the Doco's slowest steady speed at 7.4 V swapped direction between D1b and D2
 
