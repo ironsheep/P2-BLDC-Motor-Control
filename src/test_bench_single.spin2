@@ -101,6 +101,12 @@
 ''               with a held pass is not clean. PL-206: R23-SGL-MISDIAL judges the two signs' mean (one instance, PAIR) and
 ''               prints their half-difference as the asymmetry. PL-203: B1-STOPDEC, the distance limit's decision.
 ''               PL-208: R23-SGL-MININC's bound is the library's own shipped minimum per sign (testGetIncrLimits()).
+''               07 Oct 2026 -- SRC_REV 17, fmt 14, task 3700 (STEPHEN: "the lowest RPM we can command and hold, and the
+''               highest... not some artificial limits"): L-range (-D SINGLE_PART_RANGE) climbs from the row's top until the
+''               motor or the drive gives out, with vibration (hall edges timed by sector and by turn; current folded by
+''               hall code) and a timing sweep at every step; L-mininc runs on to 0.1 ticks/s. B1-STOPDEC gains held_d and
+''               rest_after_zero_ms (PL-203's two rivals). The capture cog records the hall code; the offset helpers and
+''               the capture are shared (OFS_HELPERS, NC_CAPTURE).
 ''
 
 '' =================================================================================================
@@ -271,8 +277,8 @@ CON { timing }
 
 CON { build identity }
 
-    SRC_REV     = 16                                        ' hand-bumped whenever this file changes
-    FMT_VERSION = 13                                        ' B1- record-format version (13: B1-STOPDEC is new; B1-MOTOR4 walk_rise_ma -> walk_fall_ma; B1-MOTOR2 loses mininc_hi_x100 (the MININC bound is the library's own minimum, in the SIGNOFF); B1-MISDIAL gains pair_dev_pm, asym_pm, the cell judges the two signs' mean; 12:B1-OFSSIDE and B1-NOISE are new; B1-BUILD noise; B1-MOTOR4 ofs_walk, walk_rise_ma; B1-OFSPT/-OFSPTD may carry points past ofs_span; folds fields count FRAMES (testGetFoldFrames()); 11: B1-ACROSS pair, dir, cps, x_mv, y_mv, lo_mv, hi_mv for phase, t_us, dur_us; B1-AGUIDE target, band_uv/vw/wu_mv for speed, turns, ticks, hyst_*, band_railed; B1-ALEG by_target, tick_edges, peak_ma, mean_peak_ma for speed, edge_s_x10, rpm_x10; B1-ALEG2 rise, fall, ref_half, ref_rail, ref_still, against, clip_kept for cross, unusable, band_railed, peak_ma, mean_peak_ma, swing_hz_x10; B1-MOTOR6 al_target, al_max_edges for al_ticks, al_slow_rpm, al_fast_rpm; 10: B1-HALLSEQ, B1-SIGNMAP; 9: B1-AGUIDE, B1-ACROSS, B1-AEDGE, B1-ALEG, B1-ALEG2, B1-ASUM, B1-MOTOR6; 8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
+    SRC_REV     = 17                                        ' hand-bumped whenever this file changes
+    FMT_VERSION = 14                                        ' B1- record-format version (14: B1-RANGE, B1-RANGEV, B1-RANGET, B1-RANGEEND are new; B1-BUILD range; B1-STOPDEC held_d, rest_after_zero_ms; B1-MININC may carry rungs 10-14 (0.4 .. 0.1 ticks/s); 13:B1-STOPDEC is new; B1-MOTOR4 walk_rise_ma -> walk_fall_ma; B1-MOTOR2 loses mininc_hi_x100 (the MININC bound is the library's own minimum, in the SIGNOFF); B1-MISDIAL gains pair_dev_pm, asym_pm, the cell judges the two signs' mean; 12:B1-OFSSIDE and B1-NOISE are new; B1-BUILD noise; B1-MOTOR4 ofs_walk, walk_rise_ma; B1-OFSPT/-OFSPTD may carry points past ofs_span; folds fields count FRAMES (testGetFoldFrames()); 11: B1-ACROSS pair, dir, cps, x_mv, y_mv, lo_mv, hi_mv for phase, t_us, dur_us; B1-AGUIDE target, band_uv/vw/wu_mv for speed, turns, ticks, hyst_*, band_railed; B1-ALEG by_target, tick_edges, peak_ma, mean_peak_ma for speed, edge_s_x10, rpm_x10; B1-ALEG2 rise, fall, ref_half, ref_rail, ref_still, against, clip_kept for cross, unusable, band_railed, peak_ma, mean_peak_ma, swing_hz_x10; B1-MOTOR6 al_target, al_max_edges for al_ticks, al_slow_rpm, al_fast_rpm; 10: B1-HALLSEQ, B1-SIGNMAP; 9: B1-AGUIDE, B1-ACROSS, B1-AEDGE, B1-ALEG, B1-ALEG2, B1-ASUM, B1-MOTOR6; 8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
 
 CON { the bench this image is built for }
 
@@ -454,11 +460,16 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     DUTY_VOLT_DIV           = 8
 
   ' THE MINIMUM INCREMENT (L-mininc, PL-71). A descending sweep of crawl rates, DAT minincTpsX100 (hall ticks/s x 100):
-  '  24, 12, 6, 4, 3, 2, the shipped minimum's own increment (1.46 ticks/s), 1, 0.75, 0.6. DERIVED: from the hall map's
+  '  24, 12, 6, 4, 3, 2, the shipped minimum's own increment (1.46 ticks/s), 1, 0.75, 0.6 (SRC_REV 17: and 0.4, 0.3, 0.2,
+  '  0.15, 0.1, with the window cap at a cycle at 0.1). DERIVED: from the hall map's
   '  slow rung, past the shipped minimum, to where one electrical cycle (360 counts, MININC_WIN_COUNTS) takes 10 s
   '  (MININC_MAX_WIN_MS) -- a window at least a cycle long sees every sector of the field's pattern. 6.5in: Visit 9 E4's
   '  rungs from 544_628 down to 100_000 (0.27 ticks/s of 90 a revolution), each "rotated at exactly its commanded rate"
-    MININC_RUNGS            = 10
+    ' SRC_REV 17 (STEPHEN 2026-10-07, "the lowest RPM we can command and hold ... not some artificial limits"): the sweep
+    '  goes on below 0.6 ticks/s to 0.4, 0.3, 0.2, 0.15 and 0.1 (one tick every 10 s, 0.25 rpm, a 60 s window), so the
+    '  edge is the motor's: at 11.1 V and up every D2 rung to 0.6, the old last one, turned steadily. A sign still steady
+    '  at 0.1 is reported as steady to the lowest rung TRIED, not as the motor's floor (overlay P10)
+    MININC_RUNGS            = 15
     MININC_SHIPPED_RUNG     = -1                            ' the DAT entry that means SHIPPED_MIN_INCR
     ' STEADY, from the encoder: the window's travel within MININC_SYNC_TOL_COUNTS of the field's commanded travel -- a
     '  quarter of an electrical cycle; a rotor that slips a pole pair reads a whole cycle (360 counts) short -- and every one
@@ -847,6 +858,9 @@ CON { legs -- what this image carries }
 #endif
 #ifdef SINGLE_PART_OFFSCAN
     PART_OFFSCAN_BUILT = TRUE
+#ifndef OFS_HELPERS
+#define OFS_HELPERS
+#endif
 #else
     PART_OFFSCAN_BUILT = FALSE
 #endif
@@ -858,8 +872,25 @@ CON { legs -- what this image carries }
   ' task 3698, L-noise: the current sense captured frame by frame (no attention; part of single-measure)
 #ifdef SINGLE_PART_NOISE
     PART_NOISE_BUILT   = TRUE
+#ifndef NC_CAPTURE
+#define NC_CAPTURE
+#endif
 #else
     PART_NOISE_BUILT   = FALSE
+#endif
+  ' task 3700, L-range: the motor's real lowest and highest held speed (STEPHEN 2026-10-07), with vibration and timing at
+  '  each step above the row's top; it shares L-noise's capture cog (NC_CAPTURE) and L-offscan's offset helpers
+  '  (OFS_HELPERS)
+#ifdef SINGLE_PART_RANGE
+    PART_RANGE_BUILT   = TRUE
+#ifndef NC_CAPTURE
+#define NC_CAPTURE
+#endif
+#ifndef OFS_HELPERS
+#define OFS_HELPERS
+#endif
+#else
+    PART_RANGE_BUILT   = FALSE
 #endif
   ' task 3692, L-handturn: attended too (the panel and the measure cog), the motor unpowered
 #ifdef SINGLE_PART_HANDTURN
@@ -914,7 +945,7 @@ CON { legs -- what this image carries }
     QUALIFY_BUILT      = FALSE
 #endif
     PART_2A_BUILT      = PART_MININC_BUILT or PART_LADDER_BUILT or PART_RAMP_BUILT or PART_STOPS_BUILT
-    PART_2B_BUILT      = PART_OFFSCAN_BUILT or PART_PASSPRB_BUILT or PART_NOISE_BUILT
+    PART_2B_BUILT      = PART_OFFSCAN_BUILT or PART_PASSPRB_BUILT or PART_NOISE_BUILT or PART_RANGE_BUILT
     PART_2C_BUILT      = PART_HANDLOAD_BUILT or PART_HELDPUSH_BUILT
     PART_Q_BUILT       = PART_WIRING_BUILT or PART_POWER_BUILT
     PART_ANY_BUILT     = PART_HALLMAP_BUILT or PART_2A_BUILT or PART_2B_BUILT or PART_2C_BUILT or PART_Q_BUILT or PART_HANDTURN_BUILT or PART_ALIGN_BUILT
@@ -953,17 +984,21 @@ CON { legs -- what this image carries }
     LEG_WIRING_EST_S   = 10
     LEG_POWER_EST_S    = 150
     LEG_HALLMAP_EST_S  = 40
-    LEG_MININC_EST_S   = 130
+    LEG_MININC_EST_S   = 490                                ' SRC_REV 17: was 130; five rungs a sign below 0.6 ticks/s, 15-60 s windows
     LEG_LADDER_EST_S   = 300
     LEG_RAMP_EST_S     = 90
     LEG_STOPS_EST_S    = 140
     LEG_OFFSCAN_EST_S  = 760
     LEG_PASSPRB_EST_S  = 45
     LEG_NOISE_EST_S    = 50
+  '  RANGE    task 3700: per sign up to RANGE_MAX_STEPS steps above the row's top, each ~21 s (arrive ~1, settle 1, the 5 s
+  '           window, the 0.1 s capture, the timing sweep's four points of 0.7 + 2.5 s and two walks back), then the stop:
+  '           at most ~680 s a sign; both, with records: 1_400 (the motor's edge usually ends it far sooner)
+    LEG_RANGE_EST_S    = 1_400
     LEG_HANDLOAD_EST_S = 300
     LEG_HELDPUSH_EST_S = 360
     LEGS_2A_EST_S      = (-PART_MININC_BUILT) * LEG_MININC_EST_S + (-PART_LADDER_BUILT) * LEG_LADDER_EST_S + (-PART_RAMP_BUILT) * LEG_RAMP_EST_S + (-PART_STOPS_BUILT) * LEG_STOPS_EST_S
-    LEGS_2B_EST_S      = (-PART_OFFSCAN_BUILT) * LEG_OFFSCAN_EST_S + (-PART_PASSPRB_BUILT) * LEG_PASSPRB_EST_S + (-PART_NOISE_BUILT) * LEG_NOISE_EST_S
+    LEGS_2B_EST_S      = (-PART_OFFSCAN_BUILT) * LEG_OFFSCAN_EST_S + (-PART_PASSPRB_BUILT) * LEG_PASSPRB_EST_S + (-PART_NOISE_BUILT) * LEG_NOISE_EST_S + (-PART_RANGE_BUILT) * LEG_RANGE_EST_S
     LEGS_2C_EST_S      = (-PART_HANDLOAD_BUILT) * LEG_HANDLOAD_EST_S + (-PART_HELDPUSH_BUILT) * LEG_HELDPUSH_EST_S
     LEGS_Q_EST_S       = (-PART_WIRING_BUILT) * LEG_WIRING_EST_S + (-PART_POWER_BUILT) * LEG_POWER_EST_S
     LEGS_DRIVEN_EST_S  = LEGS_2A_EST_S + LEGS_2B_EST_S + LEGS_2C_EST_S + LEGS_Q_EST_S   ' every leg after the hall map's crawl
@@ -998,7 +1033,11 @@ CON { legs -- what this image carries }
   '  averages over 1 A for its whole length is still one nothing predicted. single-measure (offset scan 760, noise 50,
   '  min-inc 130, ladder 300, ramp 90, stops 140): 110_400 + 1_000 x 1_470 = 1_580_400 (0.44 Ah).
     RUN_MEAN_DRAW_MA   = 1_000
-    RUN_CHARGE_CAP_MAS = RUN_CHARGE_BASE_MAS + RUN_MEAN_DRAW_MA * LEGS_DRIVEN_EST_S
+  '  task 3700: L-range spends its time above the row's top, where D2 drew 0.5-1.3 A at 2,800 rpm and more is expected
+  '  past it; it is allowed RANGE_EXTRA_DRAW_MA more for its estimate (3 A in all, under the 3.68 A guard that bounds any
+  '  instant)
+    RANGE_EXTRA_DRAW_MA = 2_000
+    RUN_CHARGE_CAP_MAS = RUN_CHARGE_BASE_MAS + RUN_MEAN_DRAW_MA * LEGS_DRIVEN_EST_S + (-PART_RANGE_BUILT) * RANGE_EXTRA_DRAW_MA * LEG_RANGE_EST_S
 
 CON { run sequencing enums }
 
@@ -1159,7 +1198,7 @@ CON { sampling and windows }
     REST_WAIT_MAX_MS    = 3_000                             ' the rest wait's bound once the drive reports the move done
     MININC_SETTLE_MS    = 1_000                             ' a crawl rung from rest: the ramp takes < 0.4 s at 24 ticks/s
     MININC_MIN_WIN_MS   = 2_000                             ' the shortest window ...
-    MININC_MAX_WIN_MS   = 10_000                            ' ... and the longest (a cycle at 0.6 ticks/s): past a signed getct()
+    MININC_MAX_WIN_MS   = 60_000                            ' ... and the longest (a cycle at 0.1 ticks/s; SRC_REV 17, was 10_000 at 0.6): past a signed getct()
                                                             '  difference at 350 MHz (6.1 s), so a crawl window is timed by getms()
     RAMP_HOLD_MS        = 2_000                             ' L-ramp: at the top after arriving, before the stop
     REV_HOLD_MS         = 2_000                             ' L-ramp's reversal: at each top
@@ -2113,7 +2152,7 @@ ladderPcts      LONG    25, 50, 75, 100
 ladderExtIncr   LONG    360_000_000, 400_000_000
 
   ' L-mininc: the sweep, hall ticks/s x 100, fastest first (MININC_RUNGS); MININC_SHIPPED_RUNG is SHIPPED_MIN_INCR itself
-minincTpsX100   LONG    2_400, 1_200, 600, 400, 300, 200, MININC_SHIPPED_RUNG, 100, 75, 60
+minincTpsX100   LONG    2_400, 1_200, 600, 400, 300, 200, MININC_SHIPPED_RUNG, 100, 75, 60, 40, 30, 20, 15, 10
 
   ' L-stops: stopAfterRotation()'s N, hall ticks (STOPS_ROT_COUNT each): at the top (300 and 400 revolutions), at the crawl
 stopTopTicks    LONG    7_200, 9_600
@@ -2275,6 +2314,7 @@ sLegHeldpush    BYTE    "HELDPUSH", 0
 sLegWiring      BYTE    "WIRING", 0
 sLegPower       BYTE    "POWER", 0
 sLegNoise       BYTE    "NOISE", 0
+sLegRange       BYTE    "RANGE", 0
 sNcCoast        BYTE    "COAST", 0
 sNcRun          BYTE    "RUN", 0
 sSidePlus       BYTE    "PLUS", 0
@@ -2628,10 +2668,15 @@ VAR { task 3686: L-power -- each rung's readings (slot = power sign x POWER_RUNG
     LONG    sfPowDev[POWER_SIGNS], sfPowN[POWER_SIGNS]
 #endif
 
-#ifdef SINGLE_PART_OFFSCAN
-VAR { phase 2b: L-offscan -- the shipped pair, the speed under way's points, and each speed's fit }
+#ifdef OFS_HELPERS
+VAR { the shipped pair the offset helpers set against (L-offscan, L-range) }
 
     LONG    ofsShipFwd, ofsShipRev                          ' the shipped pair, degrees, read before the leg drives
+#endif
+
+#ifdef SINGLE_PART_OFFSCAN
+VAR { phase 2b: L-offscan -- the speed under way's points, and each speed's fit }
+
     LONG    opOutcome[OFS_POINTS], opD[OFS_POINTS], opDeg[OFS_POINTS], opWinMs[OFS_POINTS], opCpsX10[OFS_POINTS]
     LONG    opFolPm[OFS_POINTS], opDuty[OFS_POINTS], opDutyLo[OFS_POINTS], opDutyHi[OFS_POINTS], opErrX10[OFS_POINTS]
     LONG    opErrPk[OFS_POINTS], opHeld[OFS_POINTS], opCapped[OFS_POINTS], opFolds[OFS_POINTS], opResyncs[OFS_POINTS]
@@ -2783,6 +2828,11 @@ PRI runSession() | bGoOn
     if bGoOn
         bGoOn := bRunStopsLeg()
         emitFront(@sLegStops)
+#endif
+#ifdef SINGLE_PART_RANGE
+    if bGoOn
+        bGoOn := bRunRange()                                ' task 3700: above the row's top, after the slowest-speed leg
+        emitFront(@sLegRange)
 #endif
 #ifdef SINGLE_PART_PASSPROBE
     if bGoOn
@@ -3916,6 +3966,10 @@ PRI sampleNext() : eOutcome
         smpZeroMs := smpMs
     if bSmpZ                                                ' phase 2b: L-offscan's windows take every captured edge
         takeZEdges()
+#ifdef SINGLE_PART_RANGE
+    if bSmpVib                                              ' task 3700: L-range's windows time every hall edge
+        vibTakeEdges()
+#endif
     eOutcome := judgeGuards(smpSenseMv, bSmpFault)
 
 PRI judgeGuards(nSenseMv, bFault) : eOutcome | nNetMa
@@ -5824,7 +5878,7 @@ PRI bRunStopsLeg() : bCompleted | nPowIdx, eKind, rotIdx, bGoOn
                 bGoOn := bStopRun(1 - 2 * nPowIdx, eKind, 0, TRUE)
     bCompleted := bGoOn
 
-PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs, nEnc0, nPos0, nDeadline, eErr, nCmd, eSign, eRo, nFinal, nRestMs, bRingShort, eReason, nTravel, nDev, bJudged, instIdx, eOutcome, nZeroMs, nFireTrk, nStopTk, nFirePos, nBasePos
+PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs, nEnc0, nPos0, nDeadline, eErr, nCmd, eSign, eRo, nFinal, nRestMs, bRingShort, eReason, nTravel, nDev, bJudged, instIdx, eOutcome, nZeroMs, nFireTrk, nStopTk, nFirePos, nBasePos, nHeld0, nHeld1
 ' One limited drive, armed at rest: stopAfterRotation(N, DRU_HALL_TICKS) or stopAfterTime(T, DTU_MILLISEC), then
 ' driveAtPower() at the top or the crawl; wait, guarded, until isMoveDone(); the shaft's rest (restQuiet()); the stop
 ' reason. ROTATION: the encoder's travel from the arming less N x 60 counts. TIME: the shaft's rest instant less the
@@ -5863,6 +5917,8 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
 ' @local nStopTk - ROTATION: the stopping ticks the decision allowed for
 ' @local nFirePos - ROTATION: the driver's pos when it fired
 ' @local nBasePos - ROTATION: the driver's pos when the limit was armed
+' @local nHeld0 - the driver's held-pass count before the drive (testGetDriveHealth(), PL-203, SRC_REV 17)
+' @local nHeld1 - ...at rest
 
     bGoOn := TRUE
     nPower := ((eKind == KIND_TOP) ? rowTopPower : STOPS_CRAWL_POWER) * nPowSign
@@ -5882,6 +5938,7 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
     bGoOn := (bGuardStops(eOutcome) == FALSE)
     nEnc0 := smpEnc
     nPos0 := smpPos
+    nHeld0, _, _, _ := wheel.testGetDriveHealth()
     if bGoOn
         if bByTime
             eErr := wheel.stopAfterTime(nTimeMs, wheel.DTU_MILLISEC)
@@ -5951,6 +6008,7 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
         '  and forth); (rest_net - fire_net) - stop_tk is the stopping plan's error; both 0 leaves the rotor short of
         '  its field. Ticks; the nets are |pos - the armed pos|
         nFireTrk, nStopTk, nFirePos, nBasePos := wheel.testGetLimitFire()
+        nHeld1, _, _, _ := wheel.testGetDriveHealth()
         benchLog.begin(@"B1-STOPDEC")
         benchLog.tokenField(@"sign", (eSign == SIGN_NEG) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
         benchLog.tokenField(@"kind", (eKind == KIND_TOP) ? @sKindTop : @sKindCrawl, TOKMAX_SET)
@@ -5960,7 +6018,57 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
         benchLog.numField(@"fire_net", abs(nFirePos - nBasePos), LIM_MID)
         benchLog.numField(@"stop_tk", nStopTk, LIM_MID)
         benchLog.numField(@"rest_net", abs(smpPos - nBasePos), LIM_MID)
+        ' SRC_REV 17 (PL-203's two remaining rivals): held passes across the drive and its stop (0 at a steady top, so
+        '  they are the stop's) -- the field held while braking; and the shaft's rest less the field's zero, ms --
+        '  negative when the shaft stopped before the field did, the rotor stalling in the stop's final creep
+        benchLog.numField(@"held_d", nHeld1 - nHeld0, LIM_MID)
+        benchLog.naNumField(@"rest_after_zero_ms", nRestMs - nZeroMs, LIM_MID, (nZeroMs <> 0) and (nRestMs <> 0))
         lineEmit()
+#endif
+
+CON { --- the offset helpers, shared by L-offscan and L-range (OFS_HELPERS) --- }
+
+#ifdef OFS_HELPERS
+PRI applyOffset(eSign, nD) : nApplied | nFwd, nRev
+' Set the offset {eSign} uses to the shipped one plus {nD} degrees, the other sign's left shipped (offset_fwd serves
+' negative increments, offset_rev positive: testSetFwdRevIndep()), and read back what the driver applies.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param nD - degrees from the shipped offset
+' @returns nApplied - the offset that sign now uses, degrees (0..359)
+
+' Local Variables:
+' @local nFwd - the pair read back: negative increments
+' @local nRev - positive increments
+
+    if eSign == SIGN_NEG
+        wheel.testSetFwdRevIndep(ofsShipFwd + nD, ofsShipRev)
+    else
+        wheel.testSetFwdRevIndep(ofsShipFwd, ofsShipRev + nD)
+    nFwd, nRev := wheel.testGetFwdRevIndep()
+    nApplied := (eSign == SIGN_NEG) ? nFwd : nRev
+
+PRI ofsReturn(eSign, nFromD) : eRo | nD
+' Walk the sign's offset from {nFromD} degrees back to the shipped one while driven, OFS_STEP_DEG at a time with
+' OFS_RETURN_STEP_MS at each step, every reading guarded: the scan's own step size, so no step is larger than one the
+' points already took (D1B-8).
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param nFromD - the offset now applied, degrees from the shipped one
+' @returns eRo - RO_DONE (the shipped pair applied), RO_FAULT or RO_ABORTED
+
+' Local Variables:
+' @local nD - the step's degrees from the shipped offset
+
+    eRo := RO_DONE
+    nD := nFromD
+    repeat while (nD <> 0) and (eRo == RO_DONE)
+        if nD > 0
+            nD := (nD - OFS_STEP_DEG) #> 0
+        else
+            nD := (nD + OFS_STEP_DEG) <# 0
+        applyOffset(eSign, nD)
+        eRo, _ := waitPhase(UNTIL_ELAPSED, 0, OFS_RETURN_STEP_MS, FALSE)
 #endif
 
 CON { --- L-offscan (the analysis's L3): the offset scan, the lead check, the hall zero at speed --- }
@@ -6027,25 +6135,6 @@ PRI bRestoreOffsets() : bRestored | nFwd, nRev
     lineEmit()
     if bRestored == FALSE
         setAbort(AR_SETTING, -1)
-
-PRI applyOffset(eSign, nD) : nApplied | nFwd, nRev
-' Set the offset {eSign} uses to the shipped one plus {nD} degrees, the other sign's left shipped (offset_fwd serves
-' negative increments, offset_rev positive: testSetFwdRevIndep()), and read back what the driver applies.
-'
-' @param eSign - SIGN_NEG or SIGN_POS
-' @param nD - degrees from the shipped offset
-' @returns nApplied - the offset that sign now uses, degrees (0..359)
-
-' Local Variables:
-' @local nFwd - the pair read back: negative increments
-' @local nRev - positive increments
-
-    if eSign == SIGN_NEG
-        wheel.testSetFwdRevIndep(ofsShipFwd + nD, ofsShipRev)
-    else
-        wheel.testSetFwdRevIndep(ofsShipFwd, ofsShipRev + nD)
-    nFwd, nRev := wheel.testGetFwdRevIndep()
-    nApplied := (eSign == SIGN_NEG) ? nFwd : nRev
 
 PRI bOfsSpeed(eSign, pctIdx) : bGoOn | slotIdx, eSide, nRefMa, nRefDrift, bDcOk, nDcVx10, nDcVse, nDcTx10, nDcPts, nDcRms, bDuOk, nDuVx10, nDuVse, nDuTx10, nDuPts, nDuRms, spIdx
 ' One sign at one speed: both sides (bOfsSide()), the hall zero at speed over every window, then at rest every point's
@@ -6241,27 +6330,6 @@ PRI bOfsStillFalling(slotIdx) : bOn
 
     bOn := bOpClean[slotIdx - 1] and bOpClean[slotIdx - 2] and (opDcMa[slotIdx - 1] + OFS_WALK_FALL_MA <= opDcMa[slotIdx - 2])
 
-PRI ofsReturn(eSign, nFromD) : eRo | nD
-' Walk the sign's offset from {nFromD} degrees back to the shipped one while driven, OFS_STEP_DEG at a time with
-' OFS_RETURN_STEP_MS at each step, every reading guarded: the scan's own step size, so no step is larger than one the
-' points already took (D1B-8).
-'
-' @param eSign - SIGN_NEG or SIGN_POS
-' @param nFromD - the offset now applied, degrees from the shipped one
-' @returns eRo - RO_DONE (the shipped pair applied), RO_FAULT or RO_ABORTED
-
-' Local Variables:
-' @local nD - the step's degrees from the shipped offset
-
-    eRo := RO_DONE
-    nD := nFromD
-    repeat while (nD <> 0) and (eRo == RO_DONE)
-        if nD > 0
-            nD := (nD - OFS_STEP_DEG) #> 0
-        else
-            nD := (nD + OFS_STEP_DEG) <# 0
-        applyOffset(eSign, nD)
-        eRo, _ := waitPhase(UNTIL_ELAPSED, 0, OFS_RETURN_STEP_MS, FALSE)
 
 PRI emitOfsSide(eSign, pctIdx, eSide, eUp, nLastD, eBack, bGoOn)
 ' Emit B1-OFSSIDE: how one side of one speed ended, stage by stage -- the way up, the last point's offset, the walk back,
@@ -6635,6 +6703,8 @@ CON { --- L-noise (task 3698): the current sense, frame by frame --- }
     NOISE_BLOCK_LEN     = NOISE_SAMPLES / NOISE_BLOCKS          ' 256
     NOISE_SETTLE_MS     = 1_000
     NOISE_LAG_PASS      = 23                                    ' frames a drive pass (B1-DRIVE pass_frames)
+    INA_REG_ADDR        = $1FE                                  ' the cog register INA (INB is $1FF): the capture cog reads its hall code through ALTS
+
 
 #ifdef SINGLE_PART_NOISE
 PRI bRunNoise() : bGoOn | eSign, pctIdx, nIncr, nWholeMs, eRo
@@ -6672,9 +6742,8 @@ PRI bRunNoise() : bGoOn | eSign, pctIdx, nIncr, nWholeMs, eRo
                     if bGoOn
                         bGoOn, _ := bStopAndRest(TRUE)
 
-PRI bNoiseCapture(pCond, eSign, nPct, bDriven) : bGoOn | nCog, eOutcome, nStartMs, nBoundMs
-' Capture NOISE_SAMPLES consecutive frames' raw sense counts with the capture cog (ncEntry), guarded while it runs, and
-' emit B1-NOISE (emitNoise()).
+PRI bNoiseCapture(pCond, eSign, nPct, bDriven) : bGoOn | bDone
+' Capture NOISE_SAMPLES consecutive frames' raw sense counts (ncRun()) and emit B1-NOISE (emitNoise()).
 '
 ' @param pCond - the condition's token (COAST, RUN)
 ' @param eSign - the sign driven (unused when coasting)
@@ -6683,37 +6752,11 @@ PRI bNoiseCapture(pCond, eSign, nPct, bDriven) : bGoOn | nCog, eOutcome, nStartM
 ' @returns bGoOn - T/F where T means nothing ended the run
 
 ' Local Variables:
-' @local nCog - the capture cog (-1 none free)
-' @local eOutcome - one guarded reading's outcome
-' @local nStartMs - getms() at the start
-' @local nBoundMs - the capture's bound: its frames at the running clock, and a margin
+' @local bDone - T/F where T means every frame was captured
 
-    bGoOn := TRUE
-    ncDone := 0
-    ncArgs[0] := MOTOR_BASE + wheel.DETECT_SENSE_OFFSET
-    ncArgs[1] := NOISE_SAMPLES
-    ncArgs[2] := frameCnt
-    ncArgs[3] := @ncBuf
-    ncArgs[4] := @ncDone
-    nBoundMs := muldiv64(NOISE_SAMPLES, frameCnt, clkfreq / wheel.MS_PER_SEC) + ARRIVE_MARGIN_MS
-    benchLog.cogEventBegin()                                ' (PL-41: a cog starts or stops only in a quiet window)
-    nCog := coginit(COGEXEC_NEW, @ncEntry, @ncArgs)
-    benchLog.cogEventEnd()
-    if nCog >= 0
-        nStartMs := getms()
-        repeat while (ncDone == 0) and (getms() - nStartMs < nBoundMs)
-            if bDriven
-                eOutcome := sampleNext()
-                if bGuardStops(eOutcome)
-                    bGoOn := FALSE
-                    quit
-            else
-                waitms(SAMPLE_MS)
-        benchLog.cogEventBegin()                            ' the capture cog parks when done (or did not finish in its
-        cogstop(nCog)                                       '  bound: then there is nothing to judge); stopped here either way
-        benchLog.cogEventEnd()
+    bGoOn, bDone := ncRun(bDriven)
     if bGoOn
-        emitNoise(pCond, eSign, nPct, (nCog >= 0) and (ncDone <> 0))
+        emitNoise(pCond, eSign, nPct, bDone)
 
 PRI emitNoise(pCond, eSign, nPct, bDone) | idx, blk, fMean, fSqSum, fD, fC1, fC2, fC23, fBm, fBsum, fBsq, nMin, nMax, nR1, nR2, nR23, nBlkSd
 ' Emit B1-NOISE: one capture's statistics in raw counts (bNoiseCapture()), or done FALSE and zeros when it did not run.
@@ -6792,33 +6835,724 @@ PRI emitNoise(pCond, eSign, nPct, bDone) | idx, blk, fMean, fSqSum, fD, fC1, fC2
     benchLog.numField(@"mv_per_cnt_x1000", 3_300_000 / frameCnt, LIM_SMALL)
     lineEmit()
 
-VAR { L-noise }
-    LONG    ncArgs[5]                                       ' the capture cog's arguments (ncEntry's five longs)
+#endif
+
+#ifdef NC_CAPTURE
+PRI ncRun(bDriven) : bGoOn, bDone | nCog, eOutcome, nStartMs, nBoundMs
+' Capture NOISE_SAMPLES consecutive frames' raw sense counts, each with the hall code read at the same instant, with the
+' capture cog (ncEntry), guarded while it runs (L-noise; task 3700: L-range folds the counts by hall code).
+'
+' @param bDriven - T/F where T means the drive runs during the capture (its readings are guarded)
+' @returns bGoOn - T/F where T means nothing ended the run
+' @returns bDone - T/F where T means every frame was captured
+
+' Local Variables:
+' @local nCog - the capture cog (-1 none free)
+' @local eOutcome - one guarded reading's outcome
+' @local nStartMs - getms() at the start
+' @local nBoundMs - the capture's bound: its frames at the running clock, and a margin
+
+    bGoOn := TRUE
+    ncDone := 0
+    ncArgs[0] := MOTOR_BASE + wheel.DETECT_SENSE_OFFSET
+    ncArgs[1] := NOISE_SAMPLES
+    ncArgs[2] := frameCnt
+    ncArgs[3] := @ncBuf
+    ncArgs[4] := @ncDone
+    ncArgs[5] := @ncHall
+    ncArgs[6] := (MOTOR_BASE + enc.HALL_PIN_OFFSET) & 31                 ' hall U's bit in its port
+    ncArgs[7] := INA_REG_ADDR + ((MOTOR_BASE + enc.HALL_PIN_OFFSET) >> 5) ' INA, or INB from P32 up
+    nBoundMs := muldiv64(NOISE_SAMPLES, frameCnt, clkfreq / wheel.MS_PER_SEC) + ARRIVE_MARGIN_MS
+    benchLog.cogEventBegin()                                ' (PL-41: a cog starts or stops only in a quiet window)
+    nCog := coginit(COGEXEC_NEW, @ncEntry, @ncArgs)
+    benchLog.cogEventEnd()
+    if nCog >= 0
+        nStartMs := getms()
+        repeat while (ncDone == 0) and (getms() - nStartMs < nBoundMs)
+            if bDriven
+                eOutcome := sampleNext()
+                if bGuardStops(eOutcome)
+                    bGoOn := FALSE
+                    quit
+            else
+                waitms(SAMPLE_MS)
+        benchLog.cogEventBegin()                            ' the capture cog parks when done (or did not finish in its
+        cogstop(nCog)                                       '  bound: then there is nothing to judge); stopped here either way
+        benchLog.cogEventEnd()
+    bDone := (nCog >= 0) and (ncDone <> 0)
+
+VAR { the frame-by-frame capture (L-noise, L-range) }
+    LONG    ncArgs[8]                                       ' the capture cog's arguments (ncEntry's eight longs)
     LONG    ncDone                                          ' written 1 by the capture cog when its frames are in
     LONG    ncBuf[NOISE_SAMPLES]                            ' the raw counts, one a frame
+    BYTE    ncHall[NOISE_SAMPLES]                           ' the hall code at each count's reading (task 3700)
 
-DAT { L-noise's capture cog (task 3698): NOISE_SAMPLES raw counts, one per frame_cnt clocks }
+DAT { the capture cog (task 3698; task 3700 the hall code): NOISE_SAMPLES raw counts, one per frame_cnt clocks }
                 org     0
-ncEntry         setq    #5 - 1                          ' the five arguments: pin, count, period, buffer, done flag
+ncEntry         setq    #8 - 1                          ' the arguments: pin, count, period, buffer, done flag, hall buffer, hall shift, hall port
                 rdlong  ncPin, ptra
                 getct   ncT
                 addct1  ncT, ncPeriod                   ' CT1 := now + one frame
 .ncLoop         waitct1                                 ' a frame's period on
                 addct1  ncT, ncPeriod                   ' the next, on the same grid (no drift)
                 rqpin   ncX, ncPin                      ' the last completed count, NOT acknowledged: the driver's RDPIN keeps every frame
+                alts    ncPort                          ' INA or INB, chosen at the call (as the driver's hall_port)
+                mov     ncH, 0-0
                 wrlong  ncX, ncPtr
                 add     ncPtr, #4
+                shr     ncH, ncShift                    ' hall U to bit 0 (V bit 1, W bit 2), as the driver reads them
+                and     ncH, #%111
+                wrbyte  ncH, ncHPtr
+                add     ncHPtr, #1
                 djnz    ncCount, #.ncLoop
                 wrlong  #1, ncDoneAdr
-.ncPark         jmp     #.ncPark                        ' parked: bNoiseCapture() stops it in a quiet window (PL-41), never
+.ncPark         jmp     #.ncPark                        ' parked: ncRun() stops it in a quiet window (PL-41), never
                                                         '  this cog itself at a moment a print may be under way
 ncPin           long    0
 ncCount         long    0
 ncPeriod        long    0
 ncPtr           long    0
 ncDoneAdr       long    0
+ncHPtr          long    0
+ncShift         long    0
+ncPort          long    0
 ncT             long    0
 ncX             long    0
+ncH             long    0
+#endif
+
+CON { --- L-range (task 3700): the real highest held speed, with vibration and timing at every step --- }
+
+  ' STEPHEN 2026-10-07: "the lowest RPM we can command and hold, and the highest... not some artificial limits" (overlay
+  '  P10: a motor's range is its measured edges). The lowest is L-mininc's sweep, run to 0.1 ticks/s (SRC_REV 17); this
+  '  leg climbs from the row's top (the library's ceiling, rowTop) in RANGE_STEP_INCR steps, each way, one continuous
+  '  climb, until a step is not held -- or the duty runs out, the drive faults or re-syncs, a guard ends the run, or
+  '  RANGE_INCR_MAX. At each step: the ladder's 5 s window (following, duty, the counters, the DC link, the error); the
+  '  hall edges timed over it (the vibration: the shaft's speed by hall sector and by position in the turn, from the
+  '  encoder count AT each edge -- the encoder sets the angle, so unequal sectors do not bias it); a frame-by-frame
+  '  current capture folded by hall code (the drive's torque pulses); and a timing sweep of the sign's offset over
+  '  +-RANGE_SW_HALF_DEG (the best timing at that speed, from the DC link's and the duty's minima).
+  ' HELD: following within RANGE_FOL_MIN_PM of the command over the window (the ladder's FOLLOW bar is 30 per mille;
+  '  "held" is stricter, 1 %). DUTY OUT: the window's mean duty at RANGE_DUTY_END_PM of duty_max -- held, but the drive
+  '  has nothing left for the next step. Neither is a cap: each is where the motor or the drive gives out.
+  ' BOUND: RANGE_INCR_MAX, 1.02e9 -- above the sheet's 6,800 rpm no-load at 24 V (1.018e9) and under the generator's
+  '  2^30. Reaching it is reported as BOUND, the test's own end, not the motor's.
+    RANGE_STEP_INCR     = 21_000_000                            ' ~140 rpm a step (2,799 rpm is 419e6)
+    RANGE_INCR_MAX      = 1_020_000_000
+    RANGE_MAX_STEPS     = 32
+    RANGE_SLOTS         = SIGN_COUNT * RANGE_MAX_STEPS
+    RANGE_SETTLE_MS     = 1_000
+    RANGE_WIN_MS        = 5_000
+    RANGE_FOL_MIN_PM    = 990
+    RANGE_DUTY_END_PM   = 980
+    RANGE_SW_POINTS     = 5                                     ' DAT rangeSwD: 0 (the step's own window), -5, -10, +5, +10
+    RANGE_SW_HALF_DEG   = 10
+    RANGE_SW_SETTLE_MS  = 700
+    RANGE_SW_WIN_MS     = 2_500
+    RANGE_SW_SLOTS      = RANGE_SLOTS * RANGE_SW_POINTS
+    VIB_SECTORS         = 6                                     ' hall codes 1 .. 6
+    VIB_TURN_BINS       = ENC_COUNTS_PER_REV / ENC_COUNTS_PER_TICK   ' 24: one bin a hall tick of shaft angle
+    RPM_X10_DIV         = ENC_COUNTS_PER_REV / 60                ' counts/s x10 to rpm x10: 1,440 counts a turn, 60 s a minute
+    TOKMAX_RE           = 8                                     ' the longest RE_* token (NOT_HELD, DUTY_OUT)
+    TOKMAX_Q            = 4                                     ' DC, DUTY
+    ' why a sign's climb ended
+    #0, RE_NONE, RE_NOT_HELD, RE_DUTY, RE_FAULT, RE_RESYNC, RE_BOUND, RE_GUARD, RE_REFUSED, RE_STEPS
+
+#ifdef SINGLE_PART_RANGE
+VAR { L-range }
+    LONG    rnIncr[RANGE_SLOTS], rnCpsX10[RANGE_SLOTS], rnFolPm[RANGE_SLOTS], rnDuty[RANGE_SLOTS], rnDutyHi[RANGE_SLOTS]
+    LONG    rnCapped[RANGE_SLOTS], rnHeld[RANGE_SLOTS], rnFolds[RANGE_SLOTS], rnResyncs[RANGE_SLOTS], rnDcMa[RANGE_SLOTS]
+    LONG    rnErrX10[RANGE_SLOTS], rnErrPk[RANGE_SLOTS], rnOutcome[RANGE_SLOTS]
+    LONG    rnEdges[RANGE_SLOTS], rnLost[RANGE_SLOTS], rnSecRip[RANGE_SLOTS], rnTurnRip[RANGE_SLOTS], rnJitPm[RANGE_SLOTS]
+    LONG    bRnCurDone[RANGE_SLOTS], rnCurMeanX100[RANGE_SLOTS], rnCurRipX100[RANGE_SLOTS]
+    LONG    rnSwDcMa[RANGE_SW_SLOTS], rnSwDuty[RANGE_SW_SLOTS], bRnSwOk[RANGE_SW_SLOTS]
+    LONG    rnVdcX10[RANGE_SLOTS], bRnVdcOk[RANGE_SLOTS], rnVduX10[RANGE_SLOTS], bRnVduOk[RANGE_SLOTS]
+    LONG    rnEnd[SIGN_COUNT], rnEndIncr[SIGN_COUNT], rnTopHeld[SIGN_COUNT], rnSteps[SIGN_COUNT]
+    ' the vibration window's accumulators (vibBegin(), vibTakeEdges(), vibEnd())
+    LONG    bSmpVib, bVbHave, vbLastEnc, vbLastLost, vbLost0, vbN
+    LONG    vbSecCnt[VIB_SECTORS], vbSecDt[VIB_SECTORS], vbTurnCnt[VIB_TURN_BINS], vbTurnDt[VIB_TURN_BINS]
+    LONG    fVbSum, fVbSq
+
+DAT { L-range }
+rangeSwD        LONG    0, -5, -10, 5, 10                       ' the timing sweep's points, degrees from the shipped offset
+
+PRI bRunRange() : bCompleted | eSign, bGoOn
+' L-range: each sign NEG then POS, the climb (bRangeClimb()); at rest after each, its records (emitRangeSign()).
+'
+' @returns bCompleted - T/F where T means no guard ended the run
+
+' Local Variables:
+' @local eSign - SIGN_NEG or SIGN_POS
+' @local bGoOn - T/F where T means nothing has ended the run
+
+    ofsShipFwd, ofsShipRev := wheel.testGetFwdRevIndep()   ' the shipped pair the sweep sets against
+    bGoOn := TRUE
+    repeat eSign from SIGN_NEG to SIGN_POS
+        rnSteps[eSign] := 0
+        rnEnd[eSign] := RE_NONE
+        rnEndIncr[eSign] := 0
+        rnTopHeld[eSign] := 0
+        if bGoOn
+            bGoOn := bRangeClimb(eSign)
+            emitRangeSign(eSign)
+    bCompleted := bGoOn
+
+PRI bRangeClimb(eSign) : bGoOn | stepIdx, slotIdx, nIncr, nFrom, eEnd, bHeld
+' One sign's climb from rest: the row's top first, then RANGE_STEP_INCR at a time, each step measured (bRangeStep())
+' until one ends it; then the shipped pair, stopped and rested.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @returns bGoOn - T/F where T means nothing ended the run
+
+' Local Variables:
+' @local stepIdx - the step
+' @local slotIdx - its record slot
+' @local nIncr - its increment, positive
+' @local nFrom - the increment before it, positive (0 from rest)
+' @local eEnd - RE_*: why the climb ends (RE_NONE: it goes on)
+' @local bHeld - T/F where T means the step was held
+
+    bGoOn := TRUE
+    nFrom := 0
+    nIncr := rowTop
+    eEnd := RE_NONE
+    sampleBegin()
+    repeat stepIdx from 0 to RANGE_MAX_STEPS - 1
+        if eEnd == RE_NONE
+            slotIdx := eSign * RANGE_MAX_STEPS + stepIdx
+            bGoOn, eEnd, bHeld := bRangeStep(eSign, slotIdx, nIncr, nFrom)
+            rnSteps[eSign] := stepIdx + 1
+            if bHeld
+                rnTopHeld[eSign] := nIncr
+            rnEndIncr[eSign] := nIncr
+            if eEnd == RE_NONE
+                nFrom := nIncr
+                nIncr += RANGE_STEP_INCR
+                if nIncr > RANGE_INCR_MAX
+                    eEnd := RE_BOUND
+    if eEnd == RE_NONE
+        eEnd := RE_STEPS
+    rnEnd[eSign] := eEnd
+    if bGoOn and (eEnd <> RE_FAULT) and (eEnd <> RE_REFUSED)
+        bGoOn, _ := bStopAndRest(TRUE)
+    applyOffset(eSign, 0)
+
+PRI bRangeStep(eSign, slotIdx, nIncr, nFrom) : bGoOn, eEnd, bHeld | nCmd, nWholeMs, nResync0, nResync1, eRo, nArrMs
+' One step: command it from the step below (or rest); arrive; settle; the 5 s window with the hall edges timed
+' (vibBegin() .. vibEnd()); the current capture folded by hall code (bRangeCurrent()); then, held, the timing sweep
+' (bRangeSweep()). It ends the climb when not held (RE_NOT_HELD), at the duty's end (RE_DUTY, held), on a fault, a
+' re-sync, a refusal, or a guard.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param slotIdx - the step's record slot
+' @param nIncr - its increment, positive
+' @param nFrom - the increment before it, positive (0 from rest)
+' @returns bGoOn - T/F where T means nothing ended the run
+' @returns eEnd - RE_NONE to climb on, else why the climb ends
+' @returns bHeld - T/F where T means the step held its speed
+
+' Local Variables:
+' @local nCmd - the increment, signed
+' @local nWholeMs - the generator's time for the change
+' @local nResync0 - re-synced faults before the command
+' @local nResync1 - ...after the window
+' @local eRo - a phase's outcome
+' @local nArrMs - ms to arrive
+
+    bGoOn := TRUE
+    eEnd := RE_NONE
+    bHeld := FALSE
+    nCmd := (eSign == SIGN_NEG) ? -nIncr : nIncr
+    rnIncr[slotIdx] := nCmd
+    rnOutcome[slotIdx] := RO_NOT_RUN
+    bRnCurDone[slotIdx] := FALSE
+    bRnVdcOk[slotIdx] := bRnVduOk[slotIdx] := FALSE
+    _, nWholeMs := scurveMs((nIncr - nFrom) #> 1, rampAccelUp, rampJerkUp, 0)
+    _, _, nResync0 := wheel.testGetFaultResponse()
+    if wheel.testDriveAtMotorIncrement(nCmd) <> wheel.NO_ERROR
+        clearProtect()
+        rnOutcome[slotIdx] := RO_REFUSED
+        eEnd := RE_REFUSED
+    else
+        eRo, nArrMs := waitPhase(UNTIL_ARRIVED, nCmd, 2 * nWholeMs + ARRIVE_MARGIN_MS, FALSE)
+        if (eRo == RO_DONE) or (eRo == RO_TIMEOUT)           ' not arrived: measured anyway, following says how far short
+            eRo, _ := waitPhase(UNTIL_ELAPSED, 0, RANGE_SETTLE_MS, FALSE)
+            if eRo == RO_DONE
+                windowBegin()
+                vibBegin()
+                eRo, _ := waitPhase(UNTIL_ELAPSED, 0, RANGE_WIN_MS, TRUE)
+                windowEnd()
+                vibEnd(slotIdx)
+        _, _, nResync1 := wheel.testGetFaultResponse()
+        rnResyncs[slotIdx] := nResync1 - nResync0
+        if eRo == RO_FAULT
+            rnOutcome[slotIdx] := RO_FAULT
+            eEnd := RE_FAULT
+            bGoOn := bFaultRecover()
+        elseif eRo <> RO_DONE
+            rnOutcome[slotIdx] := RO_ABORTED
+            eEnd := RE_GUARD
+            bGoOn := FALSE
+        else
+            rnOutcome[slotIdx] := RO_DONE
+            rnCpsX10[slotIdx] := winCpsX10
+            rnFolPm[slotIdx] := followPm(winCpsX10, nCmd)
+            rnDuty[slotIdx] := divRound(winDutySum, winN #> 1)
+            rnDutyHi[slotIdx] := (winN > 0) ? winDutyMax : 0
+            rnCapped[slotIdx] := winCapD
+            rnHeld[slotIdx] := winLagD
+            rnFolds[slotIdx] := winFoldD
+            rnDcMa[slotIdx] := winDcMa
+            rnErrX10[slotIdx] := divRound(winAbsErrSum * X10, winN #> 1)
+            rnErrPk[slotIdx] := winErrPeak
+            bGoOn := bRangeCurrent(slotIdx)
+            if bGoOn == FALSE
+                eEnd := RE_GUARD
+            else
+                bHeld := (abs(rnFolPm[slotIdx] - PM) <= PM - RANGE_FOL_MIN_PM) and (rnResyncs[slotIdx] == 0)
+                if rnResyncs[slotIdx] <> 0
+                    eEnd := RE_RESYNC
+                elseif bHeld == FALSE
+                    eEnd := RE_NOT_HELD
+                else
+                    bGoOn, eEnd := bRangeSweep(eSign, slotIdx)  ' held: the best timing at this speed
+                    if (eEnd == RE_NONE) and (rnDuty[slotIdx] * PM >= dutyMax * RANGE_DUTY_END_PM)
+                        eEnd := RE_DUTY                         ' held, and nothing left for the next step
+
+PRI bRangeSweep(eSign, slotIdx) : bGoOn, eEnd | ptIdx, swIdx, nD, nLastD, eRo, bStopNeg, bStopPos
+' The timing sweep at a held step: point 0 is the step's own window; then -5 and -10, the walk back to the shipped
+' offset, +5 and +10, the walk back -- a side stops at a point not held. Each point RANGE_SW_SETTLE_MS, then a
+' RANGE_SW_WIN_MS window: the DC link, the duty. Then both minima fitted (rangeVertex()).
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param slotIdx - the step's record slot
+' @returns bGoOn - T/F where T means nothing ended the run
+' @returns eEnd - RE_NONE, or RE_FAULT on a fault during the sweep (recovered), RE_GUARD when a guard ended the run
+
+' Local Variables:
+' @local ptIdx - a sweep point, of DAT rangeSwD
+' @local swIdx - its slot
+' @local nD - its degrees from the shipped offset
+' @local nLastD - the last point applied on this side (the walk back starts there)
+' @local eRo - a phase's outcome
+' @local bStopNeg - T/F where T means a point below the shipped offset was not held: that side goes no further
+' @local bStopPos - ...above it
+
+    bGoOn := TRUE
+    eEnd := RE_NONE
+    bStopNeg := bStopPos := FALSE
+    repeat ptIdx from 0 to RANGE_SW_POINTS - 1
+        bRnSwOk[slotIdx * RANGE_SW_POINTS + ptIdx] := FALSE
+    swIdx := slotIdx * RANGE_SW_POINTS
+    rnSwDcMa[swIdx] := rnDcMa[slotIdx]
+    rnSwDuty[swIdx] := rnDuty[slotIdx]
+    bRnSwOk[swIdx] := TRUE
+    nLastD := 0
+    repeat ptIdx from 1 to RANGE_SW_POINTS - 1
+        nD := rangeSwD[ptIdx]
+        if (eEnd == RE_NONE) and (((nD < 0) and bStopNeg) or ((nD > 0) and bStopPos)) == FALSE
+            if (nLastD <> 0) and ((nD > 0) <> (nLastD > 0))    ' the other side: back to the shipped offset first
+                eRo := ofsReturn(eSign, nLastD)
+                nLastD := 0
+                if eRo <> RO_DONE
+                    eEnd := (eRo == RO_FAULT) ? RE_FAULT : RE_GUARD
+            if eEnd == RE_NONE
+                swIdx := slotIdx * RANGE_SW_POINTS + ptIdx
+                applyOffset(eSign, nD)
+                nLastD := nD
+                eRo, _ := waitPhase(UNTIL_ELAPSED, 0, RANGE_SW_SETTLE_MS, FALSE)
+                if eRo == RO_DONE
+                    windowBegin()
+                    eRo, _ := waitPhase(UNTIL_ELAPSED, 0, RANGE_SW_WIN_MS, TRUE)
+                    windowEnd()
+                if eRo == RO_DONE
+                    rnSwDcMa[swIdx] := winDcMa
+                    rnSwDuty[swIdx] := divRound(winDutySum, winN #> 1)
+                    bRnSwOk[swIdx] := (abs(followPm(winCpsX10, rnIncr[slotIdx]) - PM) <= PM - RANGE_FOL_MIN_PM)
+                    if bRnSwOk[swIdx] == FALSE                  ' not held here: this side goes no further
+                        if nD < 0
+                            bStopNeg := TRUE
+                        else
+                            bStopPos := TRUE
+                elseif eRo == RO_FAULT
+                    eEnd := RE_FAULT
+                else
+                    eEnd := RE_GUARD
+    if (eEnd == RE_NONE) and (nLastD <> 0)
+        eRo := ofsReturn(eSign, nLastD)
+        if eRo <> RO_DONE
+            eEnd := (eRo == RO_FAULT) ? RE_FAULT : RE_GUARD
+    if eEnd == RE_FAULT
+        bGoOn := bFaultRecover()
+    elseif eEnd == RE_GUARD
+        bGoOn := FALSE
+    bRnVdcOk[slotIdx], rnVdcX10[slotIdx] := rangeVertex(@rnSwDcMa, slotIdx)
+    bRnVduOk[slotIdx], rnVduX10[slotIdx] := rangeVertex(@rnSwDuty, slotIdx)
+
+PRI rangeVertex(pY, slotIdx) : bOk, nVertX10 | ptIdx, idx, nPts, bNeg, bPos, fD, fY, fS0, fS1, fS2, fS3, fS4, fT0, fT1, fT2, fDet, fA, fB, fV
+' The minimum of a step's sweep: least squares y = a d^2 + b d + c over its held points, by Cramer's rule; the vertex
+' -b / 2a. Resolved: at least three points, one each side of the shipped offset, a > 0, and the vertex inside the sweep.
+'
+' @param pY - the sweep's readings (rnSwDcMa or rnSwDuty)
+' @param slotIdx - the step's record slot
+' @returns bOk - T/F where T means the minimum resolved
+' @returns nVertX10 - the vertex, tenths of a degree from the shipped offset (0 unresolved)
+
+' Local Variables:
+' @local ptIdx - a point
+' @local idx - its slot
+' @local nPts - held points
+' @local bNeg - T/F where T means a held point below the shipped offset
+' @local bPos - ...above it
+' @local fD - a point's degrees
+' @local fY - its reading
+' @local fS0 - sum of d^0 (and fS1 .. fS4, of d^1 .. d^4)
+' @local fS1 - sum of d
+' @local fS2 - sum of d^2
+' @local fS3 - sum of d^3
+' @local fS4 - sum of d^4
+' @local fT0 - sum of y (and fT1, fT2: of y d, y d^2)
+' @local fT1 - sum of y d
+' @local fT2 - sum of y d^2
+' @local fDet - the normal equations' determinant
+' @local fA - a
+' @local fB - b
+' @local fV - the vertex, degrees
+
+    bOk := FALSE
+    nVertX10 := 0
+    nPts := 0
+    bNeg := bPos := FALSE
+    fS0 := fS1 := fS2 := fS3 := fS4 := fT0 := fT1 := fT2 := 0.0
+    repeat ptIdx from 0 to RANGE_SW_POINTS - 1
+        idx := slotIdx * RANGE_SW_POINTS + ptIdx
+        if bRnSwOk[idx]
+            nPts++
+            bNeg |= (rangeSwD[ptIdx] < 0)
+            bPos |= (rangeSwD[ptIdx] > 0)
+            fD := float(rangeSwD[ptIdx])
+            fY := float(long[pY][idx])
+            fS0 := fS0 +. 1.0
+            fS1 := fS1 +. fD
+            fS2 := fS2 +. fD *. fD
+            fS3 := fS3 +. fD *. fD *. fD
+            fS4 := fS4 +. fD *. fD *. fD *. fD
+            fT0 := fT0 +. fY
+            fT1 := fT1 +. fY *. fD
+            fT2 := fT2 +. fY *. fD *. fD
+    if (nPts >= 3) and bNeg and bPos
+        fDet := fS4 *. (fS2 *. fS0 -. fS1 *. fS1) -. fS3 *. (fS3 *. fS0 -. fS1 *. fS2) +. fS2 *. (fS3 *. fS1 -. fS2 *. fS2)
+        if fDet <>. 0.0
+            fA := (fT2 *. (fS2 *. fS0 -. fS1 *. fS1) -. fS3 *. (fT1 *. fS0 -. fS1 *. fT0) +. fS2 *. (fT1 *. fS1 -. fS2 *. fT0)) /. fDet
+            fB := (fS4 *. (fT1 *. fS0 -. fS1 *. fT0) -. fT2 *. (fS3 *. fS0 -. fS1 *. fS2) +. fS2 *. (fS3 *. fT0 -. fT1 *. fS2)) /. fDet
+            if fA >. 0.0
+                fV := -. fB /. (2.0 *. fA)
+                if (fV >=. -. float(RANGE_SW_HALF_DEG)) and (fV <=. float(RANGE_SW_HALF_DEG))
+                    bOk := TRUE
+                    nVertX10 := round(fV *. 10.0)
+
+PRI vibBegin() | bTaken
+' Open the vibration window: drop every hall edge captured before it, empty the sums, and time every edge from here
+' (sampleNext() calls vibTakeEdges() while bSmpVib).
+
+' Local Variables:
+' @local bTaken - T/F where T means an old edge was taken (and dropped)
+
+    repeat
+        bTaken, _, _, _, _ := enc.takeEdge()
+    while bTaken
+    longfill(@vbSecCnt, 0, VIB_SECTORS)
+    longfill(@vbSecDt, 0, VIB_SECTORS)
+    longfill(@vbTurnCnt, 0, VIB_TURN_BINS)
+    longfill(@vbTurnDt, 0, VIB_TURN_BINS)
+    vbN := 0
+    fVbSum := fVbSq := 0.0
+    bVbHave := FALSE
+    vbLastLost := vbLost0 := enc.edgesLost()
+    bSmpVib := TRUE
+
+PRI vibTakeEdges() | bTaken, nEnc, nCode, nPrev, nDtUs, nLost, nCnt, nBin, fV
+' Take every hall edge waiting: the encoder counts and the microseconds from the edge before, credited to the sector
+' the shaft just crossed (the previous hall code) and to the shaft's position at that edge (its turn bin). An edge
+' after a lost one starts afresh: its interval spans more than one sector.
+
+' Local Variables:
+' @local bTaken - T/F where T means an edge was taken
+' @local nEnc - the encoder count AT the edge
+' @local nCode - the hall code after it
+' @local nPrev - the hall code before it (the sector just crossed)
+' @local nDtUs - microseconds from the edge before
+' @local nLost - edges the ring has lost so far
+' @local nCnt - the interval's encoder counts
+' @local nBin - the turn bin of the interval's start
+' @local fV - the interval's speed, counts/s
+
+    repeat
+        bTaken, nEnc, nCode, nPrev, nDtUs := enc.takeEdge()
+        if bTaken == FALSE
+            quit
+        nLost := enc.edgesLost()
+        if nLost <> vbLastLost
+            vbLastLost := nLost
+            bVbHave := FALSE
+        if bVbHave and (nDtUs > 0) and (nPrev >= 1) and (nPrev <= VIB_SECTORS)
+            nCnt := abs(nEnc - vbLastEnc)
+            if nCnt > 0
+                vbSecCnt[nPrev - 1] += nCnt
+                vbSecDt[nPrev - 1] += nDtUs
+                nBin := (((vbLastEnc // ENC_COUNTS_PER_REV) + ENC_COUNTS_PER_REV) // ENC_COUNTS_PER_REV) / ENC_COUNTS_PER_TICK
+                vbTurnCnt[nBin] += nCnt
+                vbTurnDt[nBin] += nDtUs
+                fV := float(nCnt) *. 1_000_000.0 /. float(nDtUs)
+                vbN++
+                fVbSum := fVbSum +. fV
+                fVbSq := fVbSq +. fV *. fV
+        vbLastEnc := nEnc
+        bVbHave := TRUE
+
+PRI vibEnd(slotIdx) | fMean, fSd
+' Close the vibration window into the step's slot: the edges timed and lost, the sector and turn ripples (binRipplePm())
+' and the edge-to-edge jitter, sd / mean of every interval's speed, per mille (an interval's count is +-1 of ~60, so
+' this has a floor near 10 per mille from the encoder's own resolution; the ripples, from summed counts, do not).
+'
+' @param slotIdx - the step's record slot
+
+' Local Variables:
+' @local fMean - the intervals' mean speed
+' @local fSd - their standard deviation
+
+    bSmpVib := FALSE
+    vibTakeEdges()
+    rnEdges[slotIdx] := vbN
+    rnLost[slotIdx] := enc.edgesLost() - vbLost0
+    rnSecRip[slotIdx] := binRipplePm(@vbSecCnt, @vbSecDt, VIB_SECTORS)
+    rnTurnRip[slotIdx] := binRipplePm(@vbTurnCnt, @vbTurnDt, VIB_TURN_BINS)
+    rnJitPm[slotIdx] := -1
+    if vbN >= 2
+        fMean := fVbSum /. float(vbN)
+        fSd := (fVbSq /. float(vbN)) -. fMean *. fMean
+        if fSd <. 0.0                                       ' (rounding)
+            fSd := 0.0
+        fSd := fsqrt(fSd)
+        if fMean >. 0.0
+            rnJitPm[slotIdx] := round(fSd /. fMean *. 1000.0)
+
+PRI binRipplePm(pCnt, pDt, nBins) : nRipPm | idx, fS, fMin, fMax, fAll, nCntAll, nDtAll, bEmpty
+' The spread of the bins' mean speeds, (fastest - slowest) / the window's mean, per mille; -1 when a bin saw nothing.
+'
+' @param pCnt - the bins' encoder counts
+' @param pDt - the bins' microseconds
+' @param nBins - how many
+' @returns nRipPm - the ripple, per mille (-1 not measured)
+
+' Local Variables:
+' @local idx - a bin
+' @local fS - its speed
+' @local fMin - the slowest
+' @local fMax - the fastest
+' @local fAll - the window's mean speed
+' @local nCntAll - every bin's counts
+' @local nDtAll - every bin's microseconds
+' @local bEmpty - T/F where T means a bin saw nothing
+
+    nRipPm := -1
+    fMin := 1.0e30
+    fMax := 0.0
+    nCntAll := nDtAll := 0
+    bEmpty := FALSE
+    repeat idx from 0 to nBins - 1
+        if long[pDt][idx] <= 0
+            bEmpty := TRUE
+            quit
+        fS := float(long[pCnt][idx]) /. float(long[pDt][idx])
+        if fS <. fMin
+            fMin := fS
+        if fS >. fMax
+            fMax := fS
+        nCntAll += long[pCnt][idx]
+        nDtAll += long[pDt][idx]
+    if bEmpty == FALSE
+        fAll := float(nCntAll) /. float(nDtAll)
+        nRipPm := round((fMax -. fMin) /. fAll *. 1000.0)
+
+PRI bRangeCurrent(slotIdx) : bGoOn | bDone, idx, code, nSum[VIB_SECTORS], nCnt[VIB_SECTORS], nAll, nAllN, fM, fMin, fMax
+' The step's current, frame by frame (ncRun(), guarded), folded by hall code: each sector's mean count; the spread of
+' the six means, counts x100 (the drive's torque pulses through the DC link), and the overall mean.
+'
+' @param slotIdx - the step's record slot
+' @returns bGoOn - T/F where T means nothing ended the run
+
+' Local Variables:
+' @local bDone - T/F where T means every frame was captured
+' @local idx - a frame
+' @local code - its hall code
+' @local nSum - each code's summed counts
+' @local nCnt - each code's frames
+' @local nAll - every frame's counts
+' @local nAllN - how many
+' @local fM - a code's mean
+' @local fMin - the least mean
+' @local fMax - the greatest
+
+    bGoOn, bDone := ncRun(TRUE)
+    bRnCurDone[slotIdx] := FALSE
+    if bGoOn and bDone
+        longfill(@nSum, 0, VIB_SECTORS)
+        longfill(@nCnt, 0, VIB_SECTORS)
+        nAll := nAllN := 0
+        repeat idx from 0 to NOISE_SAMPLES - 1
+            code := ncHall[idx]
+            if (code >= 1) and (code <= VIB_SECTORS)
+                nSum[code - 1] += ncBuf[idx]
+                nCnt[code - 1]++
+                nAll += ncBuf[idx]
+                nAllN++
+        fMin := 1.0e30
+        fMax := 0.0
+        bRnCurDone[slotIdx] := (nAllN > 0)
+        repeat code from 0 to VIB_SECTORS - 1
+            if nCnt[code] == 0
+                bRnCurDone[slotIdx] := FALSE
+            else
+                fM := float(nSum[code]) /. float(nCnt[code])
+                if fM <. fMin
+                    fMin := fM
+                if fM >. fMax
+                    fMax := fM
+        if bRnCurDone[slotIdx]
+            rnCurMeanX100[slotIdx] := round(float(nAll) /. float(nAllN) *. 100.0)
+            rnCurRipX100[slotIdx] := round((fMax -. fMin) *. 100.0)
+
+PRI emitRangeSign(eSign) | stepIdx, slotIdx
+' At rest after a sign's climb: each step's B1-RANGE (the hold), B1-RANGEV (the vibration and current pulses) and two
+' B1-RANGET (the timing sweep, the DC link and the duty), then B1-RANGEEND (the highest held and why the climb ended).
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+
+' Local Variables:
+' @local stepIdx - a step
+' @local slotIdx - its slot
+
+    repeat stepIdx from 0 to rnSteps[eSign] - 1
+        slotIdx := eSign * RANGE_MAX_STEPS + stepIdx
+        benchLog.begin(@"B1-RANGE")
+        benchLog.tokenField(@"sign", signToken(eSign), TOKMAX_SIGN)
+        benchLog.numField(@"step", stepIdx, LIM_TINY)
+        benchLog.numField(@"incr", rnIncr[slotIdx], LIM_BIG)
+        benchLog.numField(@"rpm_x10", abs(rnCpsX10[slotIdx]) / RPM_X10_DIV, LIM_SMALL)
+        benchLog.tokenField(@"outcome", roToken(rnOutcome[slotIdx]), TOKMAX_RO)
+        benchLog.numField(@"fol_pm", rnFolPm[slotIdx], LIM_SMALL)
+        benchLog.numField(@"duty", rnDuty[slotIdx], LIM_MID)
+        benchLog.numField(@"duty_hi", rnDutyHi[slotIdx], LIM_MID)
+        benchLog.numField(@"capped", rnCapped[slotIdx], LIM_MID)
+        benchLog.numField(@"held", rnHeld[slotIdx], LIM_MID)
+        benchLog.numField(@"folds", rnFolds[slotIdx], LIM_MID)
+        benchLog.numField(@"resyncs", rnResyncs[slotIdx], LIM_SMALL)
+        benchLog.numField(@"dc_ma", rnDcMa[slotIdx], LIM_MID)
+        benchLog.numField(@"err_x10", rnErrX10[slotIdx], LIM_SMALL)
+        benchLog.numField(@"err_pk", rnErrPk[slotIdx], LIM_SMALL)
+        lineEmit()
+        benchLog.begin(@"B1-RANGEV")
+        benchLog.tokenField(@"sign", signToken(eSign), TOKMAX_SIGN)
+        benchLog.numField(@"step", stepIdx, LIM_TINY)
+        benchLog.numField(@"edges", rnEdges[slotIdx], LIM_MID)
+        benchLog.numField(@"lost", rnLost[slotIdx], LIM_MID)
+        benchLog.naNumField(@"sec_rip_pm", rnSecRip[slotIdx], LIM_SMALL, rnSecRip[slotIdx] >= 0)
+        benchLog.naNumField(@"turn_rip_pm", rnTurnRip[slotIdx], LIM_SMALL, rnTurnRip[slotIdx] >= 0)
+        benchLog.naNumField(@"jit_pm", rnJitPm[slotIdx], LIM_SMALL, rnJitPm[slotIdx] >= 0)
+        benchLog.boolField(@"cur_done", bRnCurDone[slotIdx])
+        benchLog.naNumField(@"cur_mean_x100", rnCurMeanX100[slotIdx], LIM_MID, bRnCurDone[slotIdx])
+        benchLog.naNumField(@"cur_rip_x100", rnCurRipX100[slotIdx], LIM_MID, bRnCurDone[slotIdx])
+        lineEmit()
+        emitRangeSweep(eSign, stepIdx, slotIdx, @sQDc, @rnSwDcMa, bRnVdcOk[slotIdx], rnVdcX10[slotIdx])
+        emitRangeSweep(eSign, stepIdx, slotIdx, @sQDuty, @rnSwDuty, bRnVduOk[slotIdx], rnVduX10[slotIdx])
+    benchLog.begin(@"B1-RANGEEND")
+    benchLog.tokenField(@"sign", signToken(eSign), TOKMAX_SIGN)
+    benchLog.tokenField(@"end", reToken(rnEnd[eSign]), TOKMAX_RE)
+    benchLog.numField(@"end_incr", rnEndIncr[eSign], LIM_BIG)
+    benchLog.numField(@"top_held_incr", rnTopHeld[eSign], LIM_BIG)
+    benchLog.numField(@"top_held_rpm_x10", topHeldRpmX10(eSign), LIM_SMALL)
+    benchLog.numField(@"steps", rnSteps[eSign], LIM_TINY)
+    benchLog.numField(@"row_top_incr", rowTop, LIM_BIG)
+    lineEmit()
+
+PRI emitRangeSweep(eSign, stepIdx, slotIdx, pQ, pY, bOk, nVertX10) | ptIdx, idx
+' Emit B1-RANGET: one quantity of a step's timing sweep at its five points (NA where not measured or not held) and
+' its fitted minimum.
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @param stepIdx - the step
+' @param slotIdx - its slot
+' @param pQ - the quantity's token (DC, DUTY)
+' @param pY - its readings
+' @param bOk - T/F where T means the minimum resolved
+' @param nVertX10 - the minimum, tenths of a degree from the shipped offset
+
+' Local Variables:
+' @local ptIdx - a point
+' @local idx - its slot
+
+    benchLog.begin(@"B1-RANGET")
+    benchLog.tokenField(@"sign", signToken(eSign), TOKMAX_SIGN)
+    benchLog.numField(@"step", stepIdx, LIM_TINY)
+    benchLog.tokenField(@"q", pQ, TOKMAX_Q)
+    repeat ptIdx from 0 to RANGE_SW_POINTS - 1
+        idx := slotIdx * RANGE_SW_POINTS + ptIdx
+        benchLog.naNumField(swFieldName(ptIdx), long[pY][idx], LIM_MID, bRnSwOk[idx])
+    benchLog.boolField(@"resolved", bOk)
+    benchLog.naNumField(@"vert_x10", nVertX10, LIM_SMALL, bOk)
+    lineEmit()
+
+PRI swFieldName(ptIdx) : pName
+' The field name for a sweep point (DAT rangeSwD's order: 0, -5, -10, +5, +10).
+'
+' @param ptIdx - the point
+' @returns pName - its field name
+
+    pName := lookupz(ptIdx: @sSwZ, @sSwM5, @sSwM10, @sSwP5, @sSwP10)
+
+PRI topHeldRpmX10(eSign) : nRpmX10 | stepIdx, slotIdx
+' The encoder's speed at the sign's highest held step, rpm x10 (0 when none held).
+'
+' @param eSign - SIGN_NEG or SIGN_POS
+' @returns nRpmX10 - its speed
+
+' Local Variables:
+' @local stepIdx - a step
+' @local slotIdx - its slot
+
+    nRpmX10 := 0
+    repeat stepIdx from 0 to rnSteps[eSign] - 1
+        slotIdx := eSign * RANGE_MAX_STEPS + stepIdx
+        if abs(rnIncr[slotIdx]) == rnTopHeld[eSign]
+            nRpmX10 := abs(rnCpsX10[slotIdx]) / RPM_X10_DIV
+
+PRI reToken(eEnd) : pToken
+' The token for why a climb ended.
+'
+' @param eEnd - RE_*
+' @returns pToken - its token
+
+    pToken := lookupz(eEnd: @sReNone, @sReNotHeld, @sReDuty, @sReFault, @sReResync, @sReBound, @sReGuard, @sReRefused, @sReSteps)
+
+DAT { L-range tokens }
+                orgh                                            ' hub data: the capture cog's org 0 above does not reach here
+sReNone         BYTE    "NONE", 0
+sReNotHeld      BYTE    "NOT_HELD", 0
+sReDuty         BYTE    "DUTY_OUT", 0
+sReFault        BYTE    "FAULT", 0
+sReResync       BYTE    "RESYNC", 0
+sReBound        BYTE    "BOUND", 0
+sReGuard        BYTE    "GUARD", 0
+sReRefused      BYTE    "REFUSED", 0
+sReSteps        BYTE    "STEPS", 0
+sQDc            BYTE    "DC", 0
+sQDuty          BYTE    "DUTY", 0
+sSwZ            BYTE    "d0", 0
+sSwM5           BYTE    "dm5", 0
+sSwM10          BYTE    "dm10", 0
+sSwP5           BYTE    "dp5", 0
+sSwP10          BYTE    "dp10", 0
 #endif
 
 CON { --- L-passprb (plan sec 1.4): the drive pass's period on the encoder --- }
@@ -9889,6 +10623,7 @@ PRI emitBuild()
     benchLog.boolField(@"offscan", PART_OFFSCAN_BUILT)
     benchLog.boolField(@"passprb", PART_PASSPRB_BUILT)
     benchLog.boolField(@"noise", PART_NOISE_BUILT)
+    benchLog.boolField(@"range", PART_RANGE_BUILT)
     benchLog.boolField(@"handload", PART_HANDLOAD_BUILT)    ' phase 2c, the attended legs
     benchLog.boolField(@"heldpush", PART_HELDPUSH_BUILT)
     benchLog.boolField(@"coldz", PART_ALIGN_BUILT)          ' task 3694: L-align, the cold back-EMF Z (FALSE before SRC_REV 11: not built)

@@ -15,6 +15,9 @@
 ''               06 Oct 2026 -- PL-207 (TOOL_REV 3): the DocoEng record's scan and ladder limits are the library's 40 A,
 ''               as the measuring harness's are (they were 2 and 3 A, at which this motor's own scan hunted and drooped
 ''               on Rev A). No output format changes.
+''               07 Oct 2026 -- PL-209 (TOOL_REV 4): a scan side also ends FIT_HALF_DEG past its lowest clean point
+''               (MA-SIDE end,BRACKETED): at 40 A every Doco side walked on into the torque wall and over-current. A
+''               new end token; no field changes.
 ''
 '' =================================================================================================
 
@@ -155,7 +158,7 @@ CON { timing }
 
 CON { tool identity }
 
-    TOOL_REV        = 3                                     ' this source's revision (3: the DocoEng record at 40 A, PL-207; 2: counted loops are REPEAT n WITH idx, task 3695)
+    TOOL_REV        = 4                                     ' this source's revision (4: a side ends BRACKETED, PL-209; 3:the DocoEng record at 40 A, PL-207; 2: counted loops are REPEAT n WITH idx, task 3695)
     FMT_VERSION     = 1                                     ' the MA- record format
     RECORD_FORMAT   = 1                                     ' the motor record's layout (CON { the motor record })
 
@@ -273,6 +276,7 @@ CON { enums }
     END_LIMIT           = 100                               ' a side reached its 90 degrees
     END_RESERVE         = 101                               ' a climb reached the duty reserve
     END_TOP             = 102                               ' a climb ran its last rung below the reserve
+    END_BRACKETED       = 103                               ' PL-209 (TOOL_REV 4): a side reached FIT_HALF_DEG past its lowest clean point
 
   ' a sampler reading's outcome
     #0, GO_RUNNING, GO_FAULT, GO_OVER_CURRENT, GO_CHARGE_CAP, GO_TIME_CAP
@@ -362,6 +366,7 @@ sStoppedTok     BYTE    "STOPPED", 0
 sStartTok       BYTE    "START", 0
 sBoundTok       BYTE    "BOUND", 0
 sLimitTok       BYTE    "LIMIT", 0
+sBracketTok     BYTE    "BRACKETED", 0
 sReserveTok     BYTE    "RESERVE", 0
 sTopTok         BYTE    "TOP", 0
 sNoneTok        BYTE    "NONE", 0
@@ -766,10 +771,13 @@ PRI bScanSpeedSign(eSpeed, eSign) : bGoOn | nIncr, slotIdx, eSide, spIdx
     fitScan(spIdx)
     emitFit(eSpeed, eSign, spIdx)
 
-PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa, nRefMa, nPrevMa, bSeenClean, bEnded, bResting, nEdgeRun, ePo
+PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa, nRefMa, nPrevMa, bSeenClean, bEnded, bResting, nEdgeRun, ePo, nLowCleanD, nLowCleanMa
 ' One side of the start pair at one speed: at rest the start pair, from rest to the speed, then each point outward (the
 ' start pair first), the offset changed while driven by one step; a WALL or a FAULT ends the side at once, EDGE_RUN
-' DROOP or HUNT points in a row end it, and its 90 degrees end it. Until the side has seen a CLEAN point, a DROOP or
+' DROOP or HUNT points in a row end it, and its 90 degrees end it. PL-209 (TOOL_REV 4): so does a point FIT_HALF_DEG
+' past the side's lowest CLEAN point (END_BRACKETED) -- the fit uses no point further out, and at the library's 40 A
+' nothing caps the current where the motor's torque collapses (D2: every Doco run ended on 4.5-10.2 A about 30 degrees
+' past a minimum it had already bracketed). A side still falling walks on, since its lowest point moves with it. Until the side has seen a CLEAN point, a DROOP or
 ' HUNT point drawing less current than the point before it does not count toward the run (it restarts it): the walk is
 ' still coming down toward a minimum it has not reached, as it must when a driver's start pair sits in the hunting
 ' region. The current wall's relative threshold follows the lowest CLEAN or ROUGH point so far (until the first, only the
@@ -793,11 +801,15 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
 ' @local bResting - T/F where T means the motor already rests (a refusal or a fault's recovery left it there)
 ' @local nEdgeRun - DROOP or HUNT points in a row that count
 ' @local ePo - a point's outcome
+' @local nLowCleanD - the lowest CLEAN point's degrees from the start pair (PL-209)
+' @local nLowCleanMa - its DC link, mA (posx until one)
 
     bGoOn := TRUE
     bEnded := FALSE
     bResting := FALSE
     bSeenClean := FALSE
+    nLowCleanD := 0
+    nLowCleanMa := posx
     nEdgeRun := 0
     nLimitMa := 0
     nRefMa := posx
@@ -835,6 +847,9 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
                 nEdgeRun := 0
             if ePo == PO_CLEAN
                 bSeenClean := TRUE
+                if ptDcMa[slotIdx] < nLowCleanMa                ' PL-209: the side's lowest clean point so far
+                    nLowCleanMa := ptDcMa[slotIdx]
+                    nLowCleanD := nD
             if (ePo == PO_CLEAN) or (ePo == PO_ROUGH)
                 nRefMa <#= ptDcMa[slotIdx]
                 nLimitMa := ((nRefMa #> 0) * WALL_REL_X100 / X100 #> rec[REC_NO_LOAD_MA]) <# wallCeilMa
@@ -849,6 +864,9 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
                 bGoOn := bFaultRecover()
             elseif ePo == PO_STOPPED
                 bGoOn := FALSE
+            elseif bSeenClean and (abs(nD - nLowCleanD) >= FIT_HALF_DEG)
+                sideEnd[eSide] := END_BRACKETED                 ' PL-209: the fit has every point it can use
+                bEnded := TRUE
         elseif bGoOn
             ptOutcome[slotIdx] := PO_SKIPPED
     if bGoOn and (bEnded == FALSE)
@@ -1964,6 +1982,7 @@ PRI outcomeToken(eOutcome) : pToken
         END_LIMIT:      pToken := @sLimitTok
         END_RESERVE:    pToken := @sReserveTok
         END_TOP:        pToken := @sTopTok
+        END_BRACKETED:  pToken := @sBracketTok
         other:          pToken := @sNaTok
 
 PRI abortToken(eReason) : pToken

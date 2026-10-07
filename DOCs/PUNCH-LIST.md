@@ -1676,7 +1676,9 @@ voltages.
 > after the decision, POS only, at low supply: 7.4 V −6 ticks, 11.1 V −3/−4, 14.8 V up within ±2 (cell PASS). Two
 > rivals remain, neither in the logs: the field HELD during the stop (lag hold) losing travel, or the rotor stalling in
 > the stop's final slow creep below this motor's slowest steady speed at low supply. **Next:** print the held passes and
-> the encoder's last-moving time across each stop; then the fix.
+> the encoder's last-moving time across each stop; then the fix. **Built (SRC_REV 17):** `B1-STOPDEC held_d`,
+> `rest_after_zero_ms` (negative: the shaft stopped before the field did); D2's third pass runs the stops at 7.4 and
+> 11.1 V.
 >
 > **Desk, 2026-10-06:** the logs cannot separate three rivals — (a) the plan's POS stopping distance overstates the
 > field's real one, (b) the front cog's travel sum (`trkTravelTicks`, summed |steps| a pass) over-counts in POS when a
@@ -1731,6 +1733,9 @@ library's limits, its abort at 3.68 A as the harness's; rerun `doco-adopt-v11p1`
 
 ### PL-209 -- the adoption tool walks into the Doco's torque wall at 40 A and ends on an over-current (tool)
 
+> **Status (2026-10-07, later): FIXED in TOOL_REV 4, awaiting the reruns.** A side ends `BRACKETED` 20° past its lowest
+> clean point; on D2's own points every side ends before the wall (11.1 V MINUS at −20°, 24 V at −25°, PLUS at +20°).
+>
 > **Status (2026-10-07): OPEN, a tool defect (MEASURED, D2 second pass, all six voltages).**
 
 Each side walks outward "to the motor's edge". At 2–3 A the limit capped the current at the edge; at 40 A (PL-207)
@@ -1739,6 +1744,21 @@ to ~270°, −30° from the start. The minimum was bracketed well before (11.1 V
 WALL rule is off below its 400 mA floor, and this motor runs under it. **To close:** a side ends 20° past its lowest
 clean point (the fit uses only ±20° of it), so a falling side walks on and a bracketed one stops short of the wall;
 rerun `doco-adopt-<v>`.
+
+### PL-212 -- above ~2,500 rpm the Doco still needs 55-67 % more duty than its back-EMF, and 14.8 V's top has no reserve
+
+> **Status (2026-10-07): OPEN, a drive finding (MEASURED, D2 second pass).** The R1 fix (DRIVER_REV 54) removed the
+> two-state switching and the swinging duty; it did not remove this.
+
+At 2,799 rpm (419e6) the top rung's duty is 18,122 / 17,577 at 24 V and 19,077 / 20,551 at 22.2 V, against ~11,400 and
+~12,300 the motor's back-EMF line predicts (+55..+67 %); at 11.1 V's 2,475 rpm (370.5e6) it was +5 %. Peak angle error
+grows with speed (72 at low speed, 78–80 at 2,475 rpm, 86–93 at 2,799), so the servo's fast boost (past LAG_SOFT 80)
+still engages at the top. At 14.8 V the cap runs at duty 27,532 of 27,648 (99.6 %): the reserve rule the ceiling was
+set by is not met there. Rivals, from D1b and D2: the best timing moves with speed and the Doco has one fixed pair (its
+D1b scan moved ≥ 6° toward more lead at the top; the 6.5in has a speed-dependent lead and the Doco does not); the hall
+rotor estimate has no position within a sector, its error growing with speed; the unequal sectors (53.6–67.8°). **To
+close:** the speed-range test's per-step timing sweep and vibration (task 3700) say how far timing alone moves the
+excess; then a desk root cause, and the change priced to Stephen. Until then the 14.8 V top is above its own rule.
 
 ### PL-210 -- the Doco hand load needs something to grip: a bare shaft cannot be held at 2-4 A
 
