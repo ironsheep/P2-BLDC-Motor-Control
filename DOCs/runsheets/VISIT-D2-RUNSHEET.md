@@ -5,6 +5,9 @@
 adoption tool `util_adopt_motor` TOOL_REV 4. **Pack:** the `dist/bench-<commit>-doco.zip` the hand-back names for the
 **Doco bench**; this sheet travels inside it.
 
+> **SUPERSEDED 2026-10-07 — do not run this sheet's third pass.** Its runs were cut to the four the next changes need
+> and moved to their own visit: `VISIT-D3-RUNSHEET.md`. This sheet stays as D2's record.
+
 **THIRD PASS (2026-10-07): what is DONE stays done.** These stand and are NOT run again: every voltage's qualification
 (7.4–24 V), the slowest-speed runs, the 11.1 V measure row, the 24 V noise captures, the clock runs, and 11.1 V's held
 stop. This pass runs: **the speed-range test at every voltage** (your "lowest and highest we can command and hold"), the
