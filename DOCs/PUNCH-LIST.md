@@ -86,7 +86,13 @@ rested late once); PL-201 merged into PL-170 (listed under Ancillary above: Rev 
 noise — measured again on the Doco, and now needed by D2's hand-load limit cell); PL-202 (T0-27's one-frame premise,
 superseded on Rev A by DRIVER_REV 55's filtered fold); from D2's first rows (2026-10-06): PL-203 (POS stops by rotation
 rest early at the top), PL-204 / PL-205 / PL-206 (harness: the scan's walk, a hunting point fitted, MISDIAL per sign),
-PL-207 (the adoption tool's stale 2 A record), PL-208 (the 7.4 V slowest speed swapped direction).
+PL-207 (the adoption tool's stale 2 A record), PL-208 (the 7.4 V slowest speed swapped direction); from D2's second
+pass and D3 (2026-10-07/08): PL-209 (the adoption tool walked into the torque wall), PL-210 (the hand load needs a
+grip), PL-211 (MISDIAL at 14.8 / 22.2 V), PL-212 (the Doco's excess duty above ~2,500 rpm), PL-213 / PL-214 (harness:
+the charge guard's overflow, the ripple bins), PL-215 (Rev A's current too coarse for a timing minimum), PL-216 (the
+Doco's limits inside its measured range), PL-217 (the second unit's sectors); from D4 (2026-10-08): PL-218 (timed
+stops end late on DRIVER_REV 57), PL-219 (MISDIAL disarmed by the lead table), PL-220 (the range record lacks the
+fault's kind).
 
 **Standing rulings carried from 6.0.0:** the fault-return run faults its wheel with the guarded `testForceFault()`, not
 the wrong-offset write (STEPHEN 2026-09-28, *"fp1: A"*); a test built on a wrong premise is corrected before it runs
@@ -1662,6 +1668,11 @@ floor tier for the 6.5″ (`DOCO-AND-CLOCK-SPRINT-PLAN.md` "Not in this plan"), 
 
 ### PL-203 -- a POS stop by rotation from the Doco's top speed rests up to 12 hall ticks early
 
+> **Status (2026-10-08, D4): VERIFIED (MEASURED, D4 rows 1–3 and 6).** All 16 R23-SGL-STOPROT cells PASS at 7.4,
+> 11.1, 14.8 and 24 V. The POS top stops rest +58 / +46 (7.4 V) and +61 / +80 counts (11.1 V), against D3's −355 /
+> −310 and −286 / −255, with the held passes still present (47–95). The hold also acts on timed stops, which now end
+> late: PL-218.
+>
 > **Status (2026-10-08, later): FIXED in DRIVER_REV 57, awaiting D4** (STEPHEN 2026-10-08 "we fix everything"). A
 > pass held while the drive is stopping now holds the trajectory generator too: the next pass skips `jerkStep`, so
 > the field resumes at the speed it was held at and keeps the travel the stop planned (`.running`, three longs;
@@ -1767,6 +1778,18 @@ rerun `doco-adopt-<v>`.
 
 ### PL-212 -- above ~2,500 rpm the Doco still needs 55-67 % more duty than its back-EMF, and 14.8 V's top has no reserve
 
+> **Status (2026-10-08, D4): the timing part VERIFIED as far as timing reaches; the servo part is ALL of what is left
+> (MEASURED, D4 rows 1–6).** On the lead table the model holds (the DC-current minima sit 3–4° from the table, inside
+> its 4.3° scatter), and 7.4 V stays at the servo's setpoint to its top. From 11.1 V up, the drive runs at the same
+> speed, supply and timing in one of two states. In one the mean error is 42–48 and the duty sits on the back-EMF
+> line (24 V POS 2,800 rpm 10.7k). In the other the mean error is 36–39 against 48, the peak 90–111, and the duty
+> 30–62 % over the line. It switches inside a climb: 24 V POS goes 11.4k at 2,940 rpm to 19.8k at 3,080 (+73 % duty for
+> +5 % speed), and 22.2 V POS switched on the sweep's +5° nudge at a fixed speed. Every top at 11.1–24 V ended inside
+> the second state, so those tops are caps set by the defect. Leading hypothesis (DERIVED): `servoBoost` is one-sided,
+> so the extra duty widens the lag swing (peak − mean 50–70 against ~27), which wakes more boost — two stable points.
+> **Next:** the desk root cause with the servo model (mine), then the PASM change priced to Stephen.
+> `DOCs/analyses/bench/2026-10-08/D4/D4-EVALUATION.md` §3.
+>
 > **Status (2026-10-08, later): the timing part BUILT in DRIVER_REV 57, awaiting D4; the servo part OPEN.** The
 > lead model (`DOCs/analyses/LEAD-CURVE-MODEL-2026-10-08.md`) fits every Doco sweep: the duty bowl's bottom is
 > 53.5° + atan(ω × 1.17 ms) at every supply (L ≈ 1.06 mH a phase), so at the top ωL exceeds R and the fixed pair sat
@@ -1809,6 +1832,9 @@ and 8 again with a grip of about that radius on the shaft.
 
 ### PL-211 -- R23-SGL-MISDIAL fails at 14.8 and 22.2 V and passes at the rows between
 
+> **Status (2026-10-08, D4): SUBSUMED by PL-219.** On the lead table the cell reads +96 / +204 / +250 ‰ at 7.4 / 14.8
+> / 24 V, because its premise (fixed timing) no longer holds; D2's figures cannot be re-judged until it is fixed.
+>
 > **Status (2026-10-07): OPEN, unexplained (MEASURED, D2 second pass).**
 
 The signs' mean reads +48 ‰ (14.8 V) and +68 ‰ (22.2 V), against +26 / +6 / +19 at 11.1 / 18.5 / 24 V. A Ke error would
@@ -1832,6 +1858,8 @@ repeated measurement shows a lower one steady every time.
 
 ### PL-213 -- the harness's run charge guard overflows 32 bits, ending long runs early (harness)
 
+> **Status (2026-10-08, D4): VERIFIED.** The 22.2 and 24 V ranges ran to their ends at 857,598 and 949,350 mA·s.
+>
 > **Status (2026-10-08, later): FIXED in SRC_REV 18.** The charge is carried in whole mA·s (`chargeMaS`, the mA·ms
 > remainder below one), compared with the cap in mA·s; `charge_mas` prints it. Proof: D4's 24 V range runs to its end.
 >
@@ -1845,6 +1873,8 @@ next verification visit.
 
 ### PL-214 -- the range test's once-per-turn ripple bins by encoder position, so a bin can be empty (harness)
 
+> **Status (2026-10-08, D4): VERIFIED.** `turn_rip_pm` reads at every step both ways at all six supplies.
+>
 > **Status (2026-10-08, later): FIXED in SRC_REV 18.** The turn bin is the start edge's index in the turn: its encoder
 > offset from the window's first edge, rounded to whole ticks, mod 24 (an edge sits within ~8 counts of its tick's
 > grid). Proof: D4's `turn_rip_pm` reads at every step both ways.
@@ -1872,6 +1902,13 @@ this board can resolve, decided with PL-212's desk work.
 
 ### PL-216 -- the Doco's shipped speed limits sit well inside its measured range
 
+> **Status (2026-10-08, D4): MEASURED on unit 2; the ceilings at 11.1 V and up are caps of PL-212's servo state, so
+> nothing is re-tabled yet.** Slowest steady: 0.10 ticks/s both ways at 11.1–24 V (the lowest tried), 0.20 / 0.30 at
+> 7.4 V (unit 1, D3: 3.00). Fastest held NEG / POS: 7.4 V 2,352 / 2,211 rpm (a real top, duty out at the setpoint);
+> 11.1 V 2,476 / 2,476; 14.8 V < 2,800 / 2,775; 18.5 V 3,221 / 3,220; 22.2 V 4,038 / 4,161; 24 V 4,888 / 4,733
+> (position fault, re-synced). 24 V's 0.10 now holds on both units. **To close:** unchanged — re-table both ends
+> once PL-212's servo fix is in.
+>
 > **Status (2026-10-08, later): waiting on D4**, whose range at every supply on the new lead sets the final values.
 >
 > **Status (2026-10-08): OPEN, table values waiting on PL-212 (MEASURED, D3 rows 1 and 3).**
@@ -1887,6 +1924,10 @@ re-tabled from the speed range at every voltage once PL-212's fix is in.
 
 ### PL-217 -- the second Doco's hall sectors differ from the first's by up to 2.8°, past the agreed 2° bar
 
+> **Status (2026-10-08, D4): IN SERVICE.** Hall-sector speed ripple 0–12 ‰ at every step on unit 2, so the table does
+> not shake the shaft; the 7.4 V crawl now holds 0.20 / 0.30 ticks/s, but the unit changed with the table, so the gain
+> is not attributable to it alone. Nothing open beyond the record.
+>
 > **Status (2026-10-08, later): RULED and BUILT** — STEPHEN 2026-10-08 "yes a": the two units' mean widths
 > (57.7 / 59.4 / 64.1 / 66.6 / 57.0 / 55.25° for codes 1–6) in `hltbAngl4k` / `hltbAngl4k2`, DRIVER_REV 57; the
 > time-averaged angle moves 0.13°, so the offsets stand. The offsets: the shipped pair served both units, and the
@@ -1902,6 +1943,39 @@ two-unit mean would leave each unit within 1.4°, where equal sectors leave each
 not apply the ±3° offsets test (PL-215). On the shipped pair it ran clean, with 15–20° to the hold edge each way, and it
 draws 2–3× unit 1's current at the same speeds (more drag). **To close:** Stephen's ruling on the table; then the
 offsets question.
+
+### PL-218 -- since DRIVER_REV 57 a timed stop ends late by the passes held in its slowdown
+
+> **Status (2026-10-08): OPEN, a driver defect introduced by PL-203's fix (MEASURED, D4 rows 1 and 2).** Mine; a PASM
+> change, so Stephen's go first (standing rule 14).
+
+R23-SGL-STOPTIME 11.1 V NEG-TOP FAILs at +115 ms (band ±100); 7.4 V NEG-TOP reads +95. The field's own stop time
+(`field_dev_ms`) is 85 / 30 ms at 7.4 V and 105 / 40 at 11.1 V (NEG / POS), against 0 on all four on DRIVER_REV 56
+(D3). At 14.8 and 24 V, where few passes are held, it is 0. The hold in `.running` acts whenever `tgt_incr` is 0, on
+every stop, so on a timed stop each held pass delays the generator's ramp by one pass (0.52 ms): ~200 held ≈ 105 ms.
+A stop by rotation promises distance and a stop by time promises time; the fix kept the first and broke the second.
+**To close:** hold the generator only on a stop by rotation; then STOPTIME and STOPROT at 7.4 and 11.1 V.
+
+### PL-219 -- R23-SGL-MISDIAL's premise (fixed timing) fails on the lead table, so the check reads +96..+250 ‰ (harness)
+
+> **Status (2026-10-08): OPEN, a harness defect (MEASURED, D4 rows 1, 3 and 6).** Mine. Subsumes PL-211.
+
+The cell predicts the supply from the clean rungs' duty-per-speed slope, assuming duty follows back-EMF at a fixed
+timing. On the Doco's lead table the lead rises with speed (52.3° at ≤ 701 rpm, ~63° at 2,100), and more lead lowers
+the duty a speed needs, so the slope flattens and the predicted supply reads high: +96 ‰ at 7.4 V (rungs to 1,650 rpm),
++204 at 14.8 V and +250 at 24 V (rungs to 2,100). D2's fixed pair read +6..+68. A check whose premise is broken is a
+disarmed check: it would not catch a misdialled supply. **To close:** the prediction takes the schedule's lead at each
+rung into account (or judges only rungs at one lead); the next qualification runs it.
+
+### PL-220 -- the range test's record does not say which fault ended a climb, or count hall misses (harness)
+
+> **Status (2026-10-08): OPEN, a harness gap (MEASURED, D4 row 6).** Mine.
+
+Both 24 V climbs ended `outcome,FAULT` / `end,FAULT` with `resyncs 1` at 734e6 (4,888 rpm). The only re-sync path is
+the position fault (|err| ≥ 125), and the peak error had climbed 96 → 111, which fits PL-212's servo state. A rival
+the record cannot rule on: from ~4,780 rpm the hall edges arrive faster than one per drive pass on average, and
+`B1-RANGE` carries neither `hall_missed` nor the fault's kind. **To close:** `B1-RANGE` prints the step's hall-missed
+and hall-illegal deltas and the fault event's kind.
 
 ---
 
