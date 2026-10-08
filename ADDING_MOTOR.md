@@ -50,15 +50,15 @@ each one is compiled in:
 
 **Two commutation models, and which one to start with.** The driver places the field in one of two ways:
 
-- **A fixed pair** — one offset for each direction, chosen per supply voltage (and per board revision). This
-  is how the DocoEng motor is driven. **Start here.** It needs no code beyond table entries, and step 5
-  tells you how to find a good pair.
-- **A hall zero plus a lead that follows speed** — how the 6.5″ motor is driven. It draws much less current
-  across the speed range (24–78 % less than its best fixed pair). Today its constants (`HUB_HALL_ZERO_DEGR`,
-  the lead table `leadIncrTbl` / `leadTenthsTbl`, the back-EMF line `HUB_FF_INCR_AT_NOMINAL`) serve the 6.5″
-  motor only, and the lead schedule is switched on only for `MOTR_6_5_INCH`. Giving your motor this model
-  means making those per-motor, which is a driver change and not only a table entry. Measure Z and L anyway
-  (step 5): they tell you whether it is worth doing.
+- **A fixed pair** — one offset for each direction, chosen per supply voltage (and per board revision).
+  **Start here.** It needs no code beyond table entries, and step 5 tells you how to find a good pair.
+- **A zero plus a lead that follows speed** — how both the 6.5″ and the DocoEng motor (on a Rev A board)
+  are driven. The 6.5″ draws 24–78 % less current across its speed range than its best fixed pair, and the
+  DocoEng motor needs more lead at the top than any one pair gives. Each motor has a lead table against
+  speed, a zero and a sign (`leadTableForMotor()`: the 6.5″'s `leadIncrTbl` / `leadTenthsTbl`, the
+  DocoEng's `docoLeadIncrTbl` / `docoLeadTenthsTbl`), and `bMotorHasLeadTable()` says which motors use it.
+  Adding your motor to it is a table and two `case` lines. How the table's values are found — a lead sweep
+  at a few speeds, and the curves it gives — is in [DRIVER-THEORY-OF-OPERATIONS.md](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves--where-the-offset-should-sit).
 
 ## Step 1 — Connect the motor
 

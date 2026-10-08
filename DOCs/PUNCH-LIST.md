@@ -1662,6 +1662,12 @@ floor tier for the 6.5″ (`DOCO-AND-CLOCK-SPRINT-PLAN.md` "Not in this plan"), 
 
 ### PL-203 -- a POS stop by rotation from the Doco's top speed rests up to 12 hall ticks early
 
+> **Status (2026-10-08, later): FIXED in DRIVER_REV 57, awaiting D4** (STEPHEN 2026-10-08 "we fix everything"). A
+> pass held while the drive is stopping now holds the trajectory generator too: the next pass skips `jerkStep`, so
+> the field resumes at the speed it was held at and keeps the travel the stop planned (`.running`, three longs;
+> `held_seen` after the status run; cog 495/496). A stop the rotor cannot follow at all now waits for it; the
+> blocked-rotor stop (~1 s) bounds that. Proof: STOPROT in D4's 7.4 V qualification and `single-stops-v11p1`.
+>
 > **Status (2026-10-08): CAUSE FOUND (MEASURED, D3 rows 1 and 2); the fix is a driver change, to be priced to
 > Stephen.** The field is HELD during the POS slowdown: held passes POS 164 / 110 at 7.4 V and 110 / 81 at 11.1 V, NEG
 > 11–13 and 48–51; the shortfall follows them (about −2.5 counts a held pass across all eight top stops: POS −355 /
@@ -1761,6 +1767,14 @@ rerun `doco-adopt-<v>`.
 
 ### PL-212 -- above ~2,500 rpm the Doco still needs 55-67 % more duty than its back-EMF, and 14.8 V's top has no reserve
 
+> **Status (2026-10-08, later): the timing part BUILT in DRIVER_REV 57, awaiting D4; the servo part OPEN.** The
+> lead model (`DOCs/analyses/LEAD-CURVE-MODEL-2026-10-08.md`) fits every Doco sweep: the duty bowl's bottom is
+> 53.5° + atan(ω × 1.17 ms) at every supply (L ≈ 1.06 mH a phase), so at the top ωL exceeds R and the fixed pair sat
+> 50–60° short of it. The Doco on Rev A now takes a lead table against speed (the efficiency curve, 52.3 → 68.0°),
+> the 6.5in's mechanism made per motor. The other part: at 24 V's tops the mean servo error sits at 40–45 counts
+> against 48 (the one-sided fast boost woken by peaks of 86–104), costing 4–11° of effective lead; a PASM change, not
+> built — D4's range on the new lead says how much of it is left.
+>
 > **D3 (2026-10-08), the speed-range test:** every top at 7.4 and 24 V ended by running out of duty, not by the
 > motor: 7.4 V NEG 1,931 / POS 2,212 rpm, 24 V NEG 4,343 rpm, and POS ≥ 3,782 (cut by PL-213). 10° more lead cuts the
 > top steps' duty 11 % at 7.4 V and 20–26 % at 24 V NEG 3,900–4,343 rpm, with the minimum beyond ±10° on almost every
@@ -1818,6 +1832,9 @@ repeated measurement shows a lower one steady every time.
 
 ### PL-213 -- the harness's run charge guard overflows 32 bits, ending long runs early (harness)
 
+> **Status (2026-10-08, later): FIXED in SRC_REV 18.** The charge is carried in whole mA·s (`chargeMaS`, the mA·ms
+> remainder below one), compared with the cap in mA·s; `charge_mas` prints it. Proof: D4's 24 V range runs to its end.
+>
 > **Status (2026-10-08): OPEN, a harness defect (MEASURED, D3 row 3).** Mine.
 
 `test_bench_single` compares `chargeMaMs >= RUN_CHARGE_CAP_MAS * wheel.MS_PER_SEC`. The range tier's cap is 4,800,400
@@ -1828,6 +1845,10 @@ next verification visit.
 
 ### PL-214 -- the range test's once-per-turn ripple bins by encoder position, so a bin can be empty (harness)
 
+> **Status (2026-10-08, later): FIXED in SRC_REV 18.** The turn bin is the start edge's index in the turn: its encoder
+> offset from the window's first edge, rounded to whole ticks, mod 24 (an edge sits within ~8 counts of its tick's
+> grid). Proof: D4's `turn_rip_pm` reads at every step both ways.
+>
 > **Status (2026-10-08): OPEN, a harness defect (MEASURED, D3 row 1).** Mine.
 
 `vibTakeEdges()` puts each hall interval in one of 24 bins of 60 encoder counts. The hall edges fall 52–68 counts
@@ -1836,6 +1857,10 @@ five steps. **To close:** bin by the edge's index within the turn, so each bin t
 
 ### PL-215 -- on Rev A the DC current is too coarse to locate the Doco's timing minimum below ~1 A (instrument)
 
+> **Status (2026-10-08, later): WORKED AROUND at the desk.** The lead model reads each sweep's duty bowl, which Rev A
+> resolves to 0.1–0.3 %: its bottom fixes the headroom curve and, through the model, the zero the efficiency curve
+> starts from. The current minima stay coarse (±4°), and the Doco's table follows their fitted line, not any one point.
+>
 > **Status (2026-10-08): OPEN, a measurement limit (MEASURED, D3 rows 2 and 4).**
 
 At the Doco's no-load currents (0.05–0.9 A), a timing sweep's DC current moves by about Rev A's noise (5 mV/A). The
@@ -1847,6 +1872,8 @@ this board can resolve, decided with PL-212's desk work.
 
 ### PL-216 -- the Doco's shipped speed limits sit well inside its measured range
 
+> **Status (2026-10-08, later): waiting on D4**, whose range at every supply on the new lead sets the final values.
+>
 > **Status (2026-10-08): OPEN, table values waiting on PL-212 (MEASURED, D3 rows 1 and 3).**
 
 Stephen 2026-10-07: "the lowest RPM we can command and hold, and the highest... not some artificial limits".
@@ -1860,6 +1887,12 @@ re-tabled from the speed range at every voltage once PL-212's fix is in.
 
 ### PL-217 -- the second Doco's hall sectors differ from the first's by up to 2.8°, past the agreed 2° bar
 
+> **Status (2026-10-08, later): RULED and BUILT** — STEPHEN 2026-10-08 "yes a": the two units' mean widths
+> (57.7 / 59.4 / 64.1 / 66.6 / 57.0 / 55.25° for codes 1–6) in `hltbAngl4k` / `hltbAngl4k2`, DRIVER_REV 57; the
+> time-averaged angle moves 0.13°, so the offsets stand. The offsets: the shipped pair served both units, and the
+> lead table now replaces it on Rev A with a direction offset of 4.0° (unit 1 5.1, unit 2 2.7). Proof: D4's unit-2
+> range at 14.8 V.
+>
 > **Status (2026-10-08): OPEN, Stephen's ruling (MEASURED, D3 row 4).**
 
 Unit 2's six code widths are 59.1 / 58.8 / 63.4 / 65.9 / 56.4 / 56.6° against unit 1's 56.3 / 60.0 / 64.8 / 67.3 / 57.6 /

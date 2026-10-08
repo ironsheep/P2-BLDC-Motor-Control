@@ -412,10 +412,16 @@ the index selects the forward or reverse half. Per-motor tables are chosen in `i
 
 The error is `err_ = field − (hall_angle + offset)`, where `field` is the frame's field angle
 (above), in 256ths of an electrical cycle, with
-`offset_fwd` applied to negative increments and `offset_rev` to positive ones. **For the 6.5″
-motor the front cog rewrites the offset pair as speed changes**: a hall zero of −4° plus or
-minus a lead taken from a four-point table against the increment (§5). The DocoEng motor keeps
-one fixed pair.
+`offset_fwd` applied to negative increments and `offset_rev` to positive ones. **The front cog
+rewrites the offset pair as speed changes** (§5): a zero plus or minus a lead taken from a
+four-point table against the increment, each motor its own table, zero and sign
+(`leadTableForMotor()`). The 6.5″ uses its table on either board; the DocoEng motor on a Rev A
+board (on Rev B it keeps its fixed pair, which has not been re-checked).
+
+**Sector widths.** The 6.5″'s angle table takes its six sectors as 60° each. The DocoEng
+motor's carries its measured sector widths (55–67°, the mean of two units), each code's entry
+edge going up in the forward half and going down in the reverse half: its sectors are unequal
+enough that 60° steps would misplace the field by up to 6° inside one.
 
 **Which way an offset moves the field.** The servo (below) holds the field ahead of `hall_angle +
 offset` in the direction of motion. So a larger `offset_rev` places the field further ahead on a

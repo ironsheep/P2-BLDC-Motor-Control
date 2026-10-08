@@ -136,7 +136,8 @@ each repeats exactly turn after turn (four turns, no misfit). That one is where 
 the rotor.
 
 A driver that assumes 60° sectors places the field up to **6° off** inside a sector on this motor.
-Against the ±1° of the 6.5″, that is why the Doco's sector widths are worth a table (§3.2).
+Against the ±1° of the 6.5″, that is why the driver carries this motor's measured widths, the two units'
+mean, which leaves each unit within 1.4° (§3.2).
 
 **Hall hysteresis** (the halls switching a little late in the direction of travel): 3.0–3.4° on the
 first unit, 2.6–2.8° on the second, at every speed (measured). The zero does not move with speed
@@ -171,8 +172,8 @@ particular to this motor:
 | at 4,343 rpm, the fastest measured | **54.5°** a pass; under one hall tick a pass | calculated |
 | How the field moves inside a pass | a frame at a time: frame k of 23 drives the field at angle + (k − 11) × step ÷ 23, so it turns smoothly and its mean over the pass is the commanded angle | driver |
 | Duty feedforward line | **688 × 10⁶ increment at 18.5 V** for full duty, scaled by the supply (37.2 × 10⁶ a volt) | measured; the maker's Ke predicts 37.2 × 10⁶ a volt |
-| Rotor angle within a sector | the sector's table angle, **equal 60° sectors** today (§2.4) | driver |
-| Commutation offsets | **one fixed pair per supply voltage**, each direction its own (§5.1) | driver |
+| Rotor angle within a sector | the sector's entry edge, from **the measured sector widths** — the two units' mean (§2.4) | driver |
+| Commutation offsets | on a Rev A board, **a lead that follows speed** from a table (§5.4); on Rev B one fixed pair per supply voltage | driver |
 
 The frame-by-frame field is what lets this motor run smoothly above about 2,400 rpm. A field that jumped
 a whole step once a pass would swing the error by half a step either way, which at these speeds reaches
@@ -275,8 +276,9 @@ the current minimum at a quarter and half speed, and beyond 10° more lead at ev
 | 24 V | 2,940–4,343 rpm | 3–26 % forward, 2–8 % reverse | measured |
 
 **The Doco therefore wants more lead high up** — as the 6.5″ does: its table's L falls with speed, which
-on that motor is the real lead rising (6.5″ §5.2). Today the Doco ships one fixed pair per voltage; the
-6.5″ ships a lead table against speed. §5.4 gives the curves a table for this motor is drawn from.
+on that motor is the real lead rising (6.5″ §5.2). The measurements in this manual were taken on one
+fixed pair per voltage (the table in §5.1). The driver now gives this motor, on a Rev A board, a lead table
+against speed as it does the 6.5″, drawn from the curves in §5.4.
 
 ### 5.3 The basin is shallow
 
@@ -316,11 +318,14 @@ The curves, as measured and calculated (the mean of the two directions; forward 
 |---|---|---|---|---|---|---|
 | Efficiency curve (± 4°, Rev A) | 51° | 57° | 61° | 66° | 68° | — |
 | Headroom curve, the hold wall | 70° | 86° | 95° | 102° | 107° (calculated) | 117° (calculated) |
-| The shipped fixed pair | 57° | 57° | 57° | 57° | 57° | 57° |
+| The fixed pair these measurements used | 57° | 57° | 57° | 57° | 57° | 57° |
+| **The driver's lead table** (Rev A) | 52° | 57° | 61° | 66° | 68° | 68° |
 
-At the top the shipped pair sits 50–60° short of the headroom curve and about 10° short of the efficiency
-curve, which is why the top speed costs duty (§6.3). Above 2,800 rpm the efficiency curve is not cleanly
-measured: there the servo's working point shifts at 24 V (§6.3).
+At the top the fixed pair sat 50–60° short of the headroom curve and about 10° short of the efficiency
+curve, which is why the top speed cost duty (§6.3). The lead table follows the efficiency curve, held at
+68° above 2,800 rpm, where that curve is not cleanly measured (the servo's working point shifts at 24 V,
+§6.3), and it stays 18–49° inside the hold wall. Its pair is the lead plus or minus a direction offset of
+4.0°, the two units' mean. ⬚ What it does to the top speed and the duty is to be measured (§9).
 
 ### 5.5 Unit-to-unit
 
@@ -423,7 +428,9 @@ forward direction at every supply. **In reverse at 7.4 and 11.1 V, a stop from t
 ticks short** of its target (a quarter turn at 7.4 V). The cause is measured: as the shaft slows at low
 supply, the drive repeatedly pauses its field to let the rotor catch up (81–164 paused passes in
 reverse against 11–51 forward), and each pause is distance the stop does not make up. The rotor does not
-stall: it stops 5–20 ms after the field. ⬚ The fix is in progress (§9).
+stall: it stops 5–20 ms after the field. The driver now holds its speed plan still on a paused pass while
+stopping, so a pause makes the stop a little longer instead of shorter. ⬚ That is to be checked on these
+stops (§9).
 
 **Stops by time** rested within ±100 ms at every supply, with one exception: one slow forward crawl stop
 at 18.5 V came to rest 120 ms after its field stopped.
@@ -511,8 +518,9 @@ twice (384–500 against 182–264 mA).
 
 **Alignment**
 
-1. **Use the shipped pair for your supply** (§5.1). It is the measured current minimum at half speed, and
-   it sits 15–25° from the hold wall on both units measured (§5.5, §6.2).
+1. **Let the lead table run** (§5.4). On a Rev A board the driver follows this motor's efficiency curve
+   with speed, 18–49° inside the hold wall; the fixed pair it replaces (§5.1) ran cleanly on both units
+   measured, 15–25° from the hold wall at low speed (§5.5, §6.2).
 2. **Expect the timing to show in headroom, not in current.** At light load this motor's current hardly
    moves with timing; its duty does (§5.3).
 3. **Carry the lead in the offset; never move the servo setpoint** (6.5″ §3.3).
@@ -554,8 +562,8 @@ properties in §2 do not depend on the board.
 | **How much the servo's shifted working point at 24 V costs** (§6.3). The error's mean sits 4–11° below its setpoint at the 24 V tops. | It is the other part of the top's excess duty. | A top-speed run once the lead follows speed, which recovers about as much lead as the shift takes. |
 | **Z by a cold method.** The back-EMF method did not resolve on this motor (§4.2). | Z is known only to a few degrees. | The cold method's legs examined for why they disagree. |
 | **The inductance and the resistance** on our hardware (§2.4). The model gives about 1.06 mH a phase, from the maker's resistance (§5.4). | It checks the model. | A meter and an LCR meter across the leads. |
-| **The sector table.** A table of each code's measured width would place the field up to 6° better (§2.4). | It is in progress, from the two units' mean. | The proof run after it is built. |
-| **The reverse stop's few-tick shortfall at low supply** (§6.5). | Distance stops in reverse at 7.4–11.1 V. | The fix in progress, then the stops run again. |
+| **What the sector table and the lead table do.** Both are built from these measurements (§2.4, §5.4); their effect on the top speed, the duty and the smoothness is not yet measured. | They set the final speed range. | The speed range at each supply on the new tables. |
+| **Whether the reverse stop now lands** (§6.5). | Distance stops in reverse at 7.4–11.1 V. | The stop tests at 7.4 and 11.1 V on the changed stop. |
 | **Vibration on a clamped rig** (§6.7). | Separates the motor's own shaking from the rig's. | The speed range repeated with the motor clamped. |
 | **The blocked-rotor stop, and a load the hand can hold.** A bare 5 mm shaft cannot be held (§6.5). | It is how the drive answers a jam. | The hand-load runs with a grip about 25 mm in radius on the shaft. |
 | **Unit-to-unit variation.** Two units: the same constant and pattern, one sensor pair and the drag differ (§4.7). | Two is not a population. | More units. |

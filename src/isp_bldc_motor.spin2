@@ -2328,14 +2328,14 @@ PUB testSetLeadScheduled(bEnable) : eError
 '' TESTING USE: turn the dynamic lead schedule on or off
 ''
 '' While on, this motor's front cog re-derives the commutation pair from the lead table
-'' once per 8 ms slot (6.5in motor only). Setting an offset pair with testSetFwdRevOffsets()
-'' or testSetFwdRevIndep() turns it off; this turns it back on.
+'' once per 8 ms slot (the 6.5in motor, and the DocoEng motor on a Rev A board). Setting an offset pair
+'' with testSetFwdRevOffsets() or testSetFwdRevIndep() turns it off; this turns it back on.
 ''
 '' @param bEnable - T/F where T means the schedule writes the pair; F leaves the pair as it is
 '' @returns eError - NO_ERROR, or ERR_BAD_COUNT when {bEnable} is TRUE on a motor with no lead table
 
     eError := NO_ERROR
-    if (bEnable == TRUE) and (user.MOTOR_TYPE <> MOTR_6_5_INCH)
+    if (bEnable == TRUE) and (bMotorHasLeadTable() == FALSE)
         eError := ERR_BAD_COUNT
     else
         bLeadWritePending := TRUE                                               ' first, so the schedule's first slot writes the pair
@@ -4566,11 +4566,14 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' R18.4: the 6.5in pair is re-derived by the front cog from the measured lead table from its first slot on;
     '  a motor with no lead table keeps its fixed pair, and so does the legacy control build, whose whole
     '  point is the old fixed pair
+    ' DRIVER_REV 57: the Doco on Rev A too, from its own table (DOCs/analyses/LEAD-CURVE-MODEL-2026-10-08.md); its Rev
+    '  B pair is not re-checked and stays fixed
+    pLeadIncr, pLeadTenths, leadZeroTenths, leadSign := leadTableForMotor()
     bLeadWritePending := TRUE
 #ifdef HUB_OFFSETS_LEGACY
     bLeadScheduled := FALSE
 #else
-    bLeadScheduled := (user.MOTOR_TYPE == MOTR_6_5_INCH)
+    bLeadScheduled := bMotorHasLeadTable()
 #endif
     userCmdIncr := 0                    ' R18.4 D-6: nothing commanded, and not short: the driver zeroes lag_held at start
     holdSlotsAgo := SHORT_SLOTS
@@ -5307,8 +5310,51 @@ leadTenthsTbl   LONG    205                                                 ' ei
                 LONG    80                                                  ' half: flat 3-8
                 LONG    80                                                  ' full: 8; 13 costs 2x
 
+DAT ' ---- DocoEng dynamic lead table (DRIVER_REV 57, Rev A) ----
+
+' The efficiency curve of DOCs/analyses/LEAD-CURVE-MODEL-2026-10-08.md: the lead of least DC-link current, the mean of
+'  the two directions, 46.8 deg + 7.85 deg per 1,000 rpm over 18 resolved speeds at 7.4 to 24 V (D1b, D2, D3; rms 4.3
+'  deg, Rev A's current resolution). The model shows the curve is the same at every supply. Points one octave apart
+'  (701, 1,403, 2,806 rpm) and the fastest held (4,343 rpm at 24 V); held at 68.0 above 2,800 rpm, where no clean
+'  efficiency point was measured (D3's 24 V tops read 60-69). Each sits 20-39 deg inside the measured hold wall (the
+'  duty bowl's bottom, 53.5 + atan(w x 1.17 ms)). Here the lead IS the field's real lead (leadSign +1).
+docoLeadIncrTbl     LONG    105_000_000, 210_000_000, 420_000_000, 650_000_000
+docoLeadTenthsTbl   LONG    523, 578, 680, 680
+
+CON ' DocoEng dynamic lead
+
+    ' DRIVER_REV 57: the zero of the Doco's pair, the two directions' half-difference at the duty bowl's bottom (the
+    '  lead model: unit 1 5.1 deg, every speed and supply; unit 2 2.7 deg), as the units' mean 4.0, negated: forward
+    '  (negative increments) = zero - lead, reverse = zero + lead. At 1,403 rpm: 298.2 / 53.8, against the shipped
+    '  half-speed pairs (14.8 V 298 / 53, 24 V 300 / 52)
+    DOCO_LEAD_ZERO_TENTHS = -40
+
+PRI leadTableForMotor() : pIncr, pTenths, zeroTenths, nSign
+' Return this motor's lead table, its pair's zero and the lead's sign (DRIVER_REV 57): the pair is written as
+' fwd = zero - sign x lead, rev = zero + sign x lead.
+'
+' @returns pIncr - the table's |drv_incr| points (LEAD_POINTS longs)
+' @returns pTenths - its leads, tenths of a degree
+' @returns zeroTenths - the pair's zero, tenths of a degree
+' @returns nSign - +1 when the table's lead is the field's real lead, -1 when it is a lag
+
+    if user.MOTOR_TYPE == MOTR_6_5_INCH
+        ' the 6.5in writes Z + L forward and Z - L reverse: its L is a lag of the field (LEAD-CURVE-MODEL 2026-10-08)
+        pIncr, pTenths, zeroTenths, nSign := @leadIncrTbl, @leadTenthsTbl, HUB_HALL_ZERO_DEGR * TENTHS_PER_DEGREE, -1
+    else
+        pIncr, pTenths, zeroTenths, nSign := @docoLeadIncrTbl, @docoLeadTenthsTbl, DOCO_LEAD_ZERO_TENTHS, 1
+
+PRI bMotorHasLeadTable() : bHas
+' Return TRUE when this motor's pair follows a lead table: the 6.5in on either board, the Doco on a Rev A board (its
+' Rev B pair is not re-checked, so it stays fixed).
+'
+' @returns bHas - T/F where T means the front cog may write the pair from the lead table
+
+    bHas := (user.MOTOR_TYPE == MOTR_6_5_INCH) or ((user.MOTOR_TYPE == MOTR_DOCO_4KRPM) and (eDetectedBoard == REV_A))
+
 PRI leadTenthsForIncrement(absIncr) : leadTenths | idx, loTenths, hiTenths, spanIncr, leadStep
-' Return the dynamic lead for a field speed, from the lead table: flat outside its ends, interpolated between points.
+' Return the dynamic lead for a field speed, from this motor's lead table: flat outside its ends, interpolated between
+' points; 0 before init() has chosen the table.
 '
 ' @param absIncr - the field's increment per drive pass, magnitude
 ' @returns leadTenths - the lead, in tenths of a degree
@@ -5320,22 +5366,24 @@ PRI leadTenthsForIncrement(absIncr) : leadTenths | idx, loTenths, hiTenths, span
 ' @local spanIncr - the increment between the two points
 ' @local leadStep - how far past the lower point's lead {absIncr} sits, in tenths, as a magnitude
 
-    leadTenths := LONG[@leadTenthsTbl][LEAD_POINTS - 1]                         ' above the table: held flat, never extrapolated
-    if absIncr <= LONG[@leadIncrTbl][0]
-        leadTenths := LONG[@leadTenthsTbl][0]                                   ' below the table: held flat too
-    else
-        repeat idx from 1 to LEAD_POINTS - 1
-            if absIncr <= LONG[@leadIncrTbl][idx]
-                loTenths := LONG[@leadTenthsTbl][idx - 1]
-                hiTenths := LONG[@leadTenthsTbl][idx]
-                spanIncr := LONG[@leadIncrTbl][idx] - LONG[@leadIncrTbl][idx - 1]
-                ' MULDIV64 is unsigned, so the step is scaled as a magnitude and its direction applied after
-                leadStep := muldiv64(abs(hiTenths - loTenths), absIncr - LONG[@leadIncrTbl][idx - 1], spanIncr)
-                if hiTenths >= loTenths
-                    leadTenths := loTenths + leadStep
-                else
-                    leadTenths := loTenths - leadStep
-                quit
+    leadTenths := 0
+    if pLeadIncr <> 0
+        leadTenths := LONG[pLeadTenths][LEAD_POINTS - 1]                        ' above the table: held flat, never extrapolated
+        if absIncr <= LONG[pLeadIncr][0]
+            leadTenths := LONG[pLeadTenths][0]                                  ' below the table: held flat too
+        else
+            repeat idx from 1 to LEAD_POINTS - 1
+                if absIncr <= LONG[pLeadIncr][idx]
+                    loTenths := LONG[pLeadTenths][idx - 1]
+                    hiTenths := LONG[pLeadTenths][idx]
+                    spanIncr := LONG[pLeadIncr][idx] - LONG[pLeadIncr][idx - 1]
+                    ' MULDIV64 is unsigned, so the step is scaled as a magnitude and its direction applied after
+                    leadStep := muldiv64(abs(hiTenths - loTenths), absIncr - LONG[pLeadIncr][idx - 1], spanIncr)
+                    if hiTenths >= loTenths
+                        leadTenths := loTenths + leadStep
+                    else
+                        leadTenths := loTenths - leadStep
+                    quit
 
 PRI writeOffsetsTenths(fwdTenths, revTenths)
 ' Write the driver's commutation pair, and the whole-degree record the getter returns, from tenths of a degree.
@@ -6814,7 +6862,7 @@ PRI frontApplyLead() | leadTenths
         ' written only when the lead changes, or once after the schedule is turned on: the steering front cog
         '  services two motors in the tightest budget in the design (section 4.2), and a flat table never changes
         if (leadTenths <> lastLeadTenths) or (bLeadWritePending == TRUE)
-            writeOffsetsTenths(HUB_HALL_ZERO_DEGR * TENTHS_PER_DEGREE + leadTenths, HUB_HALL_ZERO_DEGR * TENTHS_PER_DEGREE - leadTenths)
+            writeOffsetsTenths(leadZeroTenths - leadSign * leadTenths, leadZeroTenths + leadSign * leadTenths)
             lastLeadTenths := leadTenths
             bLeadWritePending := FALSE
 
@@ -7000,23 +7048,29 @@ hltbAngle2  LONG    0           '-%000- can't happen - reverse-direction table
 
 
 '   amount of rotation within hall cycle - docoEng.com 4kRPM, 24V
-hltbAngl4k  LONG    0           '-%000- can't happen - forward-direction table
-            LONG    5 frac 6    '%001
-            LONG    3 frac 6    '%010
-            LONG    4 frac 6    '%011
-            LONG    1 frac 6    '%100
-            LONG    0 frac 6    '%101
-            LONG    2 frac 6    '%110
-            LONG    0           '-%111- can't happen
+'   DRIVER_REV 57 (STEPHEN 2026-10-08, "yes a"): each code's MEASURED sector, the mean of the two units' widths in
+'    electrical degrees (D1b unit 1 / D3 unit 2, B1-CODEW: code 1 57.7, 2 59.4, 3 64.1, 4 66.6, 5 57.0, 6 55.25),
+'    laid end to end in the rising order 5-4-6-2-3-1 from code 5 at 0 (was 60 deg each). The forward half gives each
+'    code's entry edge going up, the reverse half its entry edge going down (the forward half plus the code's width).
+'    Against the equal table the time-averaged angle moves 0.13 deg, so the offsets measured on it stand. Tenths of a
+'    degree, FRAC 3600
+hltbAngl4k  LONG    0               '-%000- can't happen - forward-direction table
+            LONG    3024 frac 3600  '%001 (equal: 300)
+            LONG    1789 frac 3600  '%010 (180)
+            LONG    2383 frac 3600  '%011 (240)
+            LONG     570 frac 3600  '%100 (60)
+            LONG       0            '%101 (0)
+            LONG    1236 frac 3600  '%110 (120)
+            LONG    0               '-%111- can't happen
 
-hltbAngl4k2 LONG    0           '-%000- can't happen - reverse-direction table
-            LONG    0 frac 6    '%001
-            LONG    4 frac 6    '%010
-            LONG    5 frac 6    '%011
-            LONG    2 frac 6    '%100
-            LONG    1 frac 6    '%101
-            LONG    3 frac 6    '%110
-            LONG    0           '-%111- can't happen
+hltbAngl4k2 LONG    0               '-%000- can't happen - reverse-direction table
+            LONG       0            '%001 (equal: 0; 360.05 wraps)
+            LONG    2383 frac 3600  '%010 (240)
+            LONG    3024 frac 3600  '%011 (300)
+            LONG    1236 frac 3600  '%100 (120)
+            LONG     570 frac 3600  '%101 (60)
+            LONG    1789 frac 3600  '%110 (180)
+            LONG    0               '-%111- can't happen
 
 
 CON { driver interface Constants }
@@ -7149,7 +7203,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 56      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 57      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7473,6 +7527,16 @@ CON { driver internal Constants }
                                             '     and 12.0 V are 4.00 ticks/s each way (forward was 1.00, which D2 showed
                                             '     not steady). PL-203: the distance limit keeps what it fired on
                                             '     (testGetLimitFire()). Spin2 only; no PASM or ABI change
+                                            ' 57: tasks 3702 / 3703 (Stephen 2026-10-08, "similar tables for both
+                                            '     motors"). The Doco on Rev A takes a lead table against speed, as the
+                                            '     6.5in does: one mechanism, a table, a zero and a sign per motor (the
+                                            '     6.5in's arithmetic unchanged). Its values are the efficiency curve of
+                                            '     DOCs/analyses/LEAD-CURVE-MODEL-2026-10-08.md. hltbAngl4k / hltbAngl4k2
+                                            '     carry the two Doco units' mean sector widths (was 60 deg each). PL-203:
+                                            '     a pass held while the drive is stopping holds the generator too (the
+                                            '     next pass skips jerkStep), so the field keeps the travel the stop
+                                            '     planned. PASM: 3 longs in .running, held_seen after the status run;
+                                            '     no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7900,6 +7964,10 @@ VAR { Offset tracking for independent setter/getter }
     LONG    bLeadScheduled       ' R18.4: T/F where T means the front cog writes the pair from the lead table
     LONG    bLeadWritePending    ' R18.4: T/F where T means the front cog must write the pair on its next slot, changed or not
     LONG    lastLeadTenths       ' R18.4: the lead the front cog last wrote, in tenths (valid once a write is made)
+    LONG    pLeadIncr            ' DRIVER_REV 57: this motor's lead table, |drv_incr| points (LEAD_POINTS longs); init()
+    LONG    pLeadTenths          '  ...and its leads, tenths of a degree
+    LONG    leadZeroTenths       ' DRIVER_REV 57: the pair's zero, tenths: fwd = zero - sign x lead, rev = zero + sign x lead
+    LONG    leadSign             '  +1 when the table's lead is the field's real lead (the Doco), -1 when it is a lag (the 6.5in)
 
 VAR { R18.4 D-6: what the path limiter reads }
     LONG    userCmdIncr          ' the increment last COMMANDED (a path scale never writes this)
@@ -8244,7 +8312,14 @@ drvMotor                                                ' global (task 3535): en
 ' -------------------------------------------------------------------------
 '}
 .fromRest       call    #driveFromRest                  ' a bridge left coasting or shorted at rest is re-aligned and driven (LUT)
-.running        call    #jerkStep                       ' PL-160: v, a and the state for this pass (LUT); C = the field is at rest
+.running        cmp     lag_held_, held_seen        wz  ' DRIVER_REV 57 (PL-203): Q: was the last pass held (lag_held_ moved)?
+                mov     held_seen, lag_held_            '  (MOV writes no flag: Z is the CMP's)
+    if_nz       tjz     tgt_incr, #.justIncr            '  held AND stopping: the generator waits this pass, so the field
+                                                        '  takes the speed it was held at instead of losing that pass's
+                                                        '  travel -- a held pass lengthens a stop, never shortens it. Not
+                                                        '  from rest (.fromRest falls here with tgt_incr <> 0); held_seen
+                                                        '  needs no zeroing: a stale value costs one frozen pass at most
+                call    #jerkStep                       ' PL-160: v, a and the state for this pass (LUT); C = the field is at rest
                 ' PL-78 / PL-87 / PL-95 (DRIVER_REV 34), THE KICK, kept: the pass a ramp arrives at its target advances the
                 '  field like every AT_SPEED pass after it -- jerkStep returns C = 0 on the arrival pass, so it falls to
                 '  .justIncr (holdGate, the lag_held count and holdDecay) like any other running pass. Skipping
@@ -9032,6 +9107,8 @@ stop_fp_    res 1           ' PL-161: the stop plan's field travel to rest, 1/25
 ' fault is here... (but external only)
 ' PL-161 (DRIVER_REV 39): the stop planner's working registers (planStage, planA .. planC, run, rampOut, planFp)
 plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.endRqst sets 1 every drive pass)
+held_seen       res 1       ' DRIVER_REV 57 (PL-203): lag_held_ as the last pass's start read it (.running); outside the
+                            '  status run, which ends at stop_fp_
 ' DRIVER_REV 41 (C1): the other 17 live at start-only longs (see the note at `driver`), each labelled there:
 '  at the entry code, pl_v   in: v; then V, the speed as each run starts
 '                     pl_a   in: a; then alpha, the acceleration toward rest
@@ -9044,7 +9121,8 @@ plan_stage      res 1       ' 0 idle; 1 .. 9: the stage the next frame runs (.en
 '                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
 
 ' $1f8 for reg cogs
-    fit     496  ' 491 USED, 5 FREE, 2026-10-05 at DRIVER_REV 55 (task 3699, PL-170: senseFilter's CALL, the fold's
+    fit     496  ' 495 USED, 1 FREE, 2026-10-08 at DRIVER_REV 57 (PL-203: .running's three longs, held_seen at $1EE);
+                 ' 491 at DRIVER_REV 55 (task 3699, PL-170: senseFilter's CALL, the fold's
                  ' two compares, the registers sense_f_ and sense_shift_); 482 at DRIVER_REV 54 (task 3684 R1:
                  ' fieldSteps, the frame's three longs, the pass's and initAngleFmHall's zeroing, the registers fld_,
                  ' frm_step and frm_ofs); 463 at DRIVER_REV 49
