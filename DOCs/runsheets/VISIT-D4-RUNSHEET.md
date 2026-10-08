@@ -21,7 +21,8 @@ Everything you need is on this page. Nothing is marked for the log: the log reco
 
 ## The bench
 
-The Doco bench: **unit 1** on the Rev A board (P16 group), the encoder on the shaft, the bench supply. **The supply
+The Doco bench: **unit 2, as D3 left it** (STEPHEN 2026-10-08: no swap) on the Rev A board (P16 group), the encoder
+on the shaft, the bench supply. Either unit proves the fixes: the tables are the two units' mean. **The supply
 voltage you set must match the command's name** (`v7p4` is 7.4 V).
 
 ⭐ **New this visit — clamp the rig before row 1.** The motor and the encoder sit loose on the rubber mat, and at some
@@ -42,10 +43,9 @@ loose rig's; this visit's are the clamped rig's.
 | 4 | **18.5 V** | `./bench-run.sh single-range-v18p5` | 15–30 minutes | Nothing |
 | 5 | **22.2 V** | `./bench-run.sh single-range-v22p2` | 15–30 minutes | Nothing |
 | 6 | **24.0 V** | `./bench-run.sh single-qualify-v24p0 ; ./bench-run.sh single-range-v24p0` | 30–50 minutes: the highest climb, possibly past 4,500 rpm | Nothing |
-| 7 | **14.8 V**, **unit 2** | ✋ **ATTENDED SET-UP — the motor swap.** Supply OFF; swap unit 1 for unit 2 (phase leads, hall connector, the encoder on **its** shaft, the clamp). Then: `./bench-run.sh single-range-v14p8` | About 20 minutes: unit 2's speed range on the same tables — the check that the two units' mean sector table serves the second unit too | Nothing after the swap |
 
-**Attended work, all of it:** clamping the rig before row 1, and the motor swap before row 7. Rows 1–6 are hands
-off, about 2½–3½ hours, splittable at any row.
+**Attended work, all of it:** clamping the rig before row 1. Rows 1–6 are hands off, about 2½–3½ hours, splittable
+at any row. No motor swap.
 
 **What to watch for, named in advance:**
 - **The climbs go faster than D3's** — the new timing is expected to raise the top. The motor may sound rougher at the
@@ -53,7 +53,6 @@ off, about 2½–3½ hours, splittable at any row.
 - **The bench supply when the motor stops from the top.** A bench supply cannot take current back. If it trips, the run
   stops itself; send the logs and note the row.
 - **If a stop or a check FAILs in rows 1, 3 or 6, carry on** — the log is what it is for.
-- **Unit 2 (row 7):** if its first crawl does not turn, its wiring differs — supply off and send the log.
 - **Heat:** if the motor is too hot to hold comfortably, wait before the next row.
 
 **If a run goes silent** (nothing new on the terminal for two minutes): close the terminal and go on to the next row.
@@ -72,13 +71,13 @@ off, about 2½–3½ hours, splittable at any row.
 
 | | |
 |---|---|
-| **Purpose** | **Proof** of DRIVER_REV 57 on the Doco: the stop fix (STOPROT at 7.4 V in the qualification and at 11.1 V); the lead table and the measured sector table (the qualification at 7.4, 14.8 and 24 V — power steps, ladder, ramps, stops, reversals — judged on the encoder); then **measurement** of the final speed range at every supply (slowest and fastest held, what ended each climb, the timing sweep about the new lead at each step, the ripple on a clamped rig), and unit 2's range on the same tables |
+| **Purpose** | **Proof** of DRIVER_REV 57 on the Doco: the stop fix (STOPROT at 7.4 V in the qualification and at 11.1 V); the lead table and the measured sector table (the qualification at 7.4, 14.8 and 24 V — power steps, ladder, ramps, stops, reversals — judged on the encoder); then **measurement** of the final speed range at every supply (slowest and fastest held, what ended each climb, the timing sweep about the new lead at each step, the ripple on a clamped rig), all on unit 2 |
 | **Hardware risk** | The library's own 40 A limit; the harness stops the run at 3.68 A of supply current, on a stall, a charge it did not expect (now counted without overflow), an encoder disagreement or its time cap. The climbs may reach speeds not run before (bounded at 1.02e9, the motor's no-load speed); their stops return more energy to a supply that cannot take it |
-| **Who acts** | You: the clamp, the supply for each row, the motor swap before row 7 |
+| **Who acts** | You: the clamp, and the supply for each row |
 | **Runs that carry state** | None |
 | **Run length** | About 3–4 hours with the set-ups, splittable at any row |
 | **Repeatability** | Every run is repeatable and independent |
-| **Variant matrix** | Rev A board (P16), DocoEng units 1 and 2, 7.4, 11.1, 14.8, 18.5, 22.2 and 24.0 V, 270 MHz, DRIVER_REV 57 |
+| **Variant matrix** | Rev A board (P16), DocoEng unit 2, 7.4, 11.1, 14.8, 18.5, 22.2 and 24.0 V, 270 MHz, DRIVER_REV 57 |
 
 ## What this visit decides
 
@@ -98,3 +97,5 @@ off, about 2½–3½ hours, splittable at any row.
 ## Revision history
 
 - **2026-10-08** — written («#3704») after the D3 evaluation, the lead model and DRIVER_REV 57.
+- **2026-10-08 (later)** — all rows on unit 2, which is on the bench; no swap (Stephen). The tables are the two units'
+  mean, so either unit proves them; D3's unit-1 tops stay as unit 1's.
