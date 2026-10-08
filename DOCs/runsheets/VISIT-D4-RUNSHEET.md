@@ -98,4 +98,6 @@ at any row. No motor swap.
 
 - **2026-10-08** — written («#3704») after the D3 evaluation, the lead model and DRIVER_REV 57.
 - **2026-10-08 (later)** — all rows on unit 2, which is on the bench; no swap (Stephen). The tables are the two units'
-  mean, so either unit proves them; D3's unit-1 tops stay as unit 1's.
+  mean, so either unit proves them; D3's unit-1 tops stay as unit 1's. Reviewed for anything unneeded: the 14.8 V
+  qualification stays (Stephen), at the supply whose old top had no duty reserve; the speed range stays at all six
+  supplies, so every limit is measured, not interpolated.
