@@ -1851,7 +1851,7 @@ this board can resolve, decided with PL-212's desk work.
 
 Stephen 2026-10-07: "the lowest RPM we can command and hold, and the highest... not some artificial limits".
 
-- 24 V: holds 0.10 ticks/s (0.25 rpm) steady both ways against a shipped minimum of 1.46. It holds 4,343 rpm NEG and
+- 24 V: holds 0.10 ticks/s (0.25 rpm) steady both ways against a shipped minimum of 0.60 (1.5 rpm). It holds 4,343 rpm NEG and
   ≥ 3,782 POS against a ceiling of 2,800.
 - 7.4 V: holds 1,931 / 2,212 rpm against 1,650.
 

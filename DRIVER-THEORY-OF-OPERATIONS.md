@@ -459,7 +459,8 @@ has. The least net reading the fold-back and the walk guard accept is therefore 
 the running clock, whichever is more: 4 mV at 270 MHz, higher below about 254 MHz (11 mV at 100 MHz).
 
 **On a Rev A board the fold-back reads a filtered current.** Rev A's sense resistor gives 5 mV per amp,
-against Rev B's 150, and one frame's reading carries noise of about 1.5-2.3 mV — up to half an amp on
+against Rev B's 150, and one frame's reading scatters by about 0.5-0.6 mV (standard deviation; about 5 mV
+peak to peak, measured on a driven Rev A board) — about a tenth of an amp, and about an amp peak to peak, on
 Rev A. Compared one frame at a time, a low limit folded on that noise alone. So on Rev A the reading
 is first smoothed with a time constant of 16 frames (0.36 ms; `sense_shift` 4), and the fold compares
 the smoothed reading, against a floor of 3 mV. A brief spike folds nothing; a real overload folds

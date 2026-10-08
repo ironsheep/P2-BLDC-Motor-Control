@@ -1,6 +1,8 @@
 # P2-BLDC-Motor-Control - Connecting the new motor
 
-This page details which wires on the motor go to where on our control board.
+This page details which wires on the motor go to where on our control board. How the motor
+behaves on the driver — its hall sectors, timing, speed range and what we measured — is in its
+[technical manual](MOTOR-DOCO-TECHNICAL-MANUAL.md).
 
 ![Project Maintenance][maintenance-shield]
 
@@ -14,7 +16,7 @@ The new Motor we've added:
 | --- | --- | --- |
 | **-- docoEng.com 4k RPM 24v motor --** || the new Parallax small motor
 | Hall Tics per Revolution | 24 ticks | verified on our hardware (turned by hand, against a shaft encoder)
-| Degrees per hall tick | 15 degrees | on average; the six hall sectors are not equal: on our motor they measure 13.5° to 16.7°, and each repeats every turn
+| Degrees per hall tick | 15 degrees | on average; the six hall sectors are not equal: on our two motors they measure 13.4° to 16.9°, and each repeats every turn
 | Ticks per hall-cycle | 6 ticks | positive power (ticks rising): 1-5-4-6-2-3</br>negative power (ticks falling): 1-3-2-6-4-5</br>the falling order verified on our hardware
 | Hall-cycles per Revolution | 4 hall-cycles | verified on our hardware
 | Degrees per Hall-cycle | 90 degrees | verified on our hardware

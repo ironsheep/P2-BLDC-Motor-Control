@@ -13,6 +13,9 @@ as we have actually measured it, and how to get good behaviour out of it with th
 It is written for someone who wants to understand this motor — not a motor designer, but not a
 beginner either. Section 3 assumes you know what PWM is. Nothing else assumes much.
 
+Its companion, the [DocoEng motor's manual](MOTOR-DOCO-TECHNICAL-MANUAL.md), is built section for section on
+this one, so the two motors can be compared section by section.
+
 If you are bringing up a *different* motor, read this as the worked example for
 [ADDING_MOTOR.md](ADDING_MOTOR.md): every property it asks you to measure is measured here, and
 the methods are explained in [TECHNIQUES.md](TECHNIQUES.md).
@@ -458,6 +461,40 @@ natural reading of the 15–26× difference in §7.3.
 **What it means for you: alignment on this motor is worth a lot, and being 30° out costs an
 order of magnitude in current, not a few percent.**
 
+### 5.4 The lead curves
+
+*This section is shared with the [DocoEng manual §5.4](MOTOR-DOCO-TECHNICAL-MANUAL.md#54-the-lead-curves).
+It is where the lead's model will live.*
+
+**At one speed: cost against lead.** Sweeping the lead at a fixed speed gives a bowl. There are two,
+depending on the cost:
+
+- the **current bowl**, whose bottom is the most *efficient* lead — the least current for the speed;
+- the **duty bowl**, whose bottom leaves the most *headroom* — the least voltage for the speed.
+
+At low speed their bottoms nearly coincide. As speed rises they part. §5.3 is one current bowl.
+
+**Across speeds: best lead against speed.** Each bowl's bottom, plotted against speed, is a curve:
+
+- the **efficiency curve** — where the motor runs coolest;
+- the **headroom curve** — where it runs fastest for its supply.
+
+**Where the supply comes in.** A drive well inside its headroom should follow the efficiency curve. A
+drive close to running out of voltage gains speed from the headroom curve's extra lead, and the speed at
+which a drive starts to run short depends on the supply.
+
+| | Status on this motor |
+|---|---|
+| Efficiency curve | **measured at 18.5 V**, four speeds an octave apart, both units and directions, every bottom found: the table in §5.2 |
+| Headroom curve | ⬚ not measured. Above the table's last point the lead is held flat; that alignment moves the duty knee (§6.3) says the headroom curve matters at the top |
+| Other supplies | ⬚ not measured; the 18.5 V table serves every supply |
+| A model behind both | ⬚ not yet (§9) |
+
+### 5.5 Unit-to-unit
+
+The lead table was measured on both units, and one table serves both: every table value sits inside
+both units' flat regions (§5.2).
+
 ---
 
 ## 6 · The operating envelope
@@ -667,6 +704,12 @@ healthy wheel beside a miswired partner.
 **A start check cannot see what happens later in a run.** It proves the motor and the bridge were healthy
 when the program started, nothing more.
 
+### 6.7 Smoothness and vibration
+
+⬚ Not measured on this motor: it has no shaft to carry an encoder, so the speed wobble inside a turn
+cannot be timed the way the DocoEng manual's §6.7 does. On the floor, starts, speed changes and stops felt
+smooth, with no unusual sound (§7.5).
+
 ---
 
 ## 7 · Current and power
@@ -875,6 +918,7 @@ Each question says why it matters and what would settle it.
 | **How a start behaves under load at higher speeds.** Measured only at low and medium speed on the floor. | A start's current spike is what a heavy robot feels. | A longer loaded run at speed. |
 | **Whether the hold keeps a platform from creeping on an incline.** Not yet measured on a slope. | It decides the hold's ceiling for a robot that parks on one. | A run on an incline. |
 | **Why L falls with speed.** Is the speed dependence a property of the motor (its electrical time constant) or of the commutation scheme (loop lag)? The textbook predicts the opposite sign (§5.2). | It decides whether a speed law can be written down or must be measured per motor. | The motor's time constant does not care about the drive-pass rate and loop lag does, so the lead measurement repeated on a build with a different pass rate would tell them apart. |
+| **The lead curves.** The efficiency curve is measured at 18.5 V; the headroom curve and other supplies are not (§5.4). | They decide whether the lead table needs the supply as a second input near the top. | A motor model fitted to the measured bowls, then a few checking points. |
 | **Is the alignment the global optimum?** About 35 % of the electrical cycle has been swept (§4.4); one minimum per direction lies inside it. | Theory says there is only one, but that is an argument. | A full-cycle sweep, by a method that does not drive the motor into the current wall to get there. |
 | **Unit-to-unit variation.** Two units measured; Z agrees within 0.06° and resistance within 7 %. | Two is not a population. | More units — Z can be measured on any board (§8.1). |
 | **Winding inductance, and so L/R.** Only bounded (§2.4). | It sets how finely a graded short can be sliced, and how a current pulse rises. | An LCR meter across two leads, or a fast read of the current's rise during a drive pulse. |
