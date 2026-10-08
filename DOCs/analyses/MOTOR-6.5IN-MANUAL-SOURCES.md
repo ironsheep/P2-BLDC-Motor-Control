@@ -77,5 +77,6 @@ Paths are under `DOCs/analyses/bench/` unless stated.
 | §7.5 kicks | `VISIT-7B-EVALUATION.md`; `VISIT-8B-EVALUATION.md` §3.7; pass 7 R21-DUAL-TRKICK-T |
 | §7.5 jerk-limited ramp | `2026-09-27/rc/VISIT-10-RC-EVALUATION.md`; `2026-09-28/blockA/BLOCK-A-EVALUATION.md` |
 | §9 pack sensor | `VOLTAGE-SENSOR.md`; «#3611» |
+| §5.1, §5.2 L is a lag (a larger L, less real lead); §5.4 the lead curves and the model's four predictions; §6.2 walls relabelled in real-lead terms; §9 the walking-pace speed law | `DOCs/analyses/LEAD-CURVE-MODEL-2026-10-08.md` §3 and `.py --curves` (Visit 8 / 8b LEAD segments, `debug_260922-152123`, `-164207`); the sign from `.hallCounted` in `src/isp_bldc_motor.spin2` and the HUB CON comment (2026-10-08) |
 | §9 back-EMF while driven | «#3602» (after 6.0.0) |
 | (removed from the user manual) the RIGHT unit's intermittent loss of drive | PL-120; `VISIT-10-PASS1…PASS7` evaluations — evidence points at the right board, not the motor |

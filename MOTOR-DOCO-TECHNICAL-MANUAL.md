@@ -108,7 +108,8 @@ legal halls at every start.
 
 **The winding resistance and inductance are not measured.** The driver's own resistance check
 needs a current reading the Rev A board cannot resolve at a safe probe current, so it drives
-nothing on Rev A (§7.1). Take the maker's 1.8 Ω phase to phase. The inductance is unknown (§9).
+nothing on Rev A (§7.1). Take the maker's 1.8 Ω phase to phase. The inductance is not measured; the lead model puts it at about
+1.06 mH a phase (§5.4).
 
 **The six sectors are not equal, and that matters more here than on the 6.5″.** Each code's width
 in electrical degrees, driven both ways at 24 and 96 ticks/s:
@@ -239,9 +240,11 @@ method yet, and no hand-detent or cold back-EMF study was completed on it.)
 
 ### 5.1 What L is, and the pair this motor ships
 
-L is how far ahead of the rotor the field is put — a drive parameter, combined with Z into the offset
-pair ([6.5″ §5.1](MOTOR-6.5IN-TECHNICAL-MANUAL.md#51-what-l-is)). On this motor each direction carries
-its own measured value, the current minimum at half speed:
+L is where the field is put against the rotor — a drive parameter, combined with Z into the offset
+pair ([6.5″ §5.1](MOTOR-6.5IN-TECHNICAL-MANUAL.md#51-what-l-is)). On this motor a larger reverse offset,
+or a smaller forward one, puts the field further ahead: here L **is** the real lead (on the 6.5″ it is
+written the other way round). Each direction carries its own measured value, the current minimum at half
+speed:
 
 | Supply | 7.4 V | 11.1 V | 12.0 V | 14.8 V | 18.5 V | 22.2 V | 24.0 V |
 |---|---|---|---|---|---|---|---|
@@ -249,8 +252,10 @@ its own measured value, the current minimum at half speed:
 | Reverse (positive increments) | 55° | 54° | 54° | 53° | 54° | 56° | 52° |
 
 Measured where a half-speed minimum resolved; the others take the mean of those (and 12.0 V is not
-tested). In signed terms the pair is about −60° / +54°: **L ≈ 57°**, against the 6.5″'s 5–20°. ⬚ Why
-the two motors want such different leads under the same driver is not established (§9).
+tested). In signed terms the pair is about −60° / +54°: **L ≈ 57°**, against the 6.5″'s offsets of about
+−12° to −24°. Most of that difference is bookkeeping: this motor's hall-angle table is defined 60° apart
+from the 6.5″'s, so the same real field placement reads about 60° higher here. The rest is each motor's own
+hall placement.
 
 ### 5.2 L depends on speed
 
@@ -269,9 +274,9 @@ the current minimum at a quarter and half speed, and beyond 10° more lead at ev
 | 24 V | 2,800 rpm | nothing forward; reverse needs 5 % *more* | measured |
 | 24 V | 2,940–4,343 rpm | 3–26 % forward, 2–8 % reverse | measured |
 
-**The Doco therefore wants more lead high up**, the mirror of the 6.5″, whose least-current lead *falls*
-with speed and then holds flat (6.5″ §5.2). Today the Doco ships one fixed pair per voltage; the 6.5″
-ships a lead table against speed. §5.4 is how the two are being brought onto one footing.
+**The Doco therefore wants more lead high up** — as the 6.5″ does: its table's L falls with speed, which
+on that motor is the real lead rising (6.5″ §5.2). Today the Doco ships one fixed pair per voltage; the
+6.5″ ships a lead table against speed. §5.4 gives the curves a table for this motor is drawn from.
 
 ### 5.3 The basin is shallow
 
@@ -290,34 +295,32 @@ deep over 30°.
 
 ### 5.4 The lead curves
 
-*This section is shared with the [6.5″ manual §5.4](MOTOR-6.5IN-TECHNICAL-MANUAL.md#54-the-lead-curves).
-It is where the lead's model will live.*
+What a lead sweep measures — a current bowl and a duty bowl at each speed, whose bottoms trace the
+**efficiency** and **headroom** curves — and the four things a model of the windings predicts about them,
+are set out in the driver's [theory of operations](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves--where-the-offset-should-sit).
+This section says how this motor measures up; the [6.5″ manual §5.4](MOTOR-6.5IN-TECHNICAL-MANUAL.md#54-the-lead-curves)
+does the same for that one.
+"Lead" here is the field's real lead over the rotor: 360° less the forward offset, or the reverse offset.
 
-**At one speed: cost against lead.** Sweeping the lead at a fixed speed gives a bowl. There are two,
-depending on the cost:
-
-- the **current bowl**, whose bottom is the most *efficient* lead — the least current for the speed;
-- the **duty bowl**, whose bottom leaves the most *headroom* — the least voltage for the speed.
-
-At low speed their bottoms nearly coincide. As speed rises they part, the duty bowl's bottom at more
-lead. On the too-much-lead side a cliff appears at low speed: the motor loses hold (§6.2).
-
-**Across speeds: best lead against speed.** Each bowl's bottom, plotted against speed, is a curve:
-
-- the **efficiency curve** — where the motor runs coolest;
-- the **headroom curve** — where it runs fastest for its supply.
-
-**Where the supply comes in.** A drive well inside its headroom should follow the efficiency curve. A
-drive close to running out of voltage gains speed from the headroom curve's extra lead. The speed at
-which a drive starts to run short depends on the supply, so the right lead at a given speed can differ
-by voltage: on this motor more lead already helps at 1,650 rpm on 7.4 V, but not until about 2,900 rpm
-on 24 V (§5.2).
-
-| | Status on this motor |
+| | On this motor |
 |---|---|
-| Efficiency curve | pieces: a quarter and half speed at several supplies, 1,120 rpm at 11.1 V; the bottoms resolve poorly on Rev A (§7.1) |
-| Headroom curve | pieces: the tops at 7.4 and 24 V point the right way, but most bottoms lay beyond the ±10° measured |
-| A model behind both | ⬚ not yet (§9) |
+| 1 · one bowl shape | **holds**, to 0.1–0.3 % on every sweep below about 2,500 rpm |
+| 2 · bottom = zero + atan(ω × inductance ÷ R) | **holds**: **53.5° + atan(ω × 1.17 ms)** fits 19 speeds at every supply from 7.4 to 24 V within 0.9°. At about 650 rpm the bottom is 70–71° on 11.1, 14.8, 18.5 and 24 V alike. With the maker's 1.8 Ω, the time constant gives a winding inductance of about **1.06 mH a phase** (calculated) |
+| 3 · the curves coincide at low speed and part | **holds**: the zero, 53.5°, is where the current is least at low speed (50–54°); the gap is 16–21° at 560–650 rpm and 37° at 1,821 |
+| 4 · the hold wall just past the duty bottom | **holds**: every hold wall measured lies 1–5° past its sweep's duty bottom, on both units |
+
+The curves, as measured and calculated (the mean of the two directions; forward reads 5° more and reverse
+5° less on the first unit, 2.7° on the second):
+
+| rpm | 600 | 1,300 | 1,800 | 2,500 | 2,800 | 4,000 |
+|---|---|---|---|---|---|---|
+| Efficiency curve (± 4°, Rev A) | 51° | 57° | 61° | 66° | 68° | — |
+| Headroom curve, the hold wall | 70° | 86° | 95° | 102° | 107° (calculated) | 117° (calculated) |
+| The shipped fixed pair | 57° | 57° | 57° | 57° | 57° | 57° |
+
+At the top the shipped pair sits 50–60° short of the headroom curve and about 10° short of the efficiency
+curve, which is why the top speed costs duty (§6.3). Above 2,800 rpm the efficiency curve is not cleanly
+measured: there the servo's working point shifts at 24 V (§6.3).
 
 ### 5.5 Unit-to-unit
 
@@ -371,7 +374,10 @@ Every speed figure here is unloaded.
 | **Hold wall** | too much lead, at low speed | The rotor cannot keep up with a field placed that far ahead. It hunts, then slows: 15–20° beyond the shipped pair at a quarter speed and at 560 rpm, on both units; 25° in reverse at 1,120 rpm |
 | **Duty cost** | too little lead | The voltage needed rises steadily (§5.3) and the current with it: at 1,120 rpm forward, 30° short of the pair needed 61 % more duty |
 
-The shipped pair sits 15–25° from the hold wall at low speed, on both units.
+The shipped pair sits 15–25° from the hold wall at low speed, on both units. **The hold wall is the
+bottom of the duty bowl** (§5.4): past it, a rotor that falls back gains lead and needs more voltage, not
+less, so it falls further. Every hold wall measured lies 1–5° past its sweep's duty bottom, and the
+bottom moves to more lead as speed rises, so the wall recedes with speed.
 
 ### 6.3 The duty ceiling
 
@@ -385,13 +391,17 @@ more:
 | 2,799 rpm | 22.2 and 24 V | **+55 to +67 %** | measured |
 | 2,799 rpm | 14.8 V | 99.6 % of full duty — no reserve | measured |
 
-Two things share that excess, and they are not yet separated (§9):
+Two things make that excess:
 
-- **Timing.** 10° more lead lowers the duty at the top by up to 26 % (§5.2).
-- **The servo working harder than it needs to.** Above 2,800 rpm at 24 V the field-to-rotor error peaks
-  at 86–104 counts on every step, past the 80 at which the servo's fast response engages, and the duty
-  rises and falls with speed rather than climbing smoothly (19.4 × 10³ at 3,220 rpm, 25.3 × 10³ at 3,497,
-  22.0 × 10³ at 4,063).
+- **Timing, the larger part.** At these speeds the windings' reactance is larger than their resistance, so
+  the voltage a load needs grows faster than the back-EMF, and the fixed pair sits 50–60° short of the duty
+  bowl's bottom (§5.4). 10° more lead lowers the duty at the top by up to 26 %, measured, as the model
+  predicts.
+- **The servo's working point shifting, at 24 V.** Above 2,800 rpm at 24 V the field-to-rotor error peaks
+  at 86–104 counts on every step, past the 80 at which the servo's fast response engages. That response
+  only ever adds duty, so the error's mean settles at 40–45 counts instead of 48: the field sits 4–11°
+  less far ahead than the pair asks, and the duty rises and falls with speed rather than climbing smoothly
+  (19.4 × 10³ at 3,220 rpm, 25.3 × 10³ at 3,497, 22.0 × 10³ at 4,063). At 7.4 V's tops the error holds 48.
 
 Up to 11.1 V's top (2,475 rpm) the drive runs in one steady state: the error holds its setpoint (mean
 47.8–48.3 counts against 48), and the duty within a 5 s window varies by a few hundred counts.
@@ -540,11 +550,10 @@ properties in §2 do not depend on the board.
 
 | Question | Why it matters | What would settle it |
 |---|---|---|
-| **The lead curves.** Pieces of the efficiency and headroom curves are measured (§5.4); no model draws them yet. | They decide a lead table against speed, and whether it needs the supply as a second input. | A motor model fitted to every measured bowl, then a few checking points. |
-| **How much of the top's excess duty is timing and how much the servo** (§6.3). | It decides what raises the ceilings. | Separating the two at the desk, then a top-speed run on the result. |
-| **Why the Doco's lead is about 57° where the 6.5″'s is 5–20°** under the same driver (§5.1). | It decides how far one motor's lead law can inform another's. | The lead model, applied to both motors. |
+| **The efficiency curve above 2,800 rpm** (§5.4). The model draws the headroom curve there; the current minimum is not cleanly measured. | It sets the lead at the very top. | The speed range repeated on a lead that follows speed. |
+| **How much the servo's shifted working point at 24 V costs** (§6.3). The error's mean sits 4–11° below its setpoint at the 24 V tops. | It is the other part of the top's excess duty. | A top-speed run once the lead follows speed, which recovers about as much lead as the shift takes. |
 | **Z by a cold method.** The back-EMF method did not resolve on this motor (§4.2). | Z is known only to a few degrees. | The cold method's legs examined for why they disagree. |
-| **The inductance and the resistance** on our hardware (§2.4). | Inputs to the lead model. | A meter and an LCR meter across the leads, or a Rev B board. |
+| **The inductance and the resistance** on our hardware (§2.4). The model gives about 1.06 mH a phase, from the maker's resistance (§5.4). | It checks the model. | A meter and an LCR meter across the leads. |
 | **The sector table.** A table of each code's measured width would place the field up to 6° better (§2.4). | It is in progress, from the two units' mean. | The proof run after it is built. |
 | **The reverse stop's few-tick shortfall at low supply** (§6.5). | Distance stops in reverse at 7.4–11.1 V. | The fix in progress, then the stops run again. |
 | **Vibration on a clamped rig** (§6.7). | Separates the motor's own shaking from the rig's. | The speed range repeated with the motor clamped. |

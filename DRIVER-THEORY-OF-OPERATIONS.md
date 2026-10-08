@@ -417,6 +417,37 @@ motor the front cog rewrites the offset pair as speed changes**: a hall zero of 
 minus a lead taken from a four-point table against the increment (§5). The DocoEng motor keeps
 one fixed pair.
 
+**Which way an offset moves the field.** The servo (below) holds the field ahead of `hall_angle +
+offset` in the direction of motion. So a larger `offset_rev` places the field further ahead on a
+positive increment, and a larger `offset_fwd` places it less far ahead on a negative one. The 6.5″
+writes its pair as `Z + L` forward and `Z − L` reverse, so its L measures how far the field sits
+*less* far ahead; the DocoEng pair is written the other way, so its L is the real lead.
+
+### The lead curves — where the offset should sit
+
+Because the servo holds the field a fixed angle past `hall_angle + offset`, the offset sets how far
+the applied voltage leads the motor's own back-EMF, and the duty servo sets the voltage's size to what
+the load needs. Sweeping the offset at one speed gives two bowls:
+
+- the **current bowl**, whose bottom is the most *efficient* lead — the least current for the speed;
+- the **duty bowl**, whose bottom leaves the most *headroom* — the least voltage for the speed.
+
+Each bowl's bottom, against speed, is a curve: the **efficiency curve** and the **headroom curve**. A
+steady-state model of the windings (resistance R, inductance, back-EMF) predicts four things about them:
+
+1. At one speed the duty bowl has one fixed shape: duty = s ÷ cos(lead − bottom).
+2. Its bottom sits at a fixed zero plus atan(ω × inductance ÷ R): it moves with speed, **not with the
+   supply**.
+3. The current bowl's bottom sits near that zero at light load, so the two curves coincide at low speed
+   and part as speed rises.
+4. Past the duty bowl's bottom the drive cannot hold the rotor: a rotor that falls back gains lead and so
+   needs more voltage, not less, and falls further. That is the hold wall.
+
+So the supply enters not the curves but how close the drive runs to its duty limit. A drive with
+headroom to spare belongs on the efficiency curve; one close to running out gains speed by moving
+toward the headroom curve — never onto it, because that curve is also the hold wall. Each motor's
+manual (§5.4) gives its own curves and which predictions hold for it.
+
 ### The frame loop — duty
 
 The applied duty is a **feedforward** from the field's speed plus an integral **trim**:

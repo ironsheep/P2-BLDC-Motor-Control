@@ -403,8 +403,9 @@ population, though (§9).
 
 ### 5.1 What L is
 
-Z says where the halls sit. **L says how far ahead of the rotor to put the field.** It is a
-drive parameter, not a motor property. The two combine into the offset pair:
+Z says where the halls sit. **L sets where the field sits against the rotor** — and, as the
+driver writes it, a larger L places the field *less* far ahead (§5.2). It is a drive parameter,
+not a motor property. The two combine into the offset pair:
 
 ```
 offset_fwd = Z + L      applied to NEGATIVE increments
@@ -415,11 +416,11 @@ Z is a constant (−4°). L comes from the table in §5.2, by speed, so the fron
 pair as the speed changes. The fixed pair **14 / 338** (L = 18°) is written only at start-up,
 before the front cog runs.
 
-### 5.2 L depends strongly on speed — and not the way theory predicts
+### 5.2 L depends strongly on speed
 
-The lead of least net current at four speeds, one octave apart:
+The L of least net current at four speeds, one octave apart:
 
-| Speed (increment) | ticks/s | Lowest-current lead, both motors and directions | Flat region | Table |
+| Speed (increment) | ticks/s | Lowest-current L, both motors and directions | Flat region | Table |
 |---|---|---|---|---|
 | 18.4 × 10⁶ | 49 | 13–23° | 13–23° within ~6 mV | **20.5°** |
 | 36.75 × 10⁶ | 98 | −2 to 8° | −2 to 8° within ~15 % | **5°** |
@@ -434,15 +435,17 @@ the table it holds the end value and never extrapolates.
 hold for this driver's duty servo: a servo that settles at a different point moves the whole curve.
 That is what a drive parameter does, and it is why L is not quoted as a property of the motor.
 
-⚠ **The textbook current-lag model gives the wrong sign here.** The standard argument is that
-current lags applied voltage more at higher electrical frequency, so the *voltage* lead needed
-to place the *current* at 90° should **grow** with speed. On both servos we measure the reverse, or
-at best a flat line. Do not design from that model on this motor. Why the real behaviour goes the
-other way is not established (§9).
+⚠ **L, as this driver writes it, is a lag.** The driver places the field ahead of the hall angle
+plus the offset, and the pair is `Z + L` on negative increments and `Z − L` on positive ones, so a
+larger L puts the field **less** far ahead of the rotor in both directions. "L falls with speed"
+therefore means the field's real lead **rises** with speed — the direction the textbook predicts,
+since the current lags the applied voltage more at higher electrical frequency. How fast it rises
+at walking pace, though, is not the windings' doing (§5.4, §9).
 
 **The practical consequence:** Z is safe in a compile-time constant. L is not, and no fixed number
 serves the whole range: the table draws 24–78 % less current than a flat 18° from 40 to 140 × 10⁶
-(107–374 ticks/s), because 18° over-leads everywhere above the slowest table speed.
+(107–374 ticks/s), because L = 18° holds the field too little ahead everywhere above the slowest
+table speed.
 
 ### 5.3 The basin is steep
 
@@ -463,32 +466,20 @@ order of magnitude in current, not a few percent.**
 
 ### 5.4 The lead curves
 
-*This section is shared with the [DocoEng manual §5.4](MOTOR-DOCO-TECHNICAL-MANUAL.md#54-the-lead-curves).
-It is where the lead's model will live.*
+The two bowls a lead sweep gives at each speed — current and duty — their bottoms against speed (the
+**efficiency** and **headroom** curves), and the model's four predictions about them are described once,
+in [DRIVER-THEORY-OF-OPERATIONS.md](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves--where-the-offset-should-sit).
+The [DocoEng manual §5.4](MOTOR-DOCO-TECHNICAL-MANUAL.md#54-the-lead-curves) gives the same for that motor.
+"Lead" here is the field's real lead over the rotor: on this motor, the opposite of L.
 
-**At one speed: cost against lead.** Sweeping the lead at a fixed speed gives a bowl. There are two,
-depending on the cost:
-
-- the **current bowl**, whose bottom is the most *efficient* lead — the least current for the speed;
-- the **duty bowl**, whose bottom leaves the most *headroom* — the least voltage for the speed.
-
-At low speed their bottoms nearly coincide. As speed rises they part. §5.3 is one current bowl.
-
-**Across speeds: best lead against speed.** Each bowl's bottom, plotted against speed, is a curve:
-
-- the **efficiency curve** — where the motor runs coolest;
-- the **headroom curve** — where it runs fastest for its supply.
-
-**Where the supply comes in.** A drive well inside its headroom should follow the efficiency curve. A
-drive close to running out of voltage gains speed from the headroom curve's extra lead, and the speed at
-which a drive starts to run short depends on the supply.
-
-| | Status on this motor |
+| | On this motor |
 |---|---|
-| Efficiency curve | **measured at 18.5 V**, four speeds an octave apart, both units and directions, every bottom found: the table in §5.2 |
-| Headroom curve | ⬚ not measured. Above the table's last point the lead is held flat; that alignment moves the duty knee (§6.3) says the headroom curve matters at the top |
-| Other supplies | ⬚ not measured; the 18.5 V table serves every supply |
-| A model behind both | ⬚ not yet (§9) |
+| 1 · one bowl shape | **holds**, to about 1 % on every sweep, both units |
+| 2 · bottom moves with speed by the windings' time constant | **does not hold**: the headroom bottom rises about 13° per doubling of speed from 33 rpm (−17.6°, −3.8°, +8.2° at 33, 65 and 131 rpm, both units), faster than the windings can account for at these speeds (§9) |
+| 3 · the curves coincide at low speed and part | **holds**: 1° apart at 33 rpm, 6° at 65, 16° at 131 |
+| 4 · the hold wall just past the duty bottom | **holds**: the torque wall in §6.2 |
+| Efficiency curve | **measured at 18.5 V**, four speeds, both units and directions: the table in §5.2 |
+| Headroom curve | measured to 131 rpm; not needed at the top so far, where the ceiling keeps a duty reserve (§6.1) |
 
 ### 5.5 Unit-to-unit
 
@@ -534,8 +525,8 @@ for **two different reasons**, and they are not the same wall:
 
 | Wall | Side | What happens |
 |---|---|---|
-| **Current wall** | too much lead | Current explodes, and the run aborts on the current cap. |
-| **Torque wall** | too little lead | The motor cannot make enough torque. The rotor falls behind the field: it slows, or the field outruns it and it faults. |
+| **Current wall** | too much L — the field too little ahead | Current explodes, and the run aborts on the current cap. |
+| **Torque wall** | too little L — the field too far ahead | The rotor falls behind the field: it slows, or the field outruns it and it faults. It lies just past the bottom of the duty bowl (§5.4): beyond it a rotor that falls back needs more voltage, not less, so it falls further. |
 
 At 90° from optimum, torque is zero at any speed. The reachable arc is the band between the two
 walls, and **it narrows as speed rises**.
@@ -842,8 +833,8 @@ Everything here follows from §§4–7 and cites the section it comes from.
 
 **Speed**
 
-4. **No fixed offset pair suits the whole speed range.** The lowest-current lead falls about 15°
-   between 49 and 98 ticks/s (§5.2). A fixed pair is a one-speed tune.
+4. **No fixed offset pair suits the whole speed range.** The lowest-current L falls about 15°
+   between 49 and 98 ticks/s — the field's real lead rising (§5.2). A fixed pair is a one-speed tune.
 5. **Stay below the duty knee** where you care about efficiency or about current readings meaning
    anything. `power` 100 keeps about 7 % unloaded duty reserve on the bench pack, and none on a pack at the nominal 18.5 V
    (§6.1). Above the knee the wheel keeps up by letting its lag grow, and the current it draws unloaded
@@ -917,7 +908,7 @@ Each question says why it matters and what would settle it.
 | **How the blocked-rotor stop behaves against an obstacle that gives way.** Measured only against a solid object (§6.5). | A platform that rocks against a soft obstacle restarts the stop's count with every hall tick. | A floor run against a yielding obstacle. |
 | **How a start behaves under load at higher speeds.** Measured only at low and medium speed on the floor. | A start's current spike is what a heavy robot feels. | A longer loaded run at speed. |
 | **Whether the hold keeps a platform from creeping on an incline.** Not yet measured on a slope. | It decides the hold's ceiling for a robot that parks on one. | A run on an incline. |
-| **Why L falls with speed.** Is the speed dependence a property of the motor (its electrical time constant) or of the commutation scheme (loop lag)? The textbook predicts the opposite sign (§5.2). | It decides whether a speed law can be written down or must be measured per motor. | The motor's time constant does not care about the drive-pass rate and loop lag does, so the lead measurement repeated on a build with a different pass rate would tell them apart. |
+| **Why the real lead rises so fast at walking pace.** About 13° per doubling of speed from 33 rpm (§5.4). The direction is the textbook's (§5.2), but the windings' L/R cannot move it that fast at these speeds; the commutation scheme at walking pace (the rotor surging between hall edges, the servo's averaging) can. | It decides whether a speed law can be written down or must be measured per motor. | The motor's time constant does not care about the drive-pass rate and loop lag does, so the lead measurement repeated on a build with a different pass rate would tell them apart. |
 | **The lead curves.** The efficiency curve is measured at 18.5 V; the headroom curve and other supplies are not (§5.4). | They decide whether the lead table needs the supply as a second input near the top. | A motor model fitted to the measured bowls, then a few checking points. |
 | **Is the alignment the global optimum?** About 35 % of the electrical cycle has been swept (§4.4); one minimum per direction lies inside it. | Theory says there is only one, but that is an argument. | A full-cycle sweep, by a method that does not drive the motor into the current wall to get there. |
 | **Unit-to-unit variation.** Two units measured; Z agrees within 0.06° and resistance within 7 %. | Two is not a population. | More units — Z can be measured on any board (§8.1). |
