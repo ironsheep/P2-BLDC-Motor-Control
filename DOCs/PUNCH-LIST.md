@@ -1768,7 +1768,8 @@ rerun `doco-adopt-<v>`.
 > 4,063), and the peak angle error is 86–104 on every step, above LAG_SOFT 80. Part of the excess is the servo's fast
 > boost, not the motor. **Next:** the desk root cause separates the servo boost from timing; then the change is
 > priced. Once-per-turn speed ripple peaks at 124–132 ‰ near 3,000 rpm and falls to 6–9 ‰ above 4,000 rpm: a rig
-> resonance, the likely vibration heard. Unit 2's 14.8 V top runs at the duty limit too.
+> resonance, the likely vibration heard. The rig sits unanchored on a rubberized mat and walks and turns on it at some
+> speeds (Stephen 2026-10-08), so this ripple is amplified by the rig. The next visit clamps it. Unit 2's 14.8 V top runs at the duty limit too.
 >
 > **Status (2026-10-07): OPEN, a drive finding (MEASURED, D2 second pass).** The R1 fix (DRIVER_REV 54) removed the
 > two-state switching and the swinging duty; it did not remove this.
