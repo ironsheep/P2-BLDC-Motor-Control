@@ -1662,6 +1662,14 @@ floor tier for the 6.5″ (`DOCO-AND-CLOCK-SPRINT-PLAN.md` "Not in this plan"), 
 
 ### PL-203 -- a POS stop by rotation from the Doco's top speed rests up to 12 hall ticks early
 
+> **Status (2026-10-08): CAUSE FOUND (MEASURED, D3 rows 1 and 2); the fix is a driver change, to be priced to
+> Stephen.** The field is HELD during the POS slowdown: held passes POS 164 / 110 at 7.4 V and 110 / 81 at 11.1 V, NEG
+> 11–13 and 48–51; the shortfall follows them (about −2.5 counts a held pass across all eight top stops: POS −355 /
+> −310 and −286 / −255, NEG +99 / +11 and −48 / −80). The stop fires on plan both ways, and the shaft stops 5–20 ms
+> AFTER the field, so the rotor does not stall: that rival is ruled out. A held pass is field travel the stop never
+> makes up. **To close:** the stop steered to its target position, so a held pass lengthens the stop instead of
+> shortening it, priced first (P5); then the stops tier at 7.4 and 11.1 V.
+>
 > **Status (2026-10-06): OPEN, a drive finding (MEASURED, D2 rows 1 and 3).** Root-cause at the desk before any rerun.
 
 `stopAfterRotation()` at the top, POS increment: the driver's own count rests at 7,196 / 9,596 ticks of 7,200 / 9,600 at
@@ -1733,6 +1741,12 @@ library's limits, its abort at 3.68 A as the harness's; rerun `doco-adopt-v11p1`
 
 ### PL-209 -- the adoption tool walks into the Doco's torque wall at 40 A and ends on an over-current (tool)
 
+> **Status (2026-10-08): VERIFIED at 11.1 V (D3 row 2).** `MA-END stopped,NONE`. Every side ended BRACKETED or at
+> WALL within 15–30° of the start, and no point went deep into the wall. 1,120 rpm resolved both ways (306° / 63°,
+> +7° / +9° from the shipped pair). Ceilings NEG 377e6 (hunt), POS 398e6, beside the shipped 370.5e6. The 560 rpm
+> POS fit missed at Rev A's sense resolution (PL-215), so the record stays PROVISIONAL. The other voltages run on the
+> fixed drive.
+>
 > **Status (2026-10-07, later): FIXED in TOOL_REV 4, awaiting the reruns.** A side ends `BRACKETED` 20° past its lowest
 > clean point; on D2's own points every side ends before the wall (11.1 V MINUS at −20°, 24 V at −25°, PLUS at +20°).
 >
@@ -1747,6 +1761,15 @@ rerun `doco-adopt-<v>`.
 
 ### PL-212 -- above ~2,500 rpm the Doco still needs 55-67 % more duty than its back-EMF, and 14.8 V's top has no reserve
 
+> **D3 (2026-10-08), the speed-range test:** every top at 7.4 and 24 V ended by running out of duty, not by the
+> motor: 7.4 V NEG 1,931 / POS 2,212 rpm, 24 V NEG 4,343 rpm, and POS ≥ 3,782 (cut by PL-213). 10° more lead cuts the
+> top steps' duty 11 % at 7.4 V and 20–26 % at 24 V NEG 3,900–4,343 rpm, with the minimum beyond ±10° on almost every
+> step. Above ~2,800 rpm at 24 V the duty is uneven with speed (NEG 19.4k at 3,220 rpm, 25.3k at 3,497, 22.0k at
+> 4,063), and the peak angle error is 86–104 on every step, above LAG_SOFT 80. Part of the excess is the servo's fast
+> boost, not the motor. **Next:** the desk root cause separates the servo boost from timing; then the change is
+> priced. Once-per-turn speed ripple peaks at 124–132 ‰ near 3,000 rpm and falls to 6–9 ‰ above 4,000 rpm: a rig
+> resonance, the likely vibration heard. Unit 2's 14.8 V top runs at the duty limit too.
+>
 > **Status (2026-10-07): OPEN, a drive finding (MEASURED, D2 second pass).** The R1 fix (DRIVER_REV 54) removed the
 > two-state switching and the swinging duty; it did not remove this.
 
@@ -1780,6 +1803,10 @@ re-derived from its measured spread.
 
 ### PL-208 -- the Doco's slowest steady speed at 7.4 V swapped direction between D1b and D2
 
+> **D3 (2026-10-08):** 7.4 V steady at 3.00 ticks/s both ways, 2.00 not (sub-window 471 / 483 ‰). The edge moves
+> between 2 and 4 from visit to visit, so the shipped 4.00 each way (DRIVER_REV 56) stands. Every slow rung runs at the
+> duty floor 1,600, which is a third of 24 V's voltage at 7.4 V; 24 V holds 0.10 ticks/s steady.
+>
 > **Status (2026-10-06): OPEN, a table value (MEASURED, D2 row 3).**
 
 D1b (REV 53): NEG 1.00 ticks/s steady, POS 4.00. D2 (REV 55, the per-direction pair): NEG 4.00 (3.00 not), POS 1.00
@@ -1787,6 +1814,60 @@ D1b (REV 53): NEG 1.00 ticks/s steady, POS 4.00. D2 (REV 55, the per-direction p
 NEG FAILed. Each rung is one 2 s sample at the duty floor; the edge is not repeatable to one rung. **To close:** the
 7.4 V minimum (and 11.1 / 12.0 V, DERIVED from it) set to the larger of both runs, 4.00 ticks/s each way, until a
 repeated measurement shows a lower one steady every time.
+
+### PL-213 -- the harness's run charge guard overflows 32 bits, ending long runs early (harness)
+
+> **Status (2026-10-08): OPEN, a harness defect (MEASURED, D3 row 3).** Mine.
+
+`test_bench_single` compares `chargeMaMs >= RUN_CHARGE_CAP_MAS * wheel.MS_PER_SEC`. The range tier's cap is 4,800,400
+mA·s, and ×1,000 is 4.8e9, which wraps to 505,432,704. The 24 V range run ended `GUARD CHARGE_CAP` at 505,434 mA·s,
+exactly there, with the POS climb still holding at 3,782 rpm. The accumulator itself is in mA·ms and would wrap past
+~2,147 A·s. **To close:** compare in mA·s (and keep the accumulator below its wrap); the 24 V POS top runs again on the
+next verification visit.
+
+### PL-214 -- the range test's once-per-turn ripple bins by encoder position, so a bin can be empty (harness)
+
+> **Status (2026-10-08): OPEN, a harness defect (MEASURED, D3 row 1).** Mine.
+
+`vibTakeEdges()` puts each hall interval in one of 24 bins of 60 encoder counts. The hall edges fall 52–68 counts
+apart, so some bins catch two intervals and some none. `binRipplePm()` reads NA when one bin is empty: 7.4 V POS, all
+five steps. **To close:** bin by the edge's index within the turn, so each bin takes exactly one interval a turn.
+
+### PL-215 -- on Rev A the DC current is too coarse to locate the Doco's timing minimum below ~1 A (instrument)
+
+> **Status (2026-10-08): OPEN, a measurement limit (MEASURED, D3 rows 2 and 4).**
+
+At the Doco's no-load currents (0.05–0.9 A), a timing sweep's DC current moves by about Rev A's noise (5 mV/A). The
+adoption tool's 560 rpm POS fit missed (fit error 2.7 against 2.5, on 44–210 mA). Unit 2's timing scan resolved no
+current minimum at any speed. The range test's sweeps resolved at only a few steps. Duty resolves, but it keeps
+falling with more lead until the motor loses hold, so it has no clean minimum. This blocks the agreed test for unit 2's
+offsets, and it shapes how the Doco's speed-dependent lead can be measured (PL-212). **To close:** a timing criterion
+this board can resolve, decided with PL-212's desk work.
+
+### PL-216 -- the Doco's shipped speed limits sit well inside its measured range
+
+> **Status (2026-10-08): OPEN, table values waiting on PL-212 (MEASURED, D3 rows 1 and 3).**
+
+Stephen 2026-10-07: "the lowest RPM we can command and hold, and the highest... not some artificial limits".
+
+- 24 V: holds 0.10 ticks/s (0.25 rpm) steady both ways against a shipped minimum of 1.46. It holds 4,343 rpm NEG and
+  ≥ 3,782 POS against a ceiling of 2,800.
+- 7.4 V: holds 1,931 / 2,212 rpm against 1,650.
+
+Every top ended at the duty limit with timing that wastes duty (PL-212). **To close:** the ceilings and minimums
+re-tabled from the speed range at every voltage once PL-212's fix is in.
+
+### PL-217 -- the second Doco's hall sectors differ from the first's by up to 2.8°, past the agreed 2° bar
+
+> **Status (2026-10-08): OPEN, Stephen's ruling (MEASURED, D3 row 4).**
+
+Unit 2's six code widths are 59.1 / 58.8 / 63.4 / 65.9 / 56.4 / 56.6° against unit 1's 56.3 / 60.0 / 64.8 / 67.3 / 57.6 /
+53.9°. Codes 1 and 6 differ by +2.8° and +2.7°, the rest by 1.2–1.4°; both units repeat to ~1°. The pattern is shared
+(codes 3 and 4 are the wide ones). By the rule as agreed (STEPHEN 2026-10-06) the measured table does not ship. A
+two-unit mean would leave each unit within 1.4°, where equal sectors leave each up to 6° off. Unit 2's timing scan could
+not apply the ±3° offsets test (PL-215). On the shipped pair it ran clean, with 15–20° to the hold edge each way, and it
+draws 2–3× unit 1's current at the same speeds (more drag). **To close:** Stephen's ruling on the table; then the
+offsets question.
 
 ---
 
