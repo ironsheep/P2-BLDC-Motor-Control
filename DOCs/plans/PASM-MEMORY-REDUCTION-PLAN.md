@@ -1,5 +1,12 @@
 # PASM driver memory reduction — design
 
+> **2026-10-09: ALL NINE PACKAGES BUILT.** WP6-WP9 landed at DRIVER_REV 58 (task 3705), when PL-218 and PL-212 needed
+> the space: order C7, C8, C6's LUT-only peepholes, C9, C6's Jx (both memories were near full, so not every order fit),
+> each proven identical to DRIVER_REV 57 by `tools/pasm_equiv`. Cog 495 -> 461 of 496, LUT run image 510 -> 499 of 512,
+> release image 34 longs. Re-pricing against DRIVER_REV 57: C7 freed the same three longs through different registers
+> (`lag_s`, `jrk_lim`, `jrk_x` onto `pl_q`, `pl_u`, `pl_t`; `jrk_s` already shared a start-time long), C8's loader sits at
+> the end of cog code (TJNZ's relative reach), C6 saved 15 LUT longs. The C10 hub-execution planner remains the reserve.
+>
 > **6.0.0 sprint closed 2026-10-01: PARTLY IMPLEMENTED, STILL GOVERNS.** WP1-WP5 shipped (DRIVER_REV 41-45; cog 441 of
 > 496, LUT run image 457 of 512). WP6-WP9 are not built; they are re-evaluated when the space is next needed
 > (Stephen 2026-10-01: *"we can reevaluate what we need when we next need the space"*), not tracked as work. Audit: `DOCs/plans/archive/2026-10-01-BENCH-READINESS-CLOSEOUT.md`.

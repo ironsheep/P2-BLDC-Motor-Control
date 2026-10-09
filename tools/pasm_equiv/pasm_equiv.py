@@ -113,6 +113,9 @@ def main(argv=None):
                          'frame budget is set against its frame (init()\'s even-rounded CLKFREQ / PWM_RATE), and the '
                          'DRIVER_REV 49 -> 50 init() values at it are printed before / after (default: each '
                          'scenario\'s own clock, the budget against 270 MHz)')
+    ap.add_argument('--stop-hold', choices=('false', 'true'), default='false',
+                    help='the launch run\'s stopHold long for every scenario: false as init() writes it (default), '
+                         'true as a fired distance limit leaves it, so the DRIVER_REV 58 hold acts as at 57')
     ap.add_argument('--pnut', default=None, help='path to pnut-ts')
     ap.add_argument('--coverage', action='store_true',
                     help='report coverage of every code image of both builds, and fail (exit 3) if moved code '
@@ -124,6 +127,8 @@ def main(argv=None):
         if not 1.0 <= args.clock <= 1000.0:
             ap.error('--clock %s MHz: expected 1 to 1000' % args.clock)
         initmodel.CLOCK_OVERRIDE = int(round(args.clock * 1_000_000))   # inherited by the forked workers
+    if args.stop_hold == 'true':
+        drvenv.STOP_HOLD = 0xFFFF_FFFF                                   # TRUE; inherited by the forked workers
     own = args.work is None
     work = args.work or tempfile.mkdtemp(prefix='pasm_equiv_')
     try:

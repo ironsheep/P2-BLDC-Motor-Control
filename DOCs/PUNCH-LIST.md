@@ -1626,7 +1626,11 @@ the SINC window scale with it — before any hardware explanation).
 
 ### PL-198 -- `moveShaftToAngle()` has had no effect since DRIVER_REV 38
 
-> **Status (2026-10-04): OPEN, a finding.** Found during task 3679 (looking for a fixed-field test path for the Doco's
+> **Status (2026-10-09): CLOSED at DRIVER_REV 58 (task 3705), by its first option.** `moveShaftToAngle()` and the dead
+> *TEST-EXERCISER* PASM block are removed; the launch long it wrote is now PL-218's `stopHold`. `ERR_BUSY` keeps its
+> value (the error names are a table indexed by it) and is marked reserved. No user page named the method.
+>
+> (2026-10-04: OPEN, a finding.) Found during task 3679 (looking for a fixed-field test path for the Doco's
 > hall-zero reference).
 
 `moveShaftToAngle()` (`src/isp_bldc_motor.spin2`, *TESTING USE*) writes `targetAngle`, but the PASM block that read it
@@ -1947,8 +1951,18 @@ offsets question.
 
 ### PL-218 -- since DRIVER_REV 57 a timed stop ends late by the passes held in its slowdown
 
-> **Status (2026-10-08): OPEN, a driver defect introduced by PL-203's fix (MEASURED, D4 rows 1 and 2).** Mine; a PASM
-> change, so Stephen's go first (standing rule 14).
+> **Status (2026-10-09): FIXED at DRIVER_REV 58 (task 3705; Stephen 2026-10-08, option a), to be certified by the
+> certification visit's STOPTIME and STOPROT rows at 7.4 and 11.1 V.** The held-pass wait acts only while the launch
+> long `stopHold` is TRUE: the front cog sets it when a distance limit fires (`bFrontLimitsDue()`), and
+> `setTargetAccel()` clears it before any nonzero command. A timed or plain stop ramps on its plan as at DRIVER_REV 56;
+> a stop by rotation is held as at 57. The long was `targetAngle`, freed by PL-198, so the ABI layout is unchanged.
+> Checked at the desk against every stop's promise (overlay P10). It made room by building the memory plan's WP6..WP9
+> first (cog 495 -> 461 of 496, LUT run image 510 -> 499 of 512, proven identical by `tools/pasm_equiv`); the fix
+> itself takes 3 cog longs (464 of 496). Desk proof (`tools/pasm_equiv --stop-hold`, against DRIVER_REV 57's logic
+> with the same three instructions' timing): with the flag set, all 2,062 scenarios equal (the stop by rotation is
+> unchanged); without it, the only differences are held stopping passes that now ramp on plan.
+>
+> (2026-10-08: OPEN, a driver defect introduced by PL-203's fix (MEASURED, D4 rows 1 and 2).)
 
 R23-SGL-STOPTIME 11.1 V NEG-TOP FAILs at +115 ms (band ±100); 7.4 V NEG-TOP reads +95. The field's own stop time
 (`field_dev_ms`) is 85 / 30 ms at 7.4 V and 105 / 40 at 11.1 V (NEG / POS), against 0 on all four on DRIVER_REV 56

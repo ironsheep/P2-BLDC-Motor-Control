@@ -177,7 +177,7 @@ CON { Public Interface Constants }
     '   ERR_NO_WHEEL_DIA       - a distance request when the configured wheel diameter is 0
     '   ERR_LIMIT_UNRESOLVABLE - a stop limit that rounds to less than one hall tick
     '   ERR_SYNC_TIMEOUT       - a synchronized command the driver did not take in time
-    '   ERR_BUSY               - TEST-USE: moveShaftToAngle() while a move is still pending
+    '   ERR_BUSY               - reserved: no method returns it (its one user, moveShaftToAngle(), was removed in v6.2.0)
     '   ERR_FAULT_NOT_CLEARED  - TEST-USE: testResetFault() found the driver not stopped after its wait
     '   ERR_EMERGENCY_STOPPED  - a drive refused, and nothing written, while the motor is emergency-stopped
     '   ERR_NO_RESPONSE        - the front cog did not answer within its bound (at start, or for a request)
@@ -733,20 +733,6 @@ PUB resetTracking() : eError
 '' @returns eError - NO_ERROR once the front cog has applied the reset, or ERR_NOT_STARTED / ERR_NO_RESPONSE, also recorded for getError()
 
     eError := recordError(postRequest(REQ_RESET_TRACKING, 0, 0, 0))
-
-PUB moveShaftToAngle(desiredAngle) : eError
-'' TESTING USE: force motor to specific angle
-''
-'' @param desiredAngle - the shaft angle to move to
-'' @returns eError - NO_ERROR, or ERR_BUSY (also recorded for getError()) while a previous move is still pending
-
-    eError := NO_ERROR
-    if targetAngle == $ffffffff
-        targetAngle := desiredAngle
-        debug[user.DBGCH_TEST]("MOT: move to ", sdec(targetAngle))
-    else
-        eError := recordError(ERR_BUSY)
-        debug[user.DBGCH_TEST]("MOT: busy!!")
 
 CON { --- Subsystem Control --- }
 
@@ -2655,7 +2641,7 @@ PUB testGetRampLimits() : jerkUp, accelUp, jerkDn, accelDn
 
 PUB testGetAbiAddrs() : pLaunch, pStatus, pParams
 '' TEST USE: the hub addresses of the three runs the driver shares with Spin2, so a bench harness can dump them
-'' (task 3613, PL-120): the launch run (pinbase, params_ptr, targetAngle, targetIncre), the DRVR_STATUS_LONGS_COUNT
+'' (task 3613, PL-120): the launch run (pinbase, params_ptr, stopHold, targetIncre), the DRVR_STATUS_LONGS_COUNT
 '' status longs the driver writes every pass (then fault), and the DRVR_PARAMS_LONGS_COUNT parameters it reads
 ''
 '' @returns pLaunch - @pinbase
@@ -3569,7 +3555,8 @@ PUB bFrontLimitsDue(nowMs) : bFired
             limitStopTicks := frontStopTicks()                                  ' PL-137: the decision's own figure (one hub read)
             limitFireTrk := trkTravelTicks - limitBaseTicks                     ' PL-203: what the decision counted, and where the
             limitFirePos := pos                                                 '  motor was (testGetLimitFire()); before the stop's write, a few us
-            bLimitByTime := FALSE
+            stopHold := TRUE                                                    ' PL-218: the driver's held-pass wait (PL-203) is for this stop
+            bLimitByTime := FALSE                                               '  only, never a timed or plain one; the next drive clears it
             bFired := TRUE
 
 PUB frontReportLimit()
@@ -4557,7 +4544,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
 
     byte[@motorId] := 0 ' terminate an empty string
 
-    targetAngle := $FFFFFFFF    ' set to not used! (other values only used during testing)
+    stopHold := FALSE           ' PL-218: no stop by rotation is in force at start
 
     degrPerTic, hallTicsPerRotation := hallTicInfoForMotor()
 
@@ -4610,6 +4597,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     fram        :=    (frame_cnt / 2) << 16 + 1         ' PWM frame: width=FRAME/2, div sysclk by 1 (no division)
     lutCodePtr  :=    @lutCodeStart                     ' task 3535: hub addr of the LUT start image, block-loaded by the driver at coginit
     planCodePtr :=    @runCodeStart                     ' DRIVER_REV 42: hub addr of the LUT run image, loaded over the start image as it ends
+    relCodePtr  :=    @relCodeStart                     ' memory reduction WP8 (C8): hub addr of the LUT release image, loaded at the release
 
     ' setup driver parameters based on clock rate
     ' A1 / PL-9: both 64010 manuals specify a 250 ns minimum dead-gap regardless of board
@@ -5603,6 +5591,9 @@ PRI setTargetAccel(nTgtIncr, sync) | inincr
 ' @local inincr - the increment as passed, before the sync bit is applied (for the debug line and display)
 
     inincr := nTgtIncr
+    if nTgtIncr <> 0
+        stopHold := FALSE                               ' PL-218: a drive ends any stop by rotation's hold, written before the
+                                                        '  command so the driver never takes a drive with the hold still set
     nTgtIncr ZEROX= 30                                  ' clear bit 31
     nTgtIncr |= (sync << 31)                            ' bit 31 set if sync required
     targetIncre := nTgtIncr
@@ -5635,7 +5626,7 @@ PRI isAbiLayoutValid() : bValid
 '
 ' @returns bValid - T/F where F means a driver launched on this layout would read or write the wrong longs
 
-    ' the launch block (pinbase, params_ptr, targetAngle, targetIncre) sits right before the status run
+    ' the launch block (pinbase, params_ptr, stopHold, targetIncre) sits right before the status run
     bValid := (@drive_u - @pinbase) == DRVR_LAUNCH_LONGS_COUNT * 4
     ' the driver block-copies DRVR_STATUS_LONGS_COUNT longs from drive_u and writes fault at the next long;
     '  PL-161 (DRIVER_REV 39): the run ends drv_accel_now, drv_stop_passes, drv_stop_fp (the driver's accel_now_,
@@ -7179,7 +7170,7 @@ CON { driver internal Constants }
     DUTY_MIN_FRAME_NUM   = 100
     DUTY_MIN_FRAME_DEN   = 6_136
 
-    DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, targetAngle, targetIncre
+    DRVR_LAUNCH_LONGS_COUNT     = 4         ' pinbase, params_ptr, stopHold, targetIncre
     DRVR_STATUS_LONGS_COUNT     = 24        ' drive_u .. drv_stop_fp (R20.1 added foldback_frames, PL-160 drv_accel_now, PL-161
                                             '  drv_stop_passes and drv_stop_fp), then fault
     ' PL-161 (DRIVER_REV 39): each appended status long's index in the run (drive_u is 0), for a reader of the raw run
@@ -7203,7 +7194,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 57      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 58      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7537,6 +7528,13 @@ CON { driver internal Constants }
                                             '     next pass skips jerkStep), so the field keeps the travel the stop
                                             '     planned. PASM: 3 longs in .running, held_seen after the status run;
                                             '     no ABI change
+                                            ' 58: task 3705 (Stephen 2026-10-08, option a). PL-218: 57's held-pass
+                                            '     wait acts only on a stop by rotation; a timed or plain stop ramps on
+                                            '     its plan, as at 56. The launch long targetAngle becomes stopHold, the
+                                            '     front cog's flag for it (same layout, no ABI change); PL-198:
+                                            '     moveShaftToAngle(), its one user, had no effect since 38 and is
+                                            '     removed. Memory reduction WP6..WP9 (C6..C9, proven identical by
+                                            '     tools/pasm_equiv): cog 495 -> 461 of 496, LUT run image 510 -> 499
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7848,7 +7846,7 @@ VAR { * Data Structure for PASM Driver * }
     ' / ----------------------------
     LONG    pinbase                             ' 1 long                must set initially
     LONG    params_ptr                          ' 1 long                must set initially
-    LONG    targetAngle                         ' 1 long                TEST used during testing
+    LONG    stopHold                            ' 1 long                PL-218: TRUE while a stop by rotation is in force (was targetAngle)
     LONG    targetIncre                         ' 1 long                must set to cause motion
     ' \ ----------------------------
 
@@ -8179,6 +8177,8 @@ DAT  {  Motor DRIVER  }
                 '  a second label at its start-only long. Each is first accessed by a WRITE, only after loadOverlay
                 '  has jumped to drvMotor, and no instruction of the start sequence names any of them, so the two
                 '  uses of each long never overlap (proved equivalent to mem-reduce-start by tools/pasm_equiv).
+                '  Memory reduction WP7 (C7): calibPeriod's long is gone (calibPeriod now shares drvrSrtTix, and
+                '  jrk_lim moved to the planner's scratch pl_u, with jrk_x and lag_s; see the note at pl_d).
                 '  A debug interrupt saves and restores cog $000..$00F (p2kbArchDebugInterrupt), so a -d build
                 '  keeps the registers here as well.
 driver                                                  ' (C1) and pl_v, once the drive loop runs
@@ -8298,27 +8298,23 @@ drvMotor                                                ' global (task 3535): en
                 tjnz    tgt_incr, #.fromRest            ' at rest, and a drive asked for: start from rest
                 call    #restBridge                     ' at rest: the stop mode's bridge, and the hold's hand-off (LUT-resident)
                 jmp     #.endRqst                       ' motor at STOP, just exit (w/o increment)
-{
-' -------------------------------------------------------------------------
-'  TEST-EXERCISER SUPPORT CODE (alternate input path (angle) for TESTing!)
-'  DRIVER_REV 38: it ran on a new request (.newCmd); no path reaches this place now, so re-enabling it needs a new entry
-                rdlong  tmp_angle_, ptra[-2]           ' get desired targetAngle for test (tgt_incr is temp variable in this case)
-                cmp     tmp_angle_, maxNeg          wz  ' Q: do we have a request?
-    if_nz       mov     angle_, tmp_angle_              ' YES, post this value to driver
-    if_nz       wrlong  maxNeg, ptra[-2]                ' YES, tell user we got this value
-    if_nz       jmp     #.endRqst                       ' YES, go position motor there (is absolute, so no incre!)
-                ' NO? then just fall thru
-'  END OF TEST-EXERCISER SUPPORT CODE
-' -------------------------------------------------------------------------
-'}
 .fromRest       call    #driveFromRest                  ' a bridge left coasting or shorted at rest is re-aligned and driven (LUT)
-.running        cmp     lag_held_, held_seen        wz  ' DRIVER_REV 57 (PL-203): Q: was the last pass held (lag_held_ moved)?
+.running        rdlong  tmpX, ptra[-2]                  ' DRIVER_REV 58 (PL-218): stopHold, TRUE only while a stop by rotation
+                                                        '  is in force (the front cog's fired distance limit; the next drive
+                                                        '  clears it). tmpX is dead here: jerkStep, xStar and holdGate each
+                                                        '  write it before reading it
+                cmp     tgt_incr, #0                wz  ' and only while the command is a stop: the driver holds no drive,
+    if_nz       mov     tmpX, #0                        '  whatever the flag says (correct without the front cog's ordering)
+                cmp     lag_held_, held_seen        wz  ' DRIVER_REV 57 (PL-203): Q: was the last pass held (lag_held_ moved)?
                 mov     held_seen, lag_held_            '  (MOV writes no flag: Z is the CMP's)
-    if_nz       tjz     tgt_incr, #.justIncr            '  held AND stopping: the generator waits this pass, so the field
-                                                        '  takes the speed it was held at instead of losing that pass's
-                                                        '  travel -- a held pass lengthens a stop, never shortens it. Not
-                                                        '  from rest (.fromRest falls here with tgt_incr <> 0); held_seen
-                                                        '  needs no zeroing: a stale value costs one frozen pass at most
+    if_nz       tjnz    tmpX, #.justIncr                '  held AND stopping by rotation: the generator waits this pass, so
+                                                        '  the field takes the speed it was held at instead of losing that
+                                                        '  pass's travel -- a held pass lengthens the stop to its count, never
+                                                        '  shortens it. PL-218: only that stop; a timed or plain stop ramps
+                                                        '  on its plan (DRIVER_REV 57 held every stop, and a timed stop ended
+                                                        '  up to 115 ms late). Not from rest: the drive that starts it wrote
+                                                        '  stopHold FALSE first. held_seen needs no zeroing: a stale value
+                                                        '  costs one frozen pass at most
                 call    #jerkStep                       ' PL-160: v, a and the state for this pass (LUT); C = the field is at rest
                 ' PL-78 / PL-87 / PL-95 (DRIVER_REV 34), THE KICK, kept: the pass a ramp arrives at its target advances the
                 '  field like every AT_SPEED pass after it -- jerkStep returns C = 0 on the arrival pass, so it falls to
@@ -8535,6 +8531,8 @@ drvMotor                                                ' global (task 3535): en
 .hallCounted
                 setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
+                mov     jerk_x, jerk_up_                ' C6: Jx, once per read (see jerk_x); MOV and FGE without WC/WZ
+                fge     jerk_x, jerk_dn_                '  write no flag, and CMPM WCZ rewrites both next
 
                 cmpm    angle_, prior_angle         wcz ' if angle has changed, forward or reverse?
     if_nz       wrc     fwdrev                          ' if angle hasn't changed then use last forward/reverse
@@ -8782,48 +8780,7 @@ planFp                                                  ' PL-161: the plan's fie
     if_nc       bmask   pl_t, #30                       ' NO: saturated at POSX, (%10 << 30) - 1 (p2kbPasm2Bmask; WP5, C5(c))
                 ret
 
-planCorner                                              ' PL-161: planA's corner (see planA), here for room: a stop read
-                mov     pl_t, pl_a                      '  just before a reversal's crossing stops the field AT zero. n, the least
-                add     pl_t, pl_f                      '  with n alpha - J n (n + 1) / 2 >= V; n - 1 passes from alpha - J down
-                                                        '  by J, and the n-th at rest. B = 2 alpha - J = alpha + pl_f: planA left
-                                                        '  pl_f = alpha - J, and nothing here writes pl_f (WP5, C5(d))
-                qmul    pl_t, pl_t
-                mov     pl_c, jerk_dn_                  ' (while the CORDIC works)
-                shl     pl_c, #3                        ' 8 J: J <= 2_091 (jerkForAccel() of a limit capped at ACCEL_STEP_CAP,
-                                                        '  applyRamps() its one writer), so 8 J < 2^32 and 8 J x V is exact
-                getqx   pl_u
-                getqy   pl_q                            ' B^2
-                qmul    pl_c, pl_v
-                getqx   pl_c
-                getqy   pl_d                            ' 8 J V, 64-bit (was J V shifted left 3 in 64 bits: the same value)
-                sub     pl_u, pl_c                  wc
-                subx    pl_q, pl_d                      ' B^2 - 8 J V, at least 0 in the corner
-                qsqrt   pl_u, pl_q
-                getqx   pl_n                            ' its floor root
-                subr    pl_n, pl_t                      ' B - isqrt, at least 1
-                mov     pl_u, jerk_dn_
-                shl     pl_u, #1                        ' 2J
-                add     pl_n, pl_u
-                sub     pl_n, #1
-                qdiv    pl_n, pl_u
-                getqx   pl_n                            ' n = ceil((B - isqrt) / 2J): the least n, or one over it
-                mov     pl_c, pl_n
-                sub     pl_c, #1                        ' n - 1
-                mov     pl_u, pl_n                      ' n (was (n - 1) + 1)
-                mul     pl_u, pl_c
-                shr     pl_u, #1                        ' (n - 1) n / 2
-                qmul    pl_u, jerk_dn_
-                getqx   pl_u
-                qmul    pl_c, pl_a
-                getqx   pl_q                            ' (n - 1) alpha
-                sub     pl_q, pl_u                      ' what n - 1 passes shed
-                cmps    pl_q, pl_v                  wc  ' Q: already V (NC)?
-    if_nc       mov     pl_n, pl_c                      ' YES: n - 1 is the least
-                add     pl_P, #1                        ' the crossing pass, at rest
-                sub     pl_n, #1
-                neg     pl_d, jerk_dn_                  ' pl_f is still planA's alpha - J: the run is from it, down by J
-                call    #run                            ' (n - 1, alpha - J, -J)
-    _ret_       modc    _set                        wc  ' C = 1: the plan is complete (planA's return, which jumped here)
+    ' planCorner is back in the LUT run image, beside planA (memory reduction WP9, C9)
 
     ' DRIVER_REV 42 (memory reduction WP2, C2): countIllegal is back in cog RAM (DRIVER_REV 37 had moved it to the
     '  LUT). It is the one routine both images need -- the start sequence calls it once, .ctlMotor on a hall change the
@@ -8858,24 +8815,43 @@ initAngleFmHallC                                        ' entry with C already s
                 mov     frm_step, #0                    ' DRIVER_REV 54: a re-seeded field sits AT the hall angle for the
                 mov     frm_ofs, #0                     '  rest of the pass (faultResponse re-syncs mid-pass)
     _ret_       mov     prior_angle, angle_             ' show we are already here
+
+relLoad                                                 ' memory reduction WP8 (C8): passEnd's TJNZ lands here once stop() has set
+                setq2   #(relCodeEnd - relCodeStart - 1) '  drv_release. The RELEASE IMAGE (relCodeStart .. relCodeEnd, below
+                rdlong  0, relCodePtr                   '  `fit 496`) is block-loaded over the head of the run image, from cog
+                jmp     #driverRelease                  '  RAM like loadOverlay, and entered: it never returns, so nothing it
+                                                        '  overwrites (gettgtincr .. the planner) runs again. Last of the cog
+                                                        '  code: TJNZ's #S is a 9-bit relative branch, and passEnd is in the LUT
 '
 ' =========================================================================
 '  DRIVER_REV 41 (C1): each START-ONLY constant below is also the home of a drive-loop register, labelled on the
 '   line above it (see the note at `driver`). drive_pins, adc_pins, adc_fram, bias, third and maxNeg are read by
 '   the drive loop or driverRelease, so they host nothing.
+'  Memory reduction WP7 (C7): the planner's three scratch longs pl_t, pl_u and pl_q also host jrk_x, jrk_lim and
+'   lag_s. Each of those is live only inside one drive pass (jrk_lim from jerkStep's side choice to its U; lag_s
+'   from drvMotor's NEGC to the PL-55 ceiling, and as servoBoost's scratch inside one frame) or one xStar call and
+'   its caller's next read (jrk_x). pl_t, pl_u and pl_q are dead at every stage boundary (each stage writes them
+'   before it reads them), no stage runs inside a pass, and every pass restarts the plan (.endRqst's plan_stage
+'   := 1, which every path that returns reaches), so neither use ever reads a value the other wrote. In planA and
+'   planC, xStar's jrk_x (pl_t) is read before either writes pl_t
 pl_d                                            ' (C1) the run's change of acceleration per pass
 all_pins        LONG    (13 << 6) + 0           ' all-pins variable (0 addpins 13) needs ADD/OR of basepin, skip last 2 pwm pins, not used
 drive_pins      LONG    (5 << 6) + 8            ' drive-pins variable (+8 addpins 5) needs ADD of basepin, skip last 2 pwm pins, not used
 adc_pins        LONG    (4 << 6) + 0            ' drive-pins variable (+0 addpins 4) needs ADD/OR of basepin, note total of 5 pins, adc_x not used
 pl_c                                            ' (C1) the rise's candidates (cap)
 pwmt            LONG    %000_000000_01_01000_0  ' PWM true (P_PWM_TRIANGLE | P_OE: TT = %01, output enabled REGARDLESS of DIR; PL-138)
+jrk_x                                           ' (C7) x*(E): the largest acceleration a pure ramp-out at J lands from (xStar)
 pl_t                                            ' (C1) the planner's scratch
 pwmn            LONG    %001_000000_01_01000_0  ' PWM not (P_INVERT_OUTPUT | P_PWM_TRIANGLE | P_OE): with DIR low it outputs HIGH, ON
 adc_fram        LONG    0                       ' set ADC to full PWM frame counts [was: LONG    FRAME]
+jrk_lim                                         ' (C7) A, the acceleration limit of the side toward s (jerkStep)
 pl_u                                            ' (C1) the planner's scratch
 fram            LONG    0                       ' PWM frame: width=FRAME/2, div sysclk by 1 (no division) [was: LONG (FRAME / 2) << 16 + 1 ]
 bias            LONG    0                       ' PWM center-frame bias [was: LONG    FRAME / 4]
 third           LONG    1 FRAC 3                ' 120 degrees
+lag_s                                           ' (C7) C-5: signed lag this pass, + when the rotor trails the field in the
+                                                '  direction of motion; each frame's servoBoost (PL-167 D-2) uses it as
+                                                '  scratch, after the pass's last read
 pl_q                                            ' (C1) the planner's scratch
 numerator       LONG    3300 << 11              ' ADC scale numerator: 3300 mV in fixed point, the control loop's sar #11 returns millivolts
 maxNeg          LONG    $FFFF_FFFF              ' 32-bits of one (max negative signed value)
@@ -8885,6 +8861,7 @@ sp_P                                            ' (C1) the largest passes so far
 lutCodePtr      LONG    0                       ' hub addr of the LUT start image (task 3535); set by init()
 sp_F                                            ' (C1) and the largest travel, 1/256 tick
 planCodePtr     LONG    0                       ' PL-161 (DRIVER_REV 39): hub addr of the LUT run image (DRIVER_REV 42; was the planner overlay); set by init()
+relCodePtr      LONG    0                       ' (C8) hub addr of the LUT release image; set by init(). Read at the release, so it hosts no register
 
     ' -----------------------------------
     ' Logic Analyzer Instrumentation Code
@@ -8955,10 +8932,9 @@ hall_angles     LONG    0           '-%000- can't happen forward-direction table
 
 tmpX            res 1       ' miscellaneous
 tmpY            res 1
-calibPeriod                 ' PL-32: widened ADC count period, start-of-driver GIO/VIO calibration only; and (C1)
-jrk_lim         res 1       '  jrk_lim, A, the acceleration limit of the side toward s, once the drive loop runs
 ' measurements
-drvrSrtTix      res 1
+calibPeriod                 ' PL-32: widened ADC count period, start-of-driver GIO/VIO calibration only; (C7) it shares
+drvrSrtTix      res 1       '  drvrSrtTix, whose first access is .ctlMotor's GETCT, after the start (jrk_lim is at pl_u)
 ctrlSrtTix      res 1       ' the drive pass's start; then, by .capDone's ADDCT1, the next pass's CT1 target (WP3)
 ' driver inputs
 tgt_incr        res 1       ' current user requested target increment
@@ -8966,8 +8942,12 @@ sv_tgt_incr     res 1       ' holding area for prior value
 ' control loop variables
 drv_incr        res 1       ' current driver increment (v); its acceleration a is accel_now_, in the status run
 ' PL-160 (DRIVER_REV 38): jerkStep's working registers, live only within the call (was prior_incr and the old ramp's three).
-'  DRIVER_REV 41 (C1): jrk_e, jrk_s and jrk_j live at adc_modes' three longs and jrk_lim at calibPeriod's; jrk_x stays here
-jrk_x           res 1       ' x*(E): the largest acceleration a pure ramp-out at J lands from
+'  DRIVER_REV 41 (C1): jrk_e, jrk_s and jrk_j live at adc_modes' three longs; memory reduction WP7 (C7): jrk_lim and
+'  jrk_x at the planner's scratch pl_u and pl_t (see the note at pl_d)
+jerk_x          res 1       ' memory reduction WP6 (C6): Jx = max(jerk_up_, jerk_dn_), formed right after each parameter
+                            '  block read (.hallCounted's and the start's), the only writes of those two, so every reader
+                            '  (jerkStep's two, planStage's part A, planA's unwind) sees the max of the same pair it once
+                            '  formed itself. Not a hub long: a Spin2 write could tear against the block read (PL-161)
 
 ' driver actual
 angle_          res 1       ' current driver angle
@@ -8988,8 +8968,7 @@ force_seen      res 1       ' R19.3 TEST-USE: the last force_seq_ a fault took
 brake_frame     res 1       ' PL-129: the undriven frame's place in BR_BRAKE's period, 0..BRAKE_PERIOD_FRAMES-1
 fault_clr_seen  res 1       ' task 3616: the last fault_clr_ a drive pass consumed
 curr_stop       res 1       ' current stop mode
-lag_s           res 1       ' C-5: signed lag this pass, + when the rotor trails the field in the direction of motion;
-                            '  each frame's servoBoost (PL-167 D-2) uses it as scratch, after the pass's last read
+                            ' (C7: lag_s lives at the planner's scratch pl_q, see the note at pl_d)
 lim_seen        res 1       ' PL-167 D-3: duty_capped_ + foldback_cnt_ (mod 2^32) as the previous drive pass left them
                             '  (passEnd, every pass), re-taken at a pass's start when the frames since ran in neither
                             '  SPIN_UP nor AT_SPEED (gettgtincr). Never read before it is written, so not zeroed at
@@ -9119,9 +9098,14 @@ held_seen       res 1       ' DRIVER_REV 57 (PL-203): lag_held_ as the last pass
 '                     pl_f   the run's first acceleration toward rest (signed)
 '  at the constants,  pl_d (all_pins), pl_c (pwmt), pl_t (pwmn), pl_u (fram), pl_q (numerator),
 '                     sc_v (sync_required), sp_P (lutCodePtr), sp_F (planCodePtr)
+'  and memory reduction WP7 (C7): jrk_x at pl_t, jrk_lim at pl_u, lag_s at pl_q; calibPeriod at drvrSrtTix
 
 ' $1f8 for reg cogs
-    fit     496  ' 495 USED, 1 FREE, 2026-10-08 at DRIVER_REV 57 (PL-203: .running's three longs, held_seen at $1EE);
+    fit     496  ' 464 USED, 32 FREE, 2026-10-09 at DRIVER_REV 58 (HELD_SEEN at $1CF, so USED $1D0): PL-218's RDLONG of
+                 ' stopHold and its zero-command test in .running (+3); 461 after memory reduction WP6..WP9: C7's
+                 ' three registers at the planner's scratch longs (-3), C8's relLoad and relCodePtr (+4), C6's register
+                 ' jerk_x and its two longs at .hallCounted (+3), C9's planCorner to the run image (-38);
+                 ' 495 at DRIVER_REV 57 (PL-203: .running's three longs, held_seen at $1EE);
                  ' 491 at DRIVER_REV 55 (task 3699, PL-170: senseFilter's CALL, the fold's
                  ' two compares, the registers sense_f_ and sense_shift_); 482 at DRIVER_REV 54 (task 3684 R1:
                  ' fieldSteps, the frame's three longs, the pass's and initAngleFmHall's zeroing, the registers fld_,
@@ -9134,12 +9118,16 @@ held_seen       res 1       ' DRIVER_REV 57 (PL-203): lag_held_ as the last pass
                  ' DRIVER_REV 43, WP3, the frame and drive-pass peepholes; 484 at DRIVER_REV 42, WP2, countIllegal's 13
                  ' longs back in cog RAM; 471 at DRIVER_REV 41, WP1; 492 at DRIVER_REV 39/40, 403 at DRIVER_REV 38) --
                  ' read from the compiler, never hand-counted (a hand count here once ran ~80 short): `pnut-ts -l
-                 ' isp_bldc_motor.spin2`, PLAN_STAGE's VALUE, whose top 12 bits are its cog address ($1BA, the last
+                 ' isp_bldc_motor.spin2`, the last register's VALUE (HELD_SEEN since DRIVER_REV 57; PLAN_STAGE before),
+                 ' whose top 12 bits are its cog address ($1BA, the last
                  ' register, so USED is $1BB; $1BD at DRIVER_REV 48, USED $1BE; $1CE at DRIVER_REV 49, USED $1CF; $1E1 at DRIVER_REV 54, USED $1E2; $1EA at DRIVER_REV 55, USED $1EB). LUT code runs at cog speed (2 clocks, p2kb p2kbPasm2ExecutionModes) but
                  ' instruction operands reach only cog RAM, so REGISTERS are what this budget is for; code can live in the
-                 ' LUT images below (task 3535), read the same way (2026-10-02): the start image, lutCodeStart $200 to
-                 ' lutCodeEnd $292, 146 longs, and the run image loaded over it, runCodeStart $200 to runCodeEnd $3FE, 510
-                 ' of 512 longs (2 free at DRIVER_REV 55, after PL-170's senseFilter; 7 free at DRIVER_REV 49, after PL-187 T-1's fold_seen snapshots and PL-189 U-1 / U-2's
+                 ' LUT images below (task 3535), read the same way (2026-10-09): the start image, lutCodeStart $200 to
+                 ' lutCodeEnd $294, 148 longs (146 until C6's start-time Jx), the run image loaded over it, runCodeStart
+                 ' $200 to runCodeEnd $3F3, 499 of 512 longs, 13 free (memory reduction WP6..WP9: C8 took driverRelease's
+                 ' 34 longs out, C6's peepholes 15, C9 brought planCorner's 38 in), and the release image loaded over the
+                 ' run image's head at the release, relCodeStart $200 to relCodeEnd $222, 34 longs (C8). Run image 510
+                 ' of 512 longs before WP6..WP9 (2 free at DRIVER_REV 55, after PL-170's senseFilter; 7 free at DRIVER_REV 49, after PL-187 T-1's fold_seen snapshots and PL-189 U-1 / U-2's
                  ' holdGate; 499 / 13 free at DRIVER_REV 48, after PL-179 C4's holdGate arming and driveFromRest's disarm;
                  ' 486 and 144 at DRIVER_REV 47; 457 at DRIVER_REV 45, before PL-167's 7-long servoBoost (D-2),
                  ' 16-long holdGate (D-5) and the six longs of D-3's lim_seen snapshots in gettgtincr and passEnd; 476
@@ -9147,12 +9135,15 @@ held_seen       res 1       ' DRIVER_REV 57 (PL-203): lag_held_ as the last pass
                  ' the LUT held 507 resident longs, with the planner's 126-long overlay over the start sequence.
 
 ' =========================================================================
-'  LUT CODE ($200-$3FF), TWO IMAGES AT THE SAME ADDRESSES (DRIVER_REV 42, memory reduction WP2, C2):
+'  LUT CODE ($200-$3FF), TWO IMAGES AT THE SAME ADDRESSES (DRIVER_REV 42, memory reduction WP2, C2), AND A THIRD
+'  (memory reduction WP8, C8):
 '  - the START IMAGE, lutCodeStart .. lutCodeEnd: the start sequence (task 3535) and driveinit, block-loaded by the
 '    entry code at coginit (lutCodePtr);
 '  - the RUN IMAGE, runCodeStart .. runCodeEnd: every routine the drive loop uses (gettgtincr, the per-drive-pass
-'    routines R18.4 added, PL-160's jerkStep, the bridge routines, the release, and PL-161's stop planner), block-
-'    loaded over the start image by loadOverlay (cog RAM, planCodePtr) as the start sequence's last act.
+'    routines R18.4 added, PL-160's jerkStep, the bridge routines, and PL-161's stop planner), block-
+'    loaded over the start image by loadOverlay (cog RAM, planCodePtr) as the start sequence's last act;
+'  - the RELEASE IMAGE, relCodeStart .. relCodeEnd: driverRelease, block-loaded over the run image's head by relLoad
+'    (cog RAM, relCodePtr) when a release is asked for; it never returns (C8).
 '  The partition is by call graph: the start image calls only cog RAM (wait4adc, countIllegal, checkstop and its
 '  initAngleFmHall, loadOverlay) and its own driveinit; nothing in cog RAM or the run image calls into the start
 '  image. So no run-image address is reached before the load, and no start-image address after it. countIllegal,
@@ -9195,7 +9186,7 @@ lutCodeStart
 
                 rdlong  params_ptr_, ptra++             ' get parameters pointer
                 add     ptra, #2*4                      '  point to return data, targetIncre is at long index [-1]
-                                                        '                        targetAngle is at long index [-2]
+                                                        '                        stopHold is at long index [-2]
 
                 dirl    all_pins                        ' disable PWM and ADC pins for configuration
 
@@ -9357,6 +9348,8 @@ lutCodeStart
                 ' do initial read of parms so control loop can use them
                 setq    #DRVR_PARAMS_LONGS_COUNT-1      ' load fresh parameter table (DRVR_PARAMS_LONGS_COUNT longs)
                 rdlong  params_ptr_+1, params_ptr_
+                mov     jerk_x, jerk_up_                ' C6: Jx, as .hallCounted forms it: the first drive pass runs
+                fge     jerk_x, jerk_dn_                '  before any frame, and its jerkStep reads jerk_x
 
                 mov     duty_, duty_min_                ' reset duty
                 mov     duty_cap_, duty_max_            ' PL-55: no ceiling before the first drive pass sets it
@@ -9406,7 +9399,7 @@ driveinit                                               ' init drive pwm
 
 lutCodeEnd                                              ' the LUT START IMAGE ends here (task 3535; DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the start image is 146 of 512 longs, read from the compiler 2026-10-05 at DRIVER_REV 55 (sense_f_'s zeroing; 145 at DRIVER_REV 48, PL-179 C4's start disarm; 144 at DRIVER_REV 45-47) (LUTCODEEND's VALUE)
+                fit     $400  ' LUT RAM boundary; the start image is 148 of 512 longs, read from the compiler 2026-10-09, memory reduction WP6..WP9 (C6's start-time Jx); 146 at DRIVER_REV 55 (sense_f_'s zeroing; 145 at DRIVER_REV 48, PL-179 C4's start disarm; 144 at DRIVER_REV 45-47) (LUTCODEEND's VALUE)
 
 ' =========================================================================
 '  THE LUT RUN IMAGE (DRIVER_REV 42, memory reduction WP2, C2): every routine that runs only once the drive loop has
@@ -9443,10 +9436,11 @@ gettgtincr                                              ' task 3535: used only b
     _ret_       signx   tgt_incr, #30                   ' sign extend back to normal tgt_incr
 
 passEnd                                                 ' called once per drive pass, at .endRqst, which every path of the pass reaches
-                tjnz    drv_release_, #driverRelease    ' PL-138: stop() asked for the release. This pass's bridge state is decided
+                tjnz    drv_release_, #relLoad          ' PL-138: stop() asked for the release. This pass's bridge state is decided
                                                         '  and no pin has taken it yet (.ctlMotor writes the Y values next), so the
                                                         '  release overrides whichever BR_* state it is, e-stop and fault included.
-                                                        '  A JMP out of this CALL: driverRelease never returns. Else fall through
+                                                        '  A JMP out of this CALL: driverRelease never returns. Else fall through.
+                                                        '  C8: by relLoad (cog RAM), which loads the release image first
                 mov     lim_seen, duty_capped_          ' PL-167 D-3: the limiter counts as this pass leaves them, so the
                 add     lim_seen, foldback_cnt_         '  next pass's holdGate sees only what its frames add (no flag)
                 mov     fold_seen, foldback_cnt_        ' PL-187 T-1: the fold-back's own, likewise (no flag)
@@ -9617,9 +9611,8 @@ jerkStep
     if_nz       mov     tmpY, jrk_e                     ' s: toward the target ...
     if_nz       jmp     #.haveS
                 abs     tmpY, accel_now_                ' at the target: an arrival's last step (at most J) ends here,
-                mov     tmpX, jerk_up_                  '  a jerk of at most Jx, as does any |a| up to Jx
-                fge     tmpX, jerk_dn_                  ' Jx
-                cmp     tmpX, tmpY                  wc  ' Q: |a| > Jx (a new target set at v, mid-ramp)?
+                                                        '  a jerk of at most Jx, as does any |a| up to Jx
+                cmp     jerk_x, tmpY                wc  ' Q: |a| > Jx (a new target set at v, mid-ramp)? (C6: jerk_x)
     if_nc       jmp     #.steady                        ' NO: at speed, a := 0
                 neg     tmpY, accel_now_                ' YES: ... or, e being 0, against a
 .haveS          testb   tmpY, #31                   wc  ' C: s < 0
@@ -9637,23 +9630,21 @@ jerkStep
                 fge     jrk_j, #1                       ' J is at least 1 (applyRamps() ensures it; the QDIV needs it)
                 call    #xStar                          ' x*(E), the largest alpha a pure ramp-out at J lands from (PL-161,
                                                         '  DRIVER_REV 39: the same instructions, moved out for the stop planner)
-                ' U, the jerk-limited step toward A
-                mov     tmpY, jerk_up_
-                fge     tmpY, jerk_dn_                  ' Jx := max(jerk_up_, jerk_dn_)
+                ' U, the jerk-limited step toward A (C6: Jx is jerk_x, once a frame)
                 mov     tmpX, accel_now_
                 cmps    accel_now_, #0              wc  ' Q: alpha < 0, a still pushing away from s?
-    if_c        add     tmpX, tmpY                      '  YES: it unwinds by Jx, to exactly 0 at most
+    if_c        add     tmpX, jerk_x                    '  YES: it unwinds by Jx, to exactly 0 at most
     if_c        fles    tmpX, #0
     if_c        jmp     #.haveU
                 cmps    jrk_lim, accel_now_         wc  ' Q: A < alpha, above this side's limit?
     if_nc       add     tmpX, jrk_j                     '  NO: up by J, to A at most
     if_nc       fles    tmpX, jrk_lim
-    if_c        sub     tmpX, tmpY                      '  YES: down by Jx, to A at least
+    if_c        sub     tmpX, jerk_x                    '  YES: down by Jx, to A at least
     if_c        fges    tmpX, jrk_lim
 .haveU          ' the lag gate (C-5's LAG_SOFT): the rotor lag in the way a pushes
-                mov     jrk_e, err_                     ' (E is spent)
-                testb   jrk_s, #0                   wc
-    if_c        neg     jrk_e                           ' s x err_ ...
+                testb   jrk_s, #0                   wc  ' (E is spent)
+                negc    jrk_e, err_                     ' s x err_ ... (C6: NEGC stores -S when C, else S, and without WC/WZ
+                                                        '  writes no flag, p2kbPasm2Negc: the old MOV / IF_C NEG)
                 cmps    accel_now_, #0              wc
     if_c        neg     jrk_e                           ' ... x sign(alpha): sign(a) x err_, or s x err_ when a is 0
                 cmps    jrk_e, #LAG_SOFT            wc  ' Q: the field ahead of the rotor by LAG_SOFT or more, a's way?
@@ -9666,9 +9657,8 @@ jerkStep
                 sub     tmpY, jrk_j                     ' alpha - J, the least the jerk allows
                 fges    tmpY, jrk_x                     ' max(alpha - J, x*)
                 fles    tmpY, tmpX                      ' alpha' := min(U, max(alpha - J, x*))
-                mov     accel_now_, tmpY
                 testb   jrk_s, #0                   wc
-    if_c        neg     accel_now_                      ' a' := s alpha'
+                negc    accel_now_, tmpY                ' a' := s alpha' (C6: NEGC, as above; C stays jrk_s's)
                 mov     tmpY, drv_incr                  ' v, kept for the stop's zero test
                 adds    drv_incr, accel_now_            ' v' := v + a'
                 tjnz    tgt_incr, #.driving             ' a drive's target: its arrival and state below
@@ -9694,13 +9684,15 @@ jerkStep
                 abs     jrk_e, tgt_incr
                 cmp     tmpY, jrk_e                 wc  ' Q: |v'| < |target|?
     if_nc       mov     tmpX, #DCS_SPIN_DN
-.report         cmp     tmpX, #DCS_SPIN_DN          wz  ' PL-55: record where a ramp-down starts, for the duty ceiling,
-    if_nz       cmp     tmpX, #DCS_SLOW_TO_CHG      wz  '  on the pass the state first turns down (was .capStart, taken
-    if_nz       jmp     #.stateOut                      '  on each slowing request; a ramp-down now continues its line)
-                cmp     drv_state_, #DCS_SPIN_DN    wz
-    if_nz       cmp     drv_state_, #DCS_SLOW_TO_CHG wz
-    if_nz       mov     duty0, duty_
-    if_nz       abs     incr0, drv_incr
+.report         cmp     tmpX, #DCS_SPIN_DN          wc  ' PL-55: record where a ramp-down starts, for the duty ceiling,
+    if_c        jmp     #.stateOut                      '  on the pass the state first turns down (was .capStart, taken
+                                                        '  on each slowing request; a ramp-down now continues its line)
+                cmp     drv_state_, #DCS_SPIN_DN    wc  ' C6: two range tests for the SPIN_DN-or-SLOW_TO_CHG pairs, exact
+    if_c        mov     duty0, duty_                    '  because tmpX is 2 .. 5 here (each value set above) and drv_state_
+    if_c        abs     incr0, drv_incr                 '  1 .. 5 (STOPPED .. SLOW_TO_CHG): .running is reached past the
+                                                        '  e-stop exit and the FAULTED latch, RELEASED never returns, and
+                                                        '  no other value is written. Z, no longer the CMPs', is dead to
+                                                        '  holdGate's CMP WZ (the one caller's next flag read)
 .stateOut       mov     drv_state_, tmpX
     _ret_       modc    _clr                        wc  ' C = 0: the field advances this pass (.justIncr)
 .steady         mov     accel_now_, #0                  ' at speed: v unchanged, a ended
@@ -9723,22 +9715,21 @@ undrivenPins                                            ' R19.3/R19.4: once per 
     if_nc       tjnz    probe_phase_, #.probe           ' YES, with a phase to drive
                 ret
 .probe          mov     tmpX, probe_phase_              ' the probed phase's pins: u_l,u_h / v_l,v_h / w_l,w_h are consecutive
-                sub     tmpX, #PRB_U
-                shl     tmpX, #1
+                shl     tmpX, #1                        ' C6: the old SUB #PRB_U is folded into each ALTS base, as - 2 * PRB_U:
+                                                        '  ALTS forms (S + D) & $1FF (p2kbPasm2Alts), so the address is the same
                 mov     tmpY, bias                      ' 50 %, the low side complementary with its dead gap, exactly as the drive
                 cmp     probe_y_, #1                wc  '  writes a phase whose level is 0 (see the BR_DRIVE writes in .ctlMotor);
     if_nc       mov     tmpY, probe_y_                  '  R19.4 1e: or the winding check's own level (C only: Z is the caller's)
                 add     tmpY, dead_gap_
-                alts    tmpX, #pin_pwm_u_l
+                alts    tmpX, #pin_pwm_u_l - 2 * PRB_U
                 wypin   tmpY, 0-0                       ' low side: the level plus the dead gap, complementary
                 sub     tmpY, dead_gap_
-                alts    tmpX, #pin_pwm_u_h
+                alts    tmpX, #pin_pwm_u_h - 2 * PRB_U
                 wypin   tmpY, 0-0                       ' high side: the level
                 tjz     probe_sink_, #.probeEnd         ' R19.4 1e: a return phase asked for?
                 mov     tmpX, probe_sink_               ' YES: its low side ON (Y = 0, inverted), its high side already off,
-                sub     tmpX, #PRB_U                    '  so the probed phase's current returns through the DC-link shunt
-                shl     tmpX, #1
-                alts    tmpX, #pin_pwm_u_l
+                shl     tmpX, #1                        '  so the probed phase's current returns through the DC-link shunt
+                alts    tmpX, #pin_pwm_u_l - 2 * PRB_U  '  (C6: the SUB #PRB_U folded in, as above)
                 wypin   #0, 0-0
 .probeEnd       ret
 
@@ -9769,8 +9760,7 @@ faultResponse                                           ' R19.3: called from the
     if_nz       jmp     #.blunt                         ' NO: FR_SHIPPED takes the stop mode's fault bridge at once
                 tjnz    fault_stop, #.blunt             ' a second fault on a re-synced stop: control is gone
                 mov     tmpX, hall_
-                and     tmpX, #%111                     ' this pass's hall code
-                cmp     tmpX, #%000                 wz
+                and     tmpX, #%111                 wz  ' this pass's hall code; Z: %000 (C6: AND WZ, the old CMP #%000 WZ)
     if_nz       cmp     tmpX, #%111                 wz
     if_z        jmp     #.blunt                         ' an illegal code: the halls cannot re-seed the field
                 mov     fault_stop, #1                  ' RE-SYNC: commands read as 0 until the front cog's stop arrives, so the
@@ -9780,8 +9770,10 @@ faultResponse                                           ' R19.3: called from the
 .blunt          mov     fault_stop, #0                  ' a hard fault ends any pending re-sync stop: the latch below governs now
                 mov     drv_state_, #DCS_FAULTED       ' the driver is FAULTED until the front cog clears it (fault_clr_)
                 mov     bridge, #BR_SHORT               ' FR_SHIPPED brakes with the full short,
-                cmp     fault_mode_, #FR_GRADED     wz
-    if_z        mov     bridge, #BR_BRAKE               '  FR_GRADED with the graded one,
+    if_z        mov     bridge, #BR_BRAKE               '  FR_GRADED with the graded one (C6: Z is already "graded" on all
+                                                        '  three ways in: the IF_NZ JMP, the flag-free TJNZ after it, and
+                                                        '  the illegal code's IF_Z JMP, reached only when graded; the MOVs
+                                                        '  above write no flag, so the CMP that stood here is gone),
     if_z        mov     brake_frame, #0                 '  opening on its shorted slice (PL-129; the only entry to BR_BRAKE)
                 cmp     stop_mode_, #SM_FLOAT       wz
     if_z        mov     bridge, #BR_COAST               '  and SM_FLOAT coasts in either mode
@@ -9794,61 +9786,7 @@ estopBridge                                             ' PL-132: called once, a
     if_z        mov     bridge, #BR_COAST               ' YES: all six FETs off
                 ret
 
-driverRelease                                           ' PL-138 (W3, W4): reached only from passEnd, once stop() has set drv_release.
-                                                        '  Every gate is OFF throughout, but for each low side's one-instruction
-                                                        '  window in step 3 (and each gate pin is undriven for the one instruction
-                                                        '  between its WRPIN #0 and its DRVL). Never returns
-                ' 1. COAST, as BR_COAST does: high sides Y = 0 (off), low sides Y = coast_y (inverted: off). A triangle
-                '    PWM pin takes a new Y at its next frame start (p2kbArchSmartPins live_update_behavior, pwm_triangle),
-                '    and each write here only turns a FET OFF, so no order of them puts both sides of a phase ON.
-                wypin   #0, pin_pwm_u_h
-                wypin   #0, pin_pwm_v_h
-                wypin   #0, pin_pwm_w_h
-                wypin   coast_y, pin_pwm_u_l
-                wypin   coast_y, pin_pwm_v_l
-                wypin   coast_y, pin_pwm_w_l
-                ' 2. hold the coast RELEASE_WAIT_FRAMES frames. adc_fram is frame_cnt clocks and a triangle frame is
-                '    2 x (frame_cnt / 2) <= frame_cnt, and WAITX waits 2 + D clocks (p2kbPasm2Waitx): so every pin has
-                '    captured its coast Y within the first frame and output it for at least one whole frame after.
-                mov     tmpX, #RELEASE_WAIT_FRAMES
-.coast          waitx   adc_fram
-                djnz    tmpX, #.coast
-                ' 3. every gate is OFF. Each gate pin now drops its smart mode and is held driven OFF, as part 1 holds
-                '    the low sides until driveinit. WRPIN needs DIR low (p2kbPasm2Wrpin), a PWM pin in reset outputs LOW
-                '    (p2kbArchSmartPin01000PwmTriangle), and mode 0 with DIR low drives nothing (p2kbArchSmartPins,
-                '    smart_pin_off: DIR enables output). Per pin: DIRL, WRPIN #0, then DRVL, which sets OUT low and DIR
-                '    high in one instruction (p2kbPasm2Drvl): driven LOW, OFF.
-                '    High sides (pwmt): LOW in reset, so never ON in this sequence.
-                dirl    pin_pwm_u_h
-                wrpin   #0, pin_pwm_u_h
-                drvl    pin_pwm_u_h
-                dirl    pin_pwm_v_h
-                wrpin   #0, pin_pwm_v_h
-                drvl    pin_pwm_v_h
-                dirl    pin_pwm_w_h
-                wrpin   #0, pin_pwm_w_h
-                drvl    pin_pwm_w_h
-                '    Low sides (pwmn): an inverted PWM pin in reset outputs HIGH, which is ON, from its DIRL to its WRPIN:
-                '    one instruction apart, 2 clocks (7.4 ns at 270 MHz) if WRPIN reaches the pin with DIR's 3-clock
-                '    latency (p2kbPasm2Drvl gives DIR's; p2kb gives none for WRPIN). One low side at a time, every high
-                '    side OFF: no phase has both sides on and no two low sides are on together, so no two FETs are
-                '    ever ON at once. Nothing may go between a DIRL and its WRPIN.
-                dirl    pin_pwm_u_l                     ' U low side ON: the window opens
-                wrpin   #0, pin_pwm_u_l                 '  mode 0, DIR low: undriven, the window closes
-                drvl    pin_pwm_u_l                     '  driven LOW, OFF
-                dirl    pin_pwm_v_l
-                wrpin   #0, pin_pwm_v_l
-                drvl    pin_pwm_v_l
-                dirl    pin_pwm_w_l
-                wrpin   #0, pin_pwm_w_l
-                drvl    pin_pwm_w_l
-                dirl    adc_pins                        ' the ADC pins (inputs): reset, then plain
-                wrpin   #0, adc_pins                    ' (the hall inputs keep their filter until stop()'s pinclear)
-                mov     drv_state_, #DCS_RELEASED       ' only now, so DCS_RELEASED means every gate is let go
-                setq    #DRVR_STATUS_LONGS_COUNT-1      ' the status run, once, as .ctlMotor writes it: stop() waits for this
-                wrlong  drive_u_, ptra
-.park           waitatn                                 ' parked, doing nothing, until stop()'s cogstop. Nothing ATNs a released
-                jmp     #.park                          '  driver, and one that did would only go round again (p2kbPasm2Waitatn)
+    ' driverRelease left the run image for its own, the release image below runCodeEnd (memory reduction WP8, C8)
 
     ' -------------------------------------------------------------------------
     ' PL-161 (DRIVER_REV 39): x*(E), jerkStep's own arithmetic, moved out of it unchanged so the stop planner shares it.
@@ -9972,11 +9910,9 @@ planStage
     if_z        jmp     #planB                          ' YES: its tail's return is ours
                 ' part A (plan_stage now 2, 5 or 8): (v, a) for this end
                 cmp     plan_stage, #5              wcz ' C: m = 1 (stage 1); Z: the low end (stage 4); neither: the high end (7)
-                mov     pl_t, jerk_up_
-                fge     pl_t, jerk_dn_                  ' Jx
-    if_z        neg     pl_t                            ' the low end: -Jx
                 mov     pl_a, accel_now_
-    if_nc       add     pl_a, pl_t                      ' m = 2: a' = a -/+ Jx (m = 1: a)
+    if_nc_and_nz add    pl_a, jerk_x                    ' the high end: a' = a + Jx (C6: jerk_x, for the old pl_t = Jx,
+    if_z        sub     pl_a, jerk_x                    '  NEG at the low end, and ADD: a' = a - Jx; m = 1: a)
                 mov     pl_v, drv_incr
     if_nc       add     pl_v, pl_a                      ' m = 2: v' = v + a' (m = 1: v)
                 mov     sc_v, pl_v                      ' kept for the take pass's own advance (read only when m = 2)
@@ -10049,11 +9985,10 @@ planA
                 mov     pl_f, pl_a
                 sub     pl_f, jerk_dn_                  ' alpha - J
                 cmps    jrk_x, pl_f                 wc  ' Q: x*(V) < alpha - J, the corner?
-    if_c        jmp     #planCorner                     ' (cog RAM, for room; it returns for us, with C = 1)
+    if_c        jmp     #planCorner                     ' (just below; it returns for us, with C = 1)
                 cmps    pl_a, #0                    wc  ' 1a. Q: alpha < 0, still pushing away from rest?
     if_nc       ret                                     ' NO: C = 0, planB next
-                mov     pl_d, jerk_up_
-                fge     pl_d, jerk_dn_                  ' Jx
+                mov     pl_d, jerk_x                    ' Jx (C6: jerk_x)
                 mov     pl_t, pl_d
                 sub     pl_t, #1
                 sub     pl_t, pl_a                      ' Jx - 1 - alpha
@@ -10072,6 +10007,52 @@ planA
                 mov     pl_a, #0
     _ret_       modc    _clr                        wc  ' C = 0: planB next
 .done   _ret_   modc    _set                        wc  ' C = 1: the plan is complete
+
+planCorner                                              ' PL-161: planA's corner (see planA): a stop read just before a reversal's
+                                                        '  crossing stops the field AT zero. Memory reduction WP9 (C9): in cog RAM
+                                                        '  from DRIVER_REV 39 only for room, now in the run image beside planA,
+                                                        '  which tail-jumps to it; the same instructions, so the same clocks
+                mov     pl_t, pl_a                      '  n, the least
+                add     pl_t, pl_f                      '  with n alpha - J n (n + 1) / 2 >= V; n - 1 passes from alpha - J down
+                                                        '  by J, and the n-th at rest. B = 2 alpha - J = alpha + pl_f: planA left
+                                                        '  pl_f = alpha - J, and nothing here writes pl_f (WP5, C5(d))
+                qmul    pl_t, pl_t
+                mov     pl_c, jerk_dn_                  ' (while the CORDIC works)
+                shl     pl_c, #3                        ' 8 J: J <= 2_091 (jerkForAccel() of a limit capped at ACCEL_STEP_CAP,
+                                                        '  applyRamps() its one writer), so 8 J < 2^32 and 8 J x V is exact
+                getqx   pl_u
+                getqy   pl_q                            ' B^2
+                qmul    pl_c, pl_v
+                getqx   pl_c
+                getqy   pl_d                            ' 8 J V, 64-bit (was J V shifted left 3 in 64 bits: the same value)
+                sub     pl_u, pl_c                  wc
+                subx    pl_q, pl_d                      ' B^2 - 8 J V, at least 0 in the corner
+                qsqrt   pl_u, pl_q
+                getqx   pl_n                            ' its floor root
+                subr    pl_n, pl_t                      ' B - isqrt, at least 1
+                mov     pl_u, jerk_dn_
+                shl     pl_u, #1                        ' 2J
+                add     pl_n, pl_u
+                sub     pl_n, #1
+                qdiv    pl_n, pl_u
+                getqx   pl_n                            ' n = ceil((B - isqrt) / 2J): the least n, or one over it
+                mov     pl_c, pl_n
+                sub     pl_c, #1                        ' n - 1
+                mov     pl_u, pl_n                      ' n (was (n - 1) + 1)
+                mul     pl_u, pl_c
+                shr     pl_u, #1                        ' (n - 1) n / 2
+                qmul    pl_u, jerk_dn_
+                getqx   pl_u
+                qmul    pl_c, pl_a
+                getqx   pl_q                            ' (n - 1) alpha
+                sub     pl_q, pl_u                      ' what n - 1 passes shed
+                cmps    pl_q, pl_v                  wc  ' Q: already V (NC)?
+    if_nc       mov     pl_n, pl_c                      ' YES: n - 1 is the least
+                add     pl_P, #1                        ' the crossing pass, at rest
+                sub     pl_n, #1
+                neg     pl_d, jerk_dn_                  ' pl_f is still planA's alpha - J: the run is from it, down by J
+                call    #run                            ' (n - 1, alpha - J, -J)
+    _ret_       modc    _set                        wc  ' C = 1: the plan is complete (planA's return, which jumped here)
 
 planB           mov     pl_f, pl_a
                 add     pl_f, jerk_dn_                  ' 1b. y1
@@ -10168,7 +10149,79 @@ rampOut
 
 runCodeEnd                                              ' the LUT RUN IMAGE ends here (DRIVER_REV 42)
 
-                fit     $400  ' LUT RAM boundary; the run image is 510 of 512 longs, 2 free, read from the compiler 2026-10-05 at DRIVER_REV 55, PL-170's senseFilter (RUNCODEEND's VALUE; 505 at DRIVER_REV 49, PL-187 T-1 and PL-189 U-1 / U-2; 499 at DRIVER_REV 48, PL-179 C4; 486 at DRIVER_REV 47, PL-167 D-2, D-3, D-5; 457 at DRIVER_REV 45)
+                fit     $400  ' LUT RAM boundary; the run image is 499 of 512 longs, 13 free, read from the compiler 2026-10-09, memory reduction WP6..WP9 (RUNCODEEND's VALUE; 476 after C8's driverRelease out, 468 after C6's peepholes, 506 after C9's planCorner in, 499 after C6's Jx); 510, 2 free, at DRIVER_REV 55, PL-170's senseFilter ( 505 at DRIVER_REV 49, PL-187 T-1 and PL-189 U-1 / U-2; 499 at DRIVER_REV 48, PL-179 C4; 486 at DRIVER_REV 47, PL-167 D-2, D-3, D-5; 457 at DRIVER_REV 45)
+
+' =========================================================================
+'  THE LUT RELEASE IMAGE (memory reduction WP8, C8): driverRelease, cold code that runs once, at the driver's end. It
+'  was resident in the run image; now relLoad (cog RAM, reached only by passEnd's TJNZ) block-loads it over the head of
+'  the run image, from relCodePtr (set by init()), and jumps in. The release never returns and the planner is
+'  abandoned, so no code it overwrites runs again. Its pin sequence stays in LUT execution, at 2 clocks an
+'  instruction, so the PL-138 windows below are as deterministic as they were (hub execution would not be). Like the
+'  other two images, it must stay after every org-0 item in the file.
+' =========================================================================
+                org     $200
+relCodeStart
+
+driverRelease                                           ' PL-138 (W3, W4): reached only from passEnd, once stop() has set drv_release.
+                                                        '  Every gate is OFF throughout, but for each low side's one-instruction
+                                                        '  window in step 3 (and each gate pin is undriven for the one instruction
+                                                        '  between its WRPIN #0 and its DRVL). Never returns. C8: by relLoad, which
+                                                        '  loads this image first (about 50 clocks, before any pin write here)
+                ' 1. COAST, as BR_COAST does: high sides Y = 0 (off), low sides Y = coast_y (inverted: off). A triangle
+                '    PWM pin takes a new Y at its next frame start (p2kbArchSmartPins live_update_behavior, pwm_triangle),
+                '    and each write here only turns a FET OFF, so no order of them puts both sides of a phase ON.
+                wypin   #0, pin_pwm_u_h
+                wypin   #0, pin_pwm_v_h
+                wypin   #0, pin_pwm_w_h
+                wypin   coast_y, pin_pwm_u_l
+                wypin   coast_y, pin_pwm_v_l
+                wypin   coast_y, pin_pwm_w_l
+                ' 2. hold the coast RELEASE_WAIT_FRAMES frames. adc_fram is frame_cnt clocks and a triangle frame is
+                '    2 x (frame_cnt / 2) <= frame_cnt, and WAITX waits 2 + D clocks (p2kbPasm2Waitx): so every pin has
+                '    captured its coast Y within the first frame and output it for at least one whole frame after.
+                mov     tmpX, #RELEASE_WAIT_FRAMES
+.coast          waitx   adc_fram
+                djnz    tmpX, #.coast
+                ' 3. every gate is OFF. Each gate pin now drops its smart mode and is held driven OFF, as part 1 holds
+                '    the low sides until driveinit. WRPIN needs DIR low (p2kbPasm2Wrpin), a PWM pin in reset outputs LOW
+                '    (p2kbArchSmartPin01000PwmTriangle), and mode 0 with DIR low drives nothing (p2kbArchSmartPins,
+                '    smart_pin_off: DIR enables output). Per pin: DIRL, WRPIN #0, then DRVL, which sets OUT low and DIR
+                '    high in one instruction (p2kbPasm2Drvl): driven LOW, OFF.
+                '    High sides (pwmt): LOW in reset, so never ON in this sequence.
+                dirl    pin_pwm_u_h
+                wrpin   #0, pin_pwm_u_h
+                drvl    pin_pwm_u_h
+                dirl    pin_pwm_v_h
+                wrpin   #0, pin_pwm_v_h
+                drvl    pin_pwm_v_h
+                dirl    pin_pwm_w_h
+                wrpin   #0, pin_pwm_w_h
+                drvl    pin_pwm_w_h
+                '    Low sides (pwmn): an inverted PWM pin in reset outputs HIGH, which is ON, from its DIRL to its WRPIN:
+                '    one instruction apart, 2 clocks (7.4 ns at 270 MHz) if WRPIN reaches the pin with DIR's 3-clock
+                '    latency (p2kbPasm2Drvl gives DIR's; p2kb gives none for WRPIN). One low side at a time, every high
+                '    side OFF: no phase has both sides on and no two low sides are on together, so no two FETs are
+                '    ever ON at once. Nothing may go between a DIRL and its WRPIN.
+                dirl    pin_pwm_u_l                     ' U low side ON: the window opens
+                wrpin   #0, pin_pwm_u_l                 '  mode 0, DIR low: undriven, the window closes
+                drvl    pin_pwm_u_l                     '  driven LOW, OFF
+                dirl    pin_pwm_v_l
+                wrpin   #0, pin_pwm_v_l
+                drvl    pin_pwm_v_l
+                dirl    pin_pwm_w_l
+                wrpin   #0, pin_pwm_w_l
+                drvl    pin_pwm_w_l
+                dirl    adc_pins                        ' the ADC pins (inputs): reset, then plain
+                wrpin   #0, adc_pins                    ' (the hall inputs keep their filter until stop()'s pinclear)
+                mov     drv_state_, #DCS_RELEASED       ' only now, so DCS_RELEASED means every gate is let go
+                setq    #DRVR_STATUS_LONGS_COUNT-1      ' the status run, once, as .ctlMotor writes it: stop() waits for this
+                wrlong  drive_u_, ptra
+.park           waitatn                                 ' parked, doing nothing, until stop()'s cogstop. Nothing ATNs a released
+                jmp     #.park                          '  driver, and one that did would only go round again (p2kbPasm2Waitatn)
+
+relCodeEnd                                              ' the LUT RELEASE IMAGE ends here (memory reduction WP8, C8)
+
+                fit     $400  ' LUT RAM boundary; the release image is 34 of 512 longs, read from the compiler 2026-10-09, memory reduction WP8 (C8) (RELCODEEND's VALUE)
 
 CON { license }
 {{

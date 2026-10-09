@@ -27,6 +27,12 @@ scenarios keep their own clocks and the table prints for 270 MHz. The 3,636-cloc
 The two images take part only at the new values: the PASM did not change at DRIVER_REV 50, so the run proves it
 equivalent there, and the table is the model's account of what `init()` now hands it.
 
+**`--stop-hold false|true`** (task 3705, DRIVER_REV 58) sets the launch run's third long, `stopHold`, for every
+scenario. `false` (the default) is what `init()` writes; `true` is what a fired distance limit leaves, under which the
+DRIVER_REV 58 hold acts on every stop as DRIVER_REV 57's did. Against a DRIVER_REV 57 baseline, `true` proves the stop
+by rotation unchanged; `false` shows where a timed or plain stop now differs. Until DRIVER_REV 58 that long was
+`targetAngle`, which the model set to `$FFFFFFFF` and no driver read.
+
 It needs `pnut-ts` on `PATH` (or `--pnut`), `git` for the baseline tag, and Python 3.8+. It builds into a new
 temp directory (or `--work DIR`), never into `src/`. **Exit status:** 0 equivalent and inside the frame budget;
 1 a divergence; 2 a frame-budget failure (the start frame included); 3 incomplete (a build error, an opcode the

@@ -18,6 +18,7 @@ from p2cog import M32, Parked, Unmodelled, EmuError, s32
 
 OBJ_BASE = 0x0_1000
 LAUNCH = 0x4_0000
+STOP_HOLD = 0                                            # the launch run's third long; --stop-hold sets it (forked workers inherit)
 PARAMS = 0x4_0400
 HUB_BYTES = 0x8_0000
 SECTOR = 0x1_0000_0000 // 6
@@ -223,7 +224,7 @@ class Env:
         h = self.hub
         h[L.launch >> 2] = self.cfg.base
         h[(L.launch >> 2) + 1] = L.params
-        h[(L.launch >> 2) + 2] = M32                     # targetAngle := $FFFFFFFF
+        h[(L.launch >> 2) + 2] = STOP_HOLD               # stopHold := FALSE (DRIVER_REV 58; was targetAngle := $FFFFFFFF)
         h[(L.launch >> 2) + 3] = 0                        # setTargetAccel(0, false)
         for k in range(L.n_status + 1):
             h[(L.status >> 2) + k] = 0
