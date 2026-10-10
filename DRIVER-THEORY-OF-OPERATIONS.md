@@ -295,17 +295,38 @@ The driver runs two nested loops.
    (140.6°), or the current limit is holding it (below). A held pass is counted
    in lag_held. drv_incr decays toward the rate the rotor achieves (1/64 per
    held pass) only on a pass where a limiter acted (the duty ceiling or the
-   current fold-back); any other hold is a pause while the trim raises the duty
+   current fold-back); any other hold is a pause while the trim raises the duty.
+   At high speed the advance is damped (below)
 7. compute the duty feedforward for this pass's speed
 ```
 
 **The field moves a frame at a time.** The pass advances `angle_` by a whole `drv_incr`, but
 the frames drive the field at `angle_ + (k − 11) × drv_incr ÷ 23` on frame k (0 to 22) of the
 pass, so the field turns smoothly and its mean over the pass is `angle_` itself. A held pass
-does not move it. A field that jumped once a pass would swing the error by half a step either
-way: by 30 electrical degrees a pass (about 2,400 rpm on the DocoEng motor) that swing alone
-reached the servo's fast-response threshold every pass, and the drive spent duty no load
-asked for.
+drives the field at `angle_` itself, which is half a pass's step back toward the rotor and
+gives a held rotor a little room. A field that jumped once a pass would swing the error by
+half a step either way: by 30 electrical degrees a pass (about 2,400 rpm on the DocoEng motor)
+that swing alone reached the servo's fast-response threshold every pass, and the drive spent
+duty no load asked for.
+
+**A hold lets go without a jump.** At a field speed of 2²⁸ a pass and above (about 1,790 rpm
+on the DocoEng motor; no 6.5″ drive reaches it), the first advancing pass after the field stood
+still starts from where it stood. Otherwise that pass's first frame would land twelve steps
+ahead, which at the DocoEng motor's top speeds is most of the margin to the fault test.
+
+**The field's advance is damped at speed.** Once the winding's reactance ωL exceeds its
+resistance, the current lags the voltage by more than 45°. The rotor's angle behind the field
+can then oscillate on its own, at 40–70 Hz on the DocoEng motor, and a field driven at a
+commanded speed does nothing to damp it. Undamped, the DocoEng motor hunted from about
+2,500 rpm. The servo's fast response turned the hunt into duty no load needed: a second,
+wasteful operating state, and at 24 V a position fault near 4,900 rpm. So from a field speed
+of 201 × 10⁶ a pass (about 1,340 rpm on the DocoEng motor, and just under the 6.5″ motor's
+24 V ceiling), in `DCS_SPIN_UP` and `DCS_AT_SPEED`, each advancing pass compares two lags. One
+is the rotor's lag at its last hall edge, where its position is exact. The other is that
+lag's 66 ms mean. The pass slows the field by ⅛ count for each count the lag stands above its
+mean, and quickens it likewise below. The term averages to zero, so the speed is the
+command's; it takes out only the oscillation. It stands aside while the current limit is
+holding the field, which then belongs to the limiter.
 
 **The ramp is jerk-limited.** One trajectory generator, `jerkStep` (in
 the LUT), runs every pass the motor is not at rest, whatever the state, and takes every command
@@ -344,9 +365,10 @@ give the budget:
 
 | Memory | Holds | Used |
 |---|---|---|
-| Cog RAM | the frame loop, the drive pass, the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `holdRelease`, `planFp` and `planCorner`, the constants and tables, and every register | **463 of 496** |
-| LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $291: the start sequence and `driveinit` | 145 (hidden under the run image) |
-| LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3F9: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `holdGate`, `servoBoost`, `jerkStep`, the bridge routines, `driverRelease`, `xStar`, `run`, `planStage` and the planner's core (`planA` … `rampOut`) | **505 of 512** |
+| Cog RAM | the frame loop, the drive pass, `fieldSteps` (the field's per-frame steps and its damped advance), the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `loadOverlay`, `planFp`, `relLoad`, the constants and tables, and every register | **475 of 496** |
+| LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $298: the start sequence and `driveinit` | 152 (hidden under the run image) |
+| LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3F6: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `holdGate` (with the limit hold's release), `servoBoost`, `jerkStep`, the bridge routines, `faultResponse`, `xStar`, `run`, `planStage` and the planner (`planA` … `rampOut`, `planCorner`) | **502 of 512** |
+| LUT, release image | `relCodeStart` $200 … `relCodeEnd` $222: `driverRelease`, loaded over the run image by `relLoad` only when a release is asked for (it never returns) | 34 |
 
 The LUT holds **two images at the same addresses, one after the other**. The entry code
 block-loads the start image from `lutCodePtr` and runs it. Its last act is
@@ -356,7 +378,7 @@ RAM and its own `driveinit`, and nothing in cog RAM or the run image calls into 
 image, so no run-image address is reached before the load and no start-image address after
 it. `countIllegal`, which both phases call, lives in cog RAM for that reason. So LUT use is the
 larger of the two images, and the start image costs none. The load happens once, after the ATN
-release: both wheels load the same 505 longs, so their lockstep is unchanged.
+release: both wheels load the same 502 longs, so their lockstep is unchanged.
 
 **Cog longs do double duty.** The entry code, `loadOverlay`, eight start-only constants,
 `adc_modes` and `calibPeriod` are dead once the start sequence has run, and each of those 21
@@ -386,7 +408,11 @@ Every one of these savings was proved to leave the driver's behaviour unchanged 
 write, pin operation and live register, frame by frame — by `tools/pasm_equiv`
 ([TECHNIQUES.md §3.3](TECHNIQUES.md#33-prove-a-pasm-rewrite-identical-before-you-trust-it)).
 Together they took cog RAM from 492 to 441 longs and the LUT from 507 to 457; the speed-holding logic
-(the trim's fast slope, the limit hold and its release) then used part of that room, to the 463 and 505 above.
+(the trim's fast slope, the limit hold and its release) then used part of that room. A second
+round (registers that are never live together sharing a long, the release made an image of
+its own, cold code moved between the memories) freed it again. The field's damping and the
+hold's clean release then took cog RAM to the 475 and the LUT to the 502 above, leaving 21 and
+10 free.
 
 ### The frame loop — commutation
 

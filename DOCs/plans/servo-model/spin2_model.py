@@ -71,6 +71,15 @@ after doco=1 overrides the preset (Jw, Lh, Tc, Bv, e90 through lead, ...). Every
   python3 spin2_model.py docohand doco=1 [...]   -- a hand stall at low speed: current, the blocked stop's latch;
                                                     i_limit=A is testSetCurrentLimits(A, A)
   python3 spin2_model.py docohold doco=1 [...]   -- DERIVED: the hold at rest (SM_BRAKE) at the hold defaults
+
+«#3706» PL-212 (DOCs/analyses/PL-212-ROOT-CAUSE-2026-10-09.md), off by default so every earlier command reproduces its
+numbers: rev58=1 (after doco=1) brings the duty loop to DRIVER_REV 58 (fieldSteps, the Doco feedforward line, the Doco
+lead table); bfix=N the boost candidates; see the «#3706» block below Q for every key.
+  python3 spin2_model.py pl212    doco=1 rev58=1 [...]   -- D4's range leg at dv: steps, timing sweep, trace, load
+  python3 spin2_model.py docostep doco=1 rev58=1 ds_n=8 step_load=L [...]   -- D-2's case on the Doco, 8 phases
+«#3706» phase 1b (the same document, section 7), off by default likewise: hcont=N the held field (H-1, H-1b; hcont=3 the
+design), damp=N the field's damping term (damp=3 the design, H-2); step mode takes st_n=N (N load-step phases).
+  python3 spin2_model.py pl212 doco=1 rev58=1 hcont=3 damp=3 [...]   -- the phase-1b design on D4's range leg
 """
 import math, sys
 from spin_model import P, Drive, lead_tenths, l_eff, ke_from_ladder, FRAME, PASS, SECTOR, TWO32, SLOW, MED, BRISK
@@ -167,6 +176,85 @@ Q.update(doco=0, ke_set=0.0, dv=0.0, lead=-99.0, ramp_x=1.0,
          step_load=0.0,                          # docostep: one load, N m (0 = the mode's set)
          rung_e6=0,                              # doco: one rung, x 10^6 increment (0 = 25/50/75/100 % of the row)
          sag_t=0.0, sag_rate=0.0)                # run(): the supply falls at sag_rate V/s from sag_t s (0 = none)
+# «#3706» PL-212 (DOCs/analyses/PL-212-ROOT-CAUSE-2026-10-09.md), off by default so every earlier command reproduces its
+#  numbers. rev58=1 is a preset (applied in parse(), after doco=1) that turns on the DRIVER_REV 54-57 duty-loop
+#  arithmetic the model lacked; each part has its own key:
+#   fsteps=1   DRIVER_REV 54 fieldSteps (:8708): frame k (0..22) of an advancing pass drives, and reads err_ against,
+#              angle_ + frm_ofs + k x frm_step, frm_step = |v| / 23 signed as v, frm_ofs = (frm_step - v) SAR 1; a held pass
+#              drives angle_ (frm_step = frm_ofs = 0, drvMotor :8241)
+#   ff_doco=1  init() :4700-4703: the Doco feedforward line, ff_ceiling = DOCO_FF_INCR_AT_NOMINAL (688e6) x V / 18.5
+#              (scaled by duty_max / dutyAtFfLine, which the model's duty_ff_line form already carries); the doco*
+#              modes had the 2023 ceiling table there (doco_at)
+#   dlead=1    DRIVER_REV 57: the Doco lead table (docoLeadIncrTbl / docoLeadTenthsTbl :5309-5310) against |drv_incr| at
+#              every slot, the voltage's lead over q = L - lzero (LEAD-CURVE-MODEL-2026-10-08.md: the zero 53.5 deg, where
+#              the current is least at low speed); lead_add (deg) is added to it (the harness's sweep points)
+#  and the candidate fixes («#3706», DOCs/analyses/PL-212-ROOT-CAUSE-2026-10-09.md section 4):
+#   bfix=0     as built: servoBoost adds (lag - LAG_SOFT) x (duty >> 4) << SERVO_BOOST_SHL whenever the frame's lag >= 80
+#   bfix=1     F-1 (rejected): the boost only while the pass's lag_s >= SERVO_SETPOINT
+#   bfix=3     F-3 (rejected): the boost only on a pass the field was held or a limiter acted
+#   bfix=4     F-4 (rejected): the boost removed (the calm trim alone); also the plant-only reference
+#   bfix=5     F-5 (rejected): what the boost adds is owed back at 1 / 2^repay_k a frame; recon=1 takes a limiter's cut
+#              out of what is owed first (the PASM would need it for range)
+#   bfix=6     F-6 (THE DESIGN at gate_k=10 gate_leak=2): the boost only while the trim's own error |err| - setpoint,
+#              averaged over 2^gate_k frames, is >= 0. gate_leak=2 is the PASM form (trim_mean += e << 8; trim_mean -=
+#              trim_mean SAR gate_k; sign test); gate_leak=0 an EMA x 256 (floor-biased ~-2 counts); gate_sign=1 the
+#              signed lag instead of |err|; gate_bias=N opens only past N counts of mean error
+#   bfix=7     F-7 (rejected): a mirrored take-back below LAG_DIP (lag_dip, 16) at the boost's gain, never past what it added
+#   tsign=1    (rejected as a fix) the trim on the signed lag instead of |err|
+#  and the mode «#3706» adds: pl212 (D4's range leg; see the mode's comment); docostep takes ds_n=N (N load-step phases)
+Q.update(rev58=0, fsteps=0, ff_doco=0, dlead=0, lzero=53.5, lead_add=0.0, bfix=0, repay_k=12, gate_k=10, tsign=0,
+         lag_dip=16, recon=1, gate_sign=0, gate_leak=0, gate_bias=0, ds_n=1, ds_settle=1.5, ds_spread=0.05, pl_set=0, pl_tmax=0,
+         pl_sweep=0, pl_win=2.0, pl_settle=1.0, pl_from=419, pl_step=21, pl_trace=0, pl_down=0, pl_load_at=1.0,
+         pl_ftrace=0)
+# «#3706» phase 1b (DOCs/analyses/PL-212-ROOT-CAUSE-2026-10-09.md section 7), off by default so every earlier command
+#  reproduces its numbers:
+#   hcont=1    H-1, the held field kept still: a pass that does not advance holds the field at the last frame's angle
+#              (angle_ + 11 x the previous pass's step) instead of stepping it back to angle_ (fsteps=1 only)
+#   hcont=2    H-1b: the held field steps back to angle_ as built, and the first advancing pass after a pass that did
+#              not advance starts from it (angle_ += frm_ofs as well): no forward jump at the release
+#   hcont=3    H-1b THE DESIGN: hcont=2 only in SPIN_UP / AT_SPEED at |drv_incr| >= 2^h_gate (28: the release jump is
+#              then 8.3 counts or more, a third of the LAG_HOLD-to-fault margin); as built elsewhere, so every stop
+#              plan and every speed under the gate is untouched
+#   damp=N     H-2 (exploration): the field's damping term (see run()); d_kp, d_avg, d_lim, d_vmin its gain (counts of
+#              field per count of lag, per pass), the slow mean's 2^d_avg passes, the bound |v| >> d_lim, the least
+#              |v| (x 10^6) it acts at
+#   damp=3     H-2 THE DESIGN, in the PASM's integer form (see run()): d_k the gain shift (2^-d_k counts of field per
+#              count of edge lag, per pass; 3 the design: 6 is clean, 7 hunts, 1 is clean, 0 faults), d_a the mean's
+#              shift (2^d_a advancing passes), d_gnum x 2^d_gate the least |drv_incr| it acts at (3 x 2^26 = 201e6, the
+#              design: under every 6.5in speed in range that does not hunt, under the Doco's earliest onset); d_fold=1 (the design) no cut while the limit hold is armed (the fold-back owns the
+#              field); d_back=1 (the design) a cut past the whole advance steps the field back toward the rotor (the
+#              PASM keeps fwdrev on drv_incr's side), d_back=0 holds it that pass instead (a sign guard)
+#   st_n=N     step mode: N load-step phases over one sector's travel, summarised per load (1 = the one step, as before)
+#   d_noq=1    (rejected) damp=3: no quickening while the pass's lag_s >= LAG_SOFT (the cut may only slow the field)
+#   ds_tgt=N   docostep: step at N x 10^6 only (0 = the row's 2023 ceiling and 400e6, as before)
+#   hd_fast=1  (rejected, H-3) holdDecay's set-back taken every held pass at |drv_incr| >= 2^d_gate
+#   d_state=1  (rejected) damp=3's cut in AT_SPEED only; d_state=2 (rejected) only while the generator is not ramping
+#   d_quiet=N  (rejected) damp=3: no cut for N advancing passes after a held one
+#   d_clamp=N  (probe) damp=3: |dev| clamped to N counts
+Q.update(hcont=0, damp=0, d_kp=0.125, d_avg=6, d_lim=1, d_vmin=0.0, d_k=3, d_a=7, d_gate=26, st_n=1, d_noq=0,
+         ds_tgt=0.0, h_gate=28, hd_fast=0, d_state=0, d_clamp=0, d_quiet=0, d_fold=1, d_back=1, d_gnum=3)
+DOCO_LEAD_INCR = (105_000_000, 210_000_000, 420_000_000, 650_000_000)    # docoLeadIncrTbl (:5309)
+DOCO_LEAD_TENTHS = (523, 578, 680, 680)                                   # docoLeadTenthsTbl (:5310)
+DOCO_FF_INCR_AT_NOMINAL = 688_000_000                                     # :5273
+
+
+def doco_lead_tenths(abs_incr):
+    """leadTenthsForIncrement() (:5343) on the Doco table: flat outside its ends, linear between points"""
+    if abs_incr <= DOCO_LEAD_INCR[0]:
+        return DOCO_LEAD_TENTHS[0]
+    for i in range(1, 4):
+        if abs_incr <= DOCO_LEAD_INCR[i]:
+            lo, hi = DOCO_LEAD_TENTHS[i - 1], DOCO_LEAD_TENTHS[i]
+            step = abs(hi - lo) * (abs_incr - DOCO_LEAD_INCR[i - 1]) // (DOCO_LEAD_INCR[i] - DOCO_LEAD_INCR[i - 1])
+            return lo + step if hi >= lo else lo - step
+    return DOCO_LEAD_TENTHS[3]
+
+
+def e90_rev58(p, abs_incr, lead_add):
+    """«#3706» dlead: e90 for the Doco lead table at |drv_incr| (the voltage's lead over q = L - lzero, plus lead_add)"""
+    return 48.0 - (doco_lead_tenths(abs_incr) / 10 - p['lzero'] + lead_add) * 256 / 360
+
+
 DOCO_ROWS = (7.4, 11.1, 12.0, 14.8, 18.5, 22.2, 24.0)
 # confgurePowerLimits(), the Rev A rows (src/isp_bldc_motor.spin2, maxRevIncreAtPwr's lookup, the else branch)
 DOCO_CEIL_REVA = dict(zip(DOCO_ROWS, (282_000_000, 545_000_000, 335_000_000, 376_000_000, 398_000_000, 470_000_000,
@@ -271,18 +359,36 @@ class Wheel:
                     hflag=False, hcap=0, hsec=None, hn=0, hhit=0, hemax=0)
         w.g_last = None; w.g_gap = 0.0; w.g_back = 0; w.g_fwd = 0; w.g_dir = 0
         w.lim_n = 0; w.caps = 0           # U-5: passes since the arming fold; disarms that capped the field's speed
+        # «#3706»: fieldSteps' per-frame offset and step (counts), the lead's sweep offset, and the per-sample readings
+        w.fofs = 0.0; w.fstp = 0.0; w.lead_add = p['lead_add']; w.fld = 0.0
+        w.lag_pk_s = -999; w.boost_add = 0.0   # the frame lag's peak since the last sample; the boost's duty, summed
+        w.lag_s_pass = 0                       # the pass's lag_s (bfix 1)
+        w.lim_pass = False                     # a held pass or a limiter on the last pass (bfix 3)
+        w.due = 0                              # F-5 (bfix 5): what the boost has added and not yet repaid, acc units
+        w.ef = 0                               # F-6 (bfix 6): the trim's error (|err| - setpoint) x 256, low-passed
+        # «#3706» phase 1b, H-2: the pass's frame-lag sum and count, the signal's slow mean, the correction (counts), and
+        #  the corrections' magnitude summed (angle_ units)
+        w.lsum = 0; w.lcnt = 0; w.lavg = None; w.dcorr = 0.0; w.dsum = 0
+        w.eedge = 0; w.davg = 0; w.dpos = 0    # damp=3: edge_err, damp_avg, edge_pos (the start image zeroes the first two)
+        w.dquiet = 0                           # d_quiet: advancing passes H-2 still waits after a held pass
+        w.prevstp = 0.0                        # hcont=2: the previous pass's frm_step (0: it did not advance)
 
     def permille(w):
         return min(abs(w.drv.v) * 1000 // abs(w.cmd), 1000) if w.cmd else 1000
 
 
 def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=None, prog=None, mon=None,
-        lim_prog=None):
+        lim_prog=None, lead_prog=None):
     """prog: optional [(t s, target), ...] commands taken in time order (the straight drive's sign rule applies);
     mon: optional dict the run fills with the transient readings the stepdn / reversal modes print;
-    lim_prog: optional [(t s, amps), ...] current limits taken in time order («#3668» overend: the limits restored)."""
+    lim_prog: optional [(t s, amps), ...] current limits taken in time order («#3668» overend: the limits restored);
+    lead_prog: optional [(t s, lead_add deg), ...] («#3706»: the harness's timing sweep), taken in time order."""
     ke = ke_fit(p); kt = 1.5 * p['pp'] * ke
     W = [Wheel(p, p['RL'], *pairs, target), Wheel(p, p['RR'], *pairs, -target if p['straight'] else target)]
+    lead_prog = list(lead_prog) if lead_prog else []
+    if p['dlead']:
+        for w in W:
+            w.e90 = e90_rev58(p, 0, w.lead_add)
     fk, ffloor = fold_threshold(p)
     ilim = p['i_limit']
     lim_prog = list(lim_prog) if lim_prog else []
@@ -331,6 +437,14 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
         while lim_prog and t >= lim_prog[0][0]:
             _, ilim = lim_prog.pop(0)                  # «#3668»: setFoldLimit() from the front cog, both wheels
             fk, ffloor = fold_threshold(dict(p, i_limit=ilim))
+        while lead_prog and t >= lead_prog[0][0]:
+            _, la = lead_prog.pop(0)                   # «#3706»: the sweep's point, applied as testSetFwdRevIndep() does
+            for w in W:
+                if p['dlead']:
+                    w.e90 = e90_rev58(p, abs(w.drv.v), la)
+                else:
+                    w.e90 += (w.lead_add - la) * 256 / 360   # a fixed pair: the lead moves by the difference
+                w.lead_add = la
         # ---- the front cog's protective stop, once per 1 ms front pass (bFrontProtect() :2898-2904)
         if p['obst'] and f % 44 == 0:
             for i, w in enumerate(W):
@@ -386,7 +500,9 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
         # ---- front cogs, once per slot
         if f % slot == 0 and f > 0:
             for w in W:
-                if w.kind == 'SCHED':
+                if p['dlead']:
+                    w.e90 = e90_rev58(p, abs(w.drv.v), w.lead_add)   # «#3706»: the Doco table (frontApplyLead)
+                elif w.kind == 'SCHED':
                     w.L = lead_tenths(abs(w.drv.v)) / 10
                     w.e90 = p['e90_L18'] + (l_eff(w.L, w.Z, w.pdir if p['pasm'] else w.sign) - 18) * 256 / 360
                 if w.drv.held != w.last_held:
@@ -426,6 +542,26 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
         for i, w in enumerate(W):
             if f % PASS == 0 and not w.faulted:
                 lag_s = -w.e if w.drv.v < 0 else w.e
+                if p['hcont'] == 1:
+                    # «#3706» phase 1b, H-1: drvMotor takes frm_ofs back by one frm_step, to the offset of the last frame
+                    #  it drove, and zeroes frm_step: a pass that does not advance (held, at rest) keeps the field there
+                    w.fofs += 22 * w.fstp; w.fstp = 0.0
+                else:
+                    w.prevstp = w.fstp             # hcont=2 (H-1b): did the previous pass advance? (prev_step)
+                    w.fofs = 0.0; w.fstp = 0.0     # «#3706» fsteps: drvMotor zeroes frm_step / frm_ofs every pass (:8241)
+                w.lag_s_pass = lag_s
+                w.lim_pass = False
+                if p['damp'] in (1, 2):
+                    # «#3706» phase 1b, H-2 (exploration): the field's damping term. The pass's lag signal (damp=1: the
+                    #  mean frame lag over the last pass; damp=2: the last hall edge's exact lag), less its slow mean
+                    #  (an EMA over 2^d_avg passes), x d_kp counts of field per count of lag, taken off this pass's advance
+                    sig = (w.lsum / w.lcnt if w.lcnt else lag_s) if p['damp'] == 1 else w.lag_edge
+                    w.lsum = 0; w.lcnt = 0
+                    if w.lavg is None:
+                        w.lavg = float(sig)
+                    dev = sig - w.lavg
+                    w.lavg += dev / 2 ** p['d_avg']
+                    w.dcorr = dev * p['d_kp']
                 if not w.started:
                     w.started = True
                     w.thf = (math.floor(w.thr / SECTOR) + 0.5) * SECTOR
@@ -478,8 +614,66 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                             e90n = p['e90_L18'] + (l_eff(w.L, w.Z, nd) - 18) * 256 / 360
                             w.thf -= w.pdir * (w.e90 + e90n - 128)
                             w.pdir = nd; w.e90 = e90n; w.flips += 1
-                        w.thf += w.drv.v / TWO32 * 256
+                        adv = w.drv.v
+                        if p['damp'] == 3:
+                            # «#3706» phase 1b, H-2 THE DESIGN, the PASM's integer form (fieldSteps): dev = the last hall
+                            #  edge's err_ less its mean (damp_avg SAR d_a); damp_avg += dev (an EMA over 2^d_a advancing
+                            #  passes, x 2^d_a); in SPIN_UP / AT_SPEED with |drv_incr| >= 2^d_gate, the advance is
+                            #  drv_incr - dev << (24 - d_k). err_'s sign is the angle's, so no sign is taken: lag = s err_,
+                            #  and the correction against the motion, s x (s dev), is dev
+                            dev = w.eedge - (w.davg >> p['d_a'])
+                            w.davg += dev
+                            if p['d_noq'] and lag_s >= p['lag_soft']:
+                                # d_noq=1 (candidate): no quickening while the pass's lag is LAG_SOFT or more -- the
+                                #  cut may only slow the field then (dev clamped to the slowing side of 0)
+                                dev = max(dev, 0) if w.drv.v >= 0 else min(dev, 0)
+                            if p['d_state'] == 1:
+                                d_on = w.drv.state == 'AT_SPEED'           # d_state=1: AT_SPEED only
+                            elif p['d_state'] == 2:
+                                d_on = w.drv.state in RUNNING and w.drv.a == 0   # d_state=2: the generator not ramping
+                            else:
+                                d_on = w.drv.state in RUNNING
+                            if p['d_quiet'] and w.dquiet > 0:
+                                w.dquiet -= 1                     # d_quiet=N: no cut for N advancing passes after a
+                                d_on = False                      #  held one (the PASM's CMPSUB damp_quiet, #1 WC)
+                            if p['d_fold'] and lim_hold:
+                                d_on = False                      # d_fold=1 (THE DESIGN): no cut while the limit hold
+                                                                  #  is armed -- the fold-back owns the field (lim_arm)
+                            if p['d_clamp']:
+                                dev = max(-p['d_clamp'], min(p['d_clamp'], dev))   # d_clamp=N: |dev| <= N counts
+                            if d_on and abs(adv) >= p['d_gnum'] << p['d_gate']:   # d_gnum=N: the gate at N x 2^d_gate
+                                adv -= dev << (24 - p['d_k'])
+                                w.dsum += abs(dev) << (24 - p['d_k'])
+                                if not p['d_back'] and (adv < 0) != (w.drv.v < 0):
+                                    adv = 0                  # d_back=0: a sign guard, a cut past the whole advance
+                                                             #  holds the field this pass. d_back=1 (THE DESIGN): the
+                                                             #  field may step back toward the rotor; the PASM keeps
+                                                             #  fwdrev on drv_incr's side (prior_angle, as I-7 does)
+                        elif p['damp'] and w.drv.state in RUNNING and abs(adv) >= p['d_vmin'] * 1e6:
+                            c_ = int(w.dcorr * 2 ** 24)                       # counts -> angle_ units
+                            bnd = abs(adv) >> p['d_lim']
+                            c_ = max(-bnd, min(bnd, c_))
+                            adv -= c_ if adv > 0 else -c_
+                            w.dsum += abs(c_)
+                        w.thf += adv / TWO32 * 256
+                        if p['fsteps']:
+                            # «#3706» fieldSteps (:8721-8727): QDIV of |v| by 23 (unsigned, truncated), signed as v;
+                            #  the first frame's offset (step - v) SAR 1; in counts (angle_ SAR 24)
+                            st_ = abs(adv) // PASS
+                            if adv < 0:
+                                st_ = -st_
+                            w.fstp = st_ / 2 ** 24
+                            w.fofs = ((st_ - adv) >> 1) / 2 ** 24
+                            if p['hcont'] == 3 and not (w.drv.state in RUNNING and abs(w.drv.v) >> p['h_gate']):
+                                w.prevstp = 1.0            # H-1b gated (THE DESIGN): outside H-2's region, as built
+                            if p['hcont'] in (2, 3) and w.prevstp == 0:
+                                # «#3706» H-1b: the first pass after one that did not advance starts from the field
+                                #  where it stood: angle_ += frm_ofs as well (-11 steps), so frame 0 drives angle_old +
+                                #  about one step, not angle_old + 12 steps
+                                w.thf += w.fofs
                     else:
+                        w.lim_pass = True                  # «#3706» bfix 3: a held pass
+                        w.dquiet = p['d_quiet']            # «#3706» d_quiet: H-2 waits N advancing passes after it
                         if p['pasm'] and 82 <= lag_s <= 88:
                             w.hold_win += 1
                         if lim_hold and p['d5_back'] and lag_s > p['lag_lim']:
@@ -498,7 +692,9 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                             # D-C: a held pass walks the field down only when the duty could not rise in the last
                             #  pass (a limiter clamped it: duty_capped advanced; the model has no fold-back below the
                             #  cap); else the field waits at the hold and the trim answers
-                            if w.capped != w.capped_seen or (p['u_give'] and lim_hold and w.lim_sector is not None):
+                            if w.capped != w.capped_seen or (p['u_give'] and lim_hold and w.lim_sector is not None) \
+                                    or (p['hd_fast'] and abs(w.drv.v) >> p['d_gate']):
+                                # hd_fast=1 (candidate H-3): above H-2's gate a held pass always gives way
                                 w.drv.hold_decay()        # U-3: an armed pass that holds also gives way
                             elif w.drv.state == 'AT_SPEED':
                                 w.drv.state = 'SPIN_UP'
@@ -512,11 +708,15 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                     w.duty_cap = p['duty_max']
                     if w.drv.state in RAMPING_DOWN and lag_s < (p['cap_lift'] or p['lag_soft']) and w.incr0:
                         w.duty_cap = max(p['duty_min'], min(p['duty_max'], w.duty0 * abs(w.drv.v) // w.incr0))
-                w.ff = min(abs(w.drv.v) * p['duty_ff_line'] // p['ff_incr'], p['duty_max'])
+                ffi = int(DOCO_FF_INCR_AT_NOMINAL * p['Vbus'] / 18.5) if p['ff_doco'] else p['ff_incr']
+                w.ff = min(abs(w.drv.v) * p['duty_ff_line'] // ffi, p['duty_max'])
                 if w.drv.state == 'AT_SPEED' and w.t_arrive is None:
                     w.t_arrive = t
             sgn = w.pdir if p['pasm'] else w.sign
-            e_true = (w.thf - w.thr) * sgn
+            # «#3706» fsteps: this frame's field, angle_ + frm_ofs + k x frm_step (k the frame in the pass), which both
+            #  the drive and err_ read (:8451-8453, :8548); else angle_ itself
+            w.fld = w.thf + w.fofs + (f % PASS) * w.fstp if p['fsteps'] else w.thf
+            e_true = (w.fld - w.thr) * sgn
             delta = math.radians(90 + (e_true - w.e90) * 360 / 256) * sgn
             Va = p['Vbus'] * w.duty / (16 * 3068)
             if p['sag_rate']:
@@ -577,11 +777,17 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             w.thr += w.wm * p['pp'] * 256 / (2 * math.pi) * FRAME
             sector = math.floor(w.thr / SECTOR)
             e_old = w.e
-            w.e = math.floor(w.thf - (sector + 0.5) * SECTOR)
+            w.e = math.floor(w.fld - (sector + 0.5) * SECTOR)      # w.fld is w.thf unless fsteps («#3706»)
             if p['wrap']:
                 w.e = ((w.e + 128) % 256) - 128        # err_ is a wrapped 8-bit angle (:7926-7930)
             if abs(w.e) >= p['fault'] and not (p['pasm'] and w.drv.state == 'STOPPED'):
                 w.faulted = True                       # (an undriven bridge takes no fault, :7983)
+            if p['damp']:
+                w.lsum += -w.e if w.drv.v < 0 else w.e     # «#3706» H-2: the frame's lag, into the pass's sum
+                w.lcnt += 1
+                if sector != w.dpos:
+                    w.eedge = w.e                          # damp=3: a tick this frame -- its err_ is the edge's
+                    w.dpos = sector
             if p['diag'] and (not w.ring or w.ring[-1][1] != w.e or w.ring[-1][2] != sector):
                 w.ring.append((round(t, 5), w.e, sector, w.drv.v, w.drv.state, w.duty, w.setbacks, w.drv.held))
                 del w.ring[:-24]
@@ -663,23 +869,71 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             else:
                 over = math.hypot(w.idd, w.iq) > ilim
             if over:
+                want_ = (w.acc >> p['acc_shift']) + w.ff + w.pterm      # «#3706»: the demand the fold cuts
                 w.duty -= w.duty >> 6
                 if p['pasm'] and w.duty > w.duty_cap:
                     w.duty = w.duty_cap; w.capped += 1; w.cap_frames += 1   # .dutyLimits after a fold too
                 w.duty = max(w.duty, p['duty_min'])
+                if p['bfix'] in (5, 7) and p['recon'] and want_ > w.duty:
+                    w.due = max(w.due - ((want_ - w.duty) << p['acc_shift']), 0)   # F-5: the fold's cut, the boost's first
                 w.acc = (w.duty - w.ff - w.pterm) << p['acc_shift']
                 w.capped += 1                      # D-C: the limit acted (foldback_cnt advanced)
                 w.folds += 1
                 continue
             # ---- the trim (DRIVER_REV 46), plus the proposed proportional term
             x = abs(w.e) - p['setpoint']
+            if p['tsign']:
+                # «#3706» candidate: the trim on the SIGNED lag (lag_s's form, negative when the rotor leads the field)
+                x = (-w.e if w.drv.v < 0 else w.e) - p['setpoint']
             w.acc += x * (w.duty >> p['preshift'])
-            if p['dB'] and (not p['boost_run'] or w.drv.state in RUNNING):
-                lag_f = -w.e if w.drv.v < 0 else w.e
+            if p['bfix'] == 6:
+                # F-6: the trim's own error, low-passed over 2^gate_k frames (x 256, SAR as the PASM would); gate_sign=1:
+                #  the SIGNED lag's error instead (negative while the rotor leads the field)
+                xg = ((-w.e if w.drv.v < 0 else w.e) - p['setpoint']) if p['gate_sign'] else x
+                xg -= p['gate_bias']              # gate_bias=N: the gate opens only past N counts of mean error
+                if p['gate_leak']:
+                    # the PASM's form: trim_mean += e << gate_frac; trim_mean -= trim_mean SAR gate_k, so trim_mean ~
+                    #  2^(gate_k + gate_frac) x the error's mean over 2^gate_k frames; only its sign is read. gate_leak=1:
+                    #  gate_frac 0 (SAR's floor biases the sign by ~half a count); gate_leak=2: gate_frac 8 (the design)
+                    w.ef += xg << (8 if p['gate_leak'] == 2 else 0)
+                    w.ef -= w.ef >> p['gate_k']
+                else:
+                    w.ef += ((xg << 8) - w.ef) >> p['gate_k']
+            lag_f = -w.e if w.drv.v < 0 else w.e
+            w.lag_pk_s = max(w.lag_pk_s, lag_f)     # «#3706»: the frame lag's peak, per sample
+            # «#3706» the boost's candidates (bfix, see the key's comment); 0 = as built
+            b_on = p['dB'] and (not p['boost_run'] or w.drv.state in RUNNING)
+            if b_on and p['bfix'] == 1:
+                b_on = w.lag_s_pass >= p['setpoint']
+            elif b_on and p['bfix'] == 3:
+                b_on = w.lim_pass or w.capped != w.capped_seen
+            elif b_on and p['bfix'] == 6:
+                b_on = w.ef >= 0                  # F-6: only while the trim's mean error asks for more duty
+            elif p['bfix'] == 4:
+                b_on = False
+            if b_on and p['bfix'] == 7:
+                # F-7: the boost and its mirror. (lag - LAG_SOFT)+ - (LAG_DIP - lag)+, LAG_DIP = 2 x setpoint - LAG_SOFT
+                #  (16), at the boost's gain; the negative side only takes back what the boost has added and not yet
+                #  been taken back (w.due), so it never acts below the trim's own level
+                v_ = (max(lag_f - p['lag_soft'], 0) - max(p['lag_dip'] - lag_f, 0)) * (w.duty >> p['preshift'])
+                v_ <<= (p['acc_shift'] - p['boost_shift'])
+                v_ = max(v_, -w.due)
+                if v_ > 0:
+                    w.boosts += 1
+                w.due += v_; w.acc += v_
+                w.boost_add += v_ / 2 ** p['acc_shift']
+            elif b_on:
                 if lag_f >= p['lag_soft']:
                     w.boosts += 1
                     # the boost, in accumulator units: (lag - LAG_SOFT) * (duty >> 4) << (acc_shift - boost_shift)
-                    w.acc += ((lag_f - p['lag_soft']) * (w.duty >> p['preshift'])) << (p['acc_shift'] - p['boost_shift'])
+                    b_ = ((lag_f - p['lag_soft']) * (w.duty >> p['preshift'])) << (p['acc_shift'] - p['boost_shift'])
+                    w.acc += b_
+                    w.boost_add += b_ / 2 ** p['acc_shift']
+                    if p['bfix'] == 5:
+                        w.due += b_               # F-5: what the boost added is owed back
+            if p['bfix'] == 5:
+                r_ = w.due >> p['repay_k']        # F-5: 1 / 2^repay_k of it repaid each trim frame (SAR floors)
+                w.due -= r_; w.acc -= r_
             pterm = 0
             if p['dA']:
                 pterm = ((w.lag_edge - p['setpoint']) * (w.duty >> p['preshift'])) >> p['kp_shift']
@@ -688,10 +942,14 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             d2 = max(p['duty_min'], min(w.duty_cap if p['pasm'] else p['duty_max'], want))
             if d2 != want:
                 w.acc = (d2 - w.ff - pterm) << p['acc_shift']
+                if p['bfix'] in (5, 7) and p['recon'] and want > d2:
+                    w.due = max(w.due - ((want - d2) << p['acc_shift']), 0)   # F-5: a ceiling's cut, the boost's first
                 if d2 < want:
                     w.capped += 1
                     w.cap_frames += 1
             if p['pasm'] and w.drv.state == 'STOPPED':
+                if p['bfix'] in (5, 7) and p['recon'] and want > p['duty_min']:
+                    w.due = max(w.due - ((want - p['duty_min']) << p['acc_shift']), 0)
                 d2 = p['duty_min']; w.acc = (d2 - w.ff - pterm) << p['acc_shift']    # .endAtZero, then undriven
             w.duty = d2
         if p['obst'] and any(w.faulted for w in W):
@@ -729,7 +987,12 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
             samples.append((t, [(w.duty, w.e * w.sign, max(w.pin, 0) / p['Vbus'], w.thr * w.sign / SECTOR,
                                  w.drv.v, w.drv.held, w.drv.state, math.hypot(w.idd, w.iq), w.capped,
                                  # «#3668»: appended, so every reader above (by index) is unchanged
-                                 w.setbacks, w.cap_frames, w.folds, w.iq, w.wm) for w in W], scale))
+                                 w.setbacks, w.cap_frames, w.folds, w.iq, w.wm,
+                                 # «#3706»: appended likewise -- boost frames, the frame lag's peak since the last
+                                 #  sample, the boost's duty summed, the d-axis current, the e90 in force
+                                 w.boosts, w.lag_pk_s, w.boost_add, w.idd, w.e90, w.ef, w.due) for w in W], scale))
+            for w in W:
+                w.lag_pk_s = -999
             if trace is not None:
                 trace.append(samples[-1])
     ta = [w.t_arrive for w in W if w.t_arrive is not None]
@@ -1047,6 +1310,47 @@ def doco_arrival(q, tgt):
     return k, trav
 
 
+def gen_passes(q, v0, tgt):
+    """«#3706»: the generator alone from v0 (at speed) to tgt: passes to AT_SPEED"""
+    d = Drive(q); d.state = 'AT_SPEED'; d.v = v0; d.a = 0; k = 0
+    while k < 400_000:
+        d.jerk_step(tgt, 0); k += 1
+        if d.state == 'AT_SPEED' and d.v == tgt:
+            break
+    return k
+
+
+def win_stats(tr, t0, t1, tgt, q):
+    """«#3706»: a range window's readings from a 0.5 ms trace, wheel 0, as B1-RANGE carries them (test_bench_single
+    bRangeStep :7113-7123): following, duty mean / peak, mean |err| and its frame peak, held passes, ceiling clamps; and
+    the model's own: boost frames and the boost's duty per second, the rotor speed's sd per mille (jit_pm's proxy), the
+    phase and d-axis current, the feedforward's line duty"""
+    ws = [s for s in tr if t0 <= s[0] < t1]
+    if len(ws) < 4:
+        return None
+    a, b = ws[0][1][0], ws[-1][1][0]
+    dt = ws[-1][0] - ws[0][0]
+    pred = abs(tgt) / TWO32 * (44000 / PASS) * 6
+    col = lambda j: [s[1][0][j] for s in ws]
+    wm = col(13); mw = sum(wm) / len(wm)
+    sd = (sum((x - mw) ** 2 for x in wm) / len(wm)) ** 0.5
+    ffi = int(DOCO_FF_INCR_AT_NOMINAL * q['Vbus'] / 18.5) if q['ff_doco'] else q['ff_incr']
+    line = abs(tgt) * q['duty_ff_line'] / ffi
+    return dict(fol=1000 * (b[3] - a[3]) / dt / pred, duty=sum(col(0)) / len(ws), duty_hi=max(col(0)),
+                err=sum(abs(x) for x in col(1)) / len(ws), err_pk=max(col(15)), held=b[5] - a[5], cap=b[10] - a[10],
+                boost=(b[14] - a[14]) / dt, bduty=(b[16] - a[16]) / dt, jit=1000 * sd / abs(mw) if mw else 0.0,
+                iph=sum(col(7)) / len(ws), idd=sum(col(17)) / len(ws), line=line, e90=ws[-1][1][0][18])
+
+
+def pl212_line(tag, x):
+    if x is None:
+        return f"  {tag}: no window"
+    return (f"  {tag}: fol {x['fol']:5.0f} pm duty {x['duty']:6.0f} (hi {x['duty_hi']:5}, {100 * (x['duty'] / x['line'] - 1):+4.0f} % "
+            f"on the line {x['line']:5.0f}) | err {x['err']:4.1f} pk {x['err_pk']:3} | held {x['held']:3} cap {x['cap']:5} | "
+            f"boost {x['boost']:6.0f} frames/s {x['bduty']:8.0f} duty/s | speed sd {x['jit']:4.0f} pm | Iph {x['iph']:4.2f} "
+            f"Id {x['idd']:+5.2f} A")
+
+
 def doco_stop(q, v0):
     """the generator alone from v0 at rest acceleration to 0: (passes, field travel in angle units)"""
     d = Drive(q); d.state = 'AT_SPEED'; d.v = v0; d.a = 0; k = 0; trav = 0
@@ -1077,6 +1381,8 @@ def parse(argv):
     p = dict(Q)
     if 'doco=1' in argv:
         p.update(DOCO)                  # «#3678»: the preset first, so a key=value after it overrides it
+    if 'rev58=1' in argv:
+        p.update(fsteps=1, ff_doco=1, dlead=1)   # «#3706»: likewise, before any key=value
     for a_ in argv:
         k, v = a_.split('=')
         p[k] = type(Q[k])(float(v))
@@ -1115,7 +1421,24 @@ if __name__ == '__main__':
     elif mode == 'step':
         # a straight drive at MED (power 13, ~308 mm/s), then a one-sided load on the LEFT wheel (a grab)
         print('-- straight MED, LEFT load step at 1.5 s; window 1.9-3.4 s')
-        for T_ in (0.0, 1.0, 2.0, 4.0, 8.0):
+        if p['st_n'] > 1:
+            # «#3706» phase 1b: st_n=N load steps spread over one hall sector's travel at MED (18.7 ms), as ds_n does
+            #  for the Doco; per load, LEFT's spread over the N: following, duty swing, phase peak, held passes, faults
+            for T_ in (1.0, 2.0, 4.0, 8.0):
+                xs = []; nf = 0
+                for j in range(int(p['st_n'])):
+                    q = dict(p); q.update(straight=1, step_t=1.5 + 0.0187 * j / p['st_n'], step_T=T_)
+                    r = run(q, MED, 3.5, ('SCHED', None, -4), 1.5, t0_override=1.9)
+                    nf += any(r['faulted'])
+                    if r['ok']:
+                        xs.append(r['L'])
+                fo = [x['fol'] for x in xs]; sw = [x['swing'] for x in xs]; ip = [x['iph_pk'] for x in xs]
+                hd = [x['held_all'] for x in xs]
+                print(f"  load {T_:4.1f} N m x {int(p['st_n'])}: LEFT fol {min(fo):5.1f}-{max(fo):5.1f} % (mean "
+                      f"{sum(fo) / len(fo):5.2f}) | swing mean {sum(sw) / len(sw):5.0f} max {max(sw):5.0f} | Iph pk mean "
+                      f"{sum(ip) / len(ip):5.2f} max {max(ip):5.2f} A | held mean {sum(hd) / len(hd):5.1f} max {max(hd):4} | "
+                      f"faults {nf}", flush=True)
+        for T_ in ((0.0, 1.0, 2.0, 4.0, 8.0) if p['st_n'] <= 1 else ()):
             q = dict(p); q.update(straight=1, step_t=1.5, step_T=T_)
             r = run(q, MED, 3.5, ('SCHED', None, -4), 1.5, t0_override=1.9)
             print(f"  load {T_:4.1f} N m  {fmt(r)}")
@@ -1526,12 +1849,33 @@ if __name__ == '__main__':
         for V in rows:
             q = doco_at(p, V, 0.0)
             c = DOCO_CEIL_REVA[V]
-            for tgt in ((c, 400_000_000) if c > 419_430_400 else (c,)):
+            tgts = (c, 400_000_000) if c > 419_430_400 else (c,)
+            if p['ds_tgt']:
+                tgts = (int(p['ds_tgt'] * 1e6),)     # «#3706» phase 1b: ds_tgt=N, the one speed (x 10^6) to step at
+            for tgt in tgts:
                 b = doco_best_lead(q, tgt)
                 qv = doco_at(p, V, float(b[0]) if b else 0.0)
                 k, _ = doco_arrival(qv, tgt)
                 ts = k * PASS / 44000 + 0.5
                 for T_ in loads:
+                    if p['ds_n'] > 1:
+                        # «#3706» ds_n=N: N load steps, the step time spread over ds_spread s (a hunt cycle's phases), each
+                        #  after ds_settle s at speed; counted: faults, and the last 0.5 s's following of the others
+                        nf = 0; fols = []; tf = []
+                        for j in range(int(p['ds_n'])):
+                            tsj = k * PASS / 44000 + p['ds_settle'] + p['ds_spread'] * j / p['ds_n']
+                            q2 = dict(qv); q2.update(step_t=tsj, step_T=T_)
+                            mon = dict(t_from=tsj, t_to=tsj + 1.0)
+                            r = run(q2, tgt, tsj + 1.0, ('FIXED', 18, -4), 0.5, t0_override=tsj + 0.5, mon=mon)
+                            if mon['fault']:
+                                nf += 1; tf.append(1000 * (mon['fault'][0] - tsj))
+                            elif r.get('ok'):
+                                fols.append(r['L']['fol'])
+                        print(f"  {V:4} V {tgt / 1e6:4.0f}e6 load {T_:6.4f}: FAULT in {nf} of {int(p['ds_n'])}"
+                              + (f" ({min(tf):5.1f}-{max(tf):5.1f} ms after the step)" if tf else '')
+                              + (f"; the others' last 0.5 s fol {min(fols):5.1f}-{max(fols):5.1f} %" if fols else ''),
+                              flush=True)
+                        continue
                     q2 = dict(qv); q2.update(step_t=ts, step_T=T_)
                     mon = dict(t_from=ts, t_to=ts + 1.0)
                     r = run(q2, tgt, ts + 1.0, ('FIXED', 18, -4), 0.5, t0_override=ts + 0.5, mon=mon)
@@ -1640,6 +1984,82 @@ if __name__ == '__main__':
                                f"mN m" + (f" ({100 * kt_ * I / rated:3.0f} % of rated)" if rated else '')
                                + f", copper {1.5 * I * I * R:5.2f} W")
                 print(f"  {name:5} {V:4} V (kt {kt_:.4f} N m/A; slip at {2 * tick_deg:4.0f} deg of shaft): " + ' | '.join(out))
+    elif mode == 'pl212':
+        # «#3706» D4's range leg (test_bench_single bRangeClimb :7015, bRangeStep :7055, bRangeSweep :7148), one sign
+        #  (POS: the model is symmetric), at dv (22.2 unless given), unloaded, the rig's J. From rest to pl_from x 1e6,
+        #  then pl_step x 1e6 a step to pl_tmax x 1e6 (0: until a step is not held, a fault, or 1,020e6). Each step: the
+        #  generator's arrival + 0.3 s, pl_settle s, a pl_win s window (the harness: 1 s, 5 s); with pl_sweep=1 at each
+        #  held step the timing sweep, lead 0 (the window), -5, -10, the walk back in 5-deg steps of 0.2 s, +5, +10, the
+        #  walk back, each point 0.7 s settle + pl_win s. pl_set=N: start from rest straight at N x 1e6 and hold it
+        #  (one point). Lines read as B1-RANGE (+ the model's boost and speed-sd readings)
+        V = p['dv'] or 22.2
+        q = dict(p); q['Vbus'] = V; q['v_dt'] = p['v_dt'] * V / 18.5
+        if not q['dlead']:
+            q['e90_L18'] = 48.0 - (68.0 - q['lzero']) * 256 / 360
+        print(f"-- pl212: {V} V, bfix {q['bfix']}, fsteps {q['fsteps']} ff_doco {q['ff_doco']} dlead {q['dlead']} (lzero "
+              f"{q['lzero']}), J {q['Jw']:.1e}, Lh {q['Lh'] * 1e3:.2f} mH, Tc {q['Tc']}, Bv {q['Bv']:.1e}, ke "
+              f"{ke_fit(q):.5f}; window {q['pl_win']} s after {q['pl_settle']} s")
+        steps = []
+        if q['pl_set']:
+            steps = [int(q['pl_set'] * 1e6)]
+        else:
+            top = int(q['pl_tmax'] * 1e6) if q['pl_tmax'] else 1_020_000_000
+            s_ = int(q['pl_from'] * 1e6)
+            while s_ <= top:
+                steps.append(s_); s_ += int(q['pl_step'] * 1e6)
+            if q['pl_down']:
+                steps += steps[-2::-1]        # pl_down=1: then back down the same steps (hysteresis: two states)
+        t = 0.0; v0 = 0; prog = []; lprog = []; wins = []
+        for tgt in steps:
+            k = gen_passes(q, v0, tgt) if v0 else doco_arrival(q, tgt)[0]
+            if v0:
+                prog.append((t, tgt))
+            t += k * PASS / 44000 + 0.3 + q['pl_settle']
+            wins.append((tgt, '0', t, t + q['pl_win'])); t += q['pl_win']
+            if q['pl_sweep']:
+                for d_ in (-5, -10, 'back', 5, 10, 'back'):
+                    if d_ == 'back':
+                        last = lprog[-1][1]
+                        for k_ in range(1, int(abs(last) // 5) + 1):
+                            lprog.append((t, last - 5 * k_ * (1 if last > 0 else -1))); t += 0.2
+                        continue
+                    lprog.append((t, float(d_))); t += 0.7
+                    wins.append((tgt, f"{d_:+d}", t, t + q['pl_win'])); t += q['pl_win']
+            v0 = tgt
+        if q['step_T'] > 0:
+            # step_T=N: D-2's case on this rig, a load of N N m from pl_load_at s into the first window, held to the end
+            q['step_t'] = wins[0][2] + q['pl_load_at']
+        tr = []
+        mon = dict(t_from=0.0, t_to=t)
+        run(q, steps[0], t, ('FIXED', 18, -4), 0.5, sample_ms=0.5, trace=tr, t0_override=0.0, mon=mon, prog=prog,
+            lead_prog=lprog)
+        f_ = mon['fault']
+        if f_ and q['pl_ftrace']:
+            # pl_ftrace=N: the last N ms of the 0.5 ms trace before a fault (wheel 0)
+            for s in tr:
+                if f_[0] - q['pl_ftrace'] / 1000 <= s[0]:
+                    x = s[1][0]
+                    print(f"    t {1000 * (s[0] - f_[0]):7.1f} ms duty {x[0]:5} lag pk {x[15]:4} err {x[1]:4} rpm "
+                          f"{x[13] * 60 / (2 * math.pi):7.1f} field {x[4] / 1e6:6.1f}e6 Id {x[17]:+5.2f} Iq {x[12]:+5.2f} "
+                          f"held {x[5]} {x[6]}")
+        if q['pl_trace']:
+            # pl_trace=N: N ms of the first window's 0.5 ms trace, wheel 0 (t, duty, the frame lag's peak since the last
+            #  sample, err, speed rpm, Id, Iq, the boost's duty summed)
+            t0 = wins[0][2] + (q['pl_load_at'] - 0.002 if q['step_T'] > 0 else 0.0)   # a load: from 2 ms before it
+            for s in tr:
+                if t0 <= s[0] < t0 + q['pl_trace'] / 1000:
+                    x = s[1][0]
+                    print(f"    t {1000 * (s[0] - t0):7.1f} ms duty {x[0]:5} lag pk {x[15]:4} err {x[1]:4} rpm "
+                          f"{x[13] * 60 / (2 * math.pi):7.1f} Id {x[17]:+5.2f} Iq {x[12]:+5.2f} boost sum {x[16]:9.0f} "
+                          f"held {x[5]} ef {x[19]:6} due {x[20] / 2 ** 16:7.0f}")
+        for tgt, pt, t0, t1 in wins:
+            if f_ and t1 > f_[0]:
+                print(f"  {tgt / 1e6:4.0f}e6 {rpm_of(tgt):4.0f} rpm lead {pt:>3}: FAULT at {f_[0]:.3f} s in {f_[2]}")
+                break
+            x = win_stats(tr, t0, t1, tgt, q)
+            print(pl212_line(f"{tgt / 1e6:4.0f}e6 {rpm_of(tgt):4.0f} rpm lead {pt:>3}", x), flush=True)
+            if pt == '0' and not q['pl_tmax'] and x and abs(x['fol'] - 1000) > 10:
+                print('  not held: the climb ends'); break
     elif mode == 'wheelsup':
         q = dict(p); q.update(m=0.0, Iz=0.0, Tc=0.20, Vbus=18.5)
         print('-- wheels up (no platform, J 0.006, Tc 0.20, 18.5 V), schedule; manual 6.4: swing 178-399, err_pk 76-86 at 10/20e6')

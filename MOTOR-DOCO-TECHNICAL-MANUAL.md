@@ -345,14 +345,20 @@ motor (calculated). `power` 100 commands the ceiling and `power` 1 the floor.
 
 | Supply | Floor (shipped) | Ceiling (shipped) | Basis |
 |---|---|---|---|
-| 7.4 V | 4.00 ticks/s, **10 rpm** | 247 × 10⁶, **1,650 rpm** | driver, from measurement |
-| 11.1 V | 10 rpm | 370.5 × 10⁶, **2,475 rpm** | driver, from measurement |
-| 12.0 V | 10 rpm | 400.5 × 10⁶, **2,675 rpm** | driver, calculated (not tested) |
-| 14.8–24 V | 0.60 ticks/s, **1.5 rpm** | 419 × 10⁶, **2,799 rpm** | driver, from measurement |
+| 7.4 V | 4.00 ticks/s, **10 rpm** | 302 × 10⁶, **2,018 rpm** | driver, from measurement |
+| 11.1 V | 0.10 ticks/s, **0.25 rpm** | 453.5 × 10⁶, **3,030 rpm** | floor measured; ceiling calculated |
+| 12.0 V | 0.25 rpm | 490 × 10⁶, **3,274 rpm** | driver, calculated (not tested) |
+| 14.8 V | 0.25 rpm | 604.5 × 10⁶, **4,039 rpm** | floor measured; ceiling calculated |
+| 18.5 V | 0.25 rpm | 756 × 10⁶, **5,051 rpm** | floor measured; ceiling calculated |
+| 22.2 V | 0.25 rpm | 907 × 10⁶, **6,060 rpm** | floor measured; ceiling calculated |
+| 24 V | 0.25 rpm | 980.5 × 10⁶, **6,551 rpm** | floor measured; ceiling calculated |
 
-**How the ceiling is chosen.** As on the 6.5″: the fastest speed that keeps 7.5 % of the duty unused,
-unloaded, read on the needier direction, and scaled by the supply — capped at 2,799 rpm, the fastest
-speed every supply had then been certified at.
+**How the ceiling is chosen.** The fastest speed the drive holds accurately on the motor's own
+back-EMF, with 7.5 % of the duty still unused, unloaded. This is the 6.5″'s rule. The drive never gets
+there by weakening the field, so the speed holds and the distance counted from the halls stays exact.
+At 7.4 V the drive ran out of duty at 2,021 rpm, 96 % of the motor's own no-load speed at that supply
+(measured). The other rows are that point scaled by the supply, and every one sits inside the sheet's
+no-load speed (6,800 rpm at 24 V).
 
 **What the motor actually holds** (first unit, the speed held steadily for 5 s in each direction):
 
@@ -361,9 +367,9 @@ speed every supply had then been certified at.
 | 7.4 V | **3.00 ticks/s, 7.5 rpm** both ways (2.00 stutters) | **1,931 rpm** | **2,212 rpm** | the duty ceiling | measured |
 | 24 V | **0.10 ticks/s, 0.25 rpm** both ways, the slowest tried | **4,343 rpm** | **≥ 3,782 rpm** | forward the duty ceiling; reverse the test program's own error, not the motor | measured |
 
-So **both ends of the shipped range sit well inside what the motor holds**, most of all at 24 V. The
-ceilings are set by the duty the drive needs at the top, and §5.2 says more lead lowers it. They will
-be raised when the lead does (§9).
+The table above was measured before the drive damped its own top-speed hunt. Before that change, the
+hunt ended every climb from 11.1 V up and faulted the drive near 4,900 rpm at 24 V. The floors are measured.
+The ceilings above 7.4 V are calculated, and above about 4,900 rpm no supply has yet been run that fast.
 
 **Why low supply cannot crawl as slowly.** Every slowest step runs at the duty floor, 5.8 % of full
 duty: 0.43 V at 7.4 V, 1.39 V at 24 V (calculated). Below about 3 ticks/s at 7.4 V that is not enough
@@ -386,7 +392,7 @@ bottom moves to more lead as speed rises, so the wall recedes with speed.
 
 ### 6.3 The duty ceiling
 
-**Every top speed measured ended at the duty ceiling, not at a limit of the motor.** Up to about
+**Every top speed measured so far ended at the duty ceiling, not at a limit of the motor.** Up to about
 2,500 rpm the drive's duty follows the motor's back-EMF line within a few percent. Above it, it needs
 more:
 
@@ -408,8 +414,16 @@ Two things make that excess:
   less far ahead than the pair asks, and the duty rises and falls with speed rather than climbing smoothly
   (19.4 × 10³ at 3,220 rpm, 25.3 × 10³ at 3,497, 22.0 × 10³ at 4,063). At 7.4 V's tops the error holds 48.
 
-Up to 11.1 V's top (2,475 rpm) the drive runs in one steady state: the error holds its setpoint (mean
-47.8–48.3 counts against 48), and the duty within a 5 s window varies by a few hundred counts.
+Both are now addressed in the drive, and this table predates both changes. The lead now follows speed
+(§5.4). The servo's shift turned out to be a symptom: above about 2,500 rpm the rotor's angle behind the
+field oscillated on its own, at 40–70 Hz, because a field driven at a commanded speed does nothing to
+damp it once the windings' reactance exceeds their resistance. The fast response turned that
+oscillation into extra duty. The drive now damps the field's advance against the rotor's lag at each
+hall edge. In the model that removes the oscillation and the extra duty at every supply, to beyond
+7,000 rpm (calculated). Measuring it on the motor is still to be done.
+
+Up to 2,475 rpm at 11.1 V, the fastest that supply then shipped, the drive ran in one steady state: the error held its setpoint (mean
+47.8–48.3 counts against 48), and the duty within a 5 s window varied by a few hundred counts.
 
 **Direction.** The forward direction (negative increments) needs more duty than reverse at the same
 speed: +1 to +4 % at 11.1 V, +3 to +15 % at 7.4 V, rising with speed; at 7.4 V's top forward ran out

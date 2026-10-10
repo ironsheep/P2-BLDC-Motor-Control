@@ -1783,6 +1783,35 @@ rerun `doco-adopt-<v>`.
 
 ### PL-212 -- above ~2,500 rpm the Doco still needs 55-67 % more duty than its back-EMF, and 14.8 V's top has no reserve
 
+> **Status (2026-10-10): FIXED at DRIVER_REV 59 (desk-proven; the certification visit certifies).** Root cause
+> (MODEL, `DOCs/analyses/PL-212-ROOT-CAUSE-2026-10-09.md` §2, §7.2): above `ωe·L/R` ≈ 1 the load angle oscillates on
+> its own (40–70 Hz on the Doco). The field's speed is commanded open-loop, so nothing damps it. The one-sided
+> `servoBoost` rectifies the hunt's peaks into duty, which is the second state, and the hunt's peak sets 24 V's
+> position-fault edge. The fix:
+> - **H-2:** fieldSteps damps the field's advance. It applies 1/8 count per count of the last hall edge's lag above
+>   its 66 ms mean, at |drv_incr| ≥ 201e6 in SPIN_UP / AT_SPEED, and not while the limit hold is armed.
+> - **H-1b:** at ≥ 2^28, a release starts from the held field. As built, it jumped 12/23 of a pass forward, which
+>   faulted the rated step at 14.8 V.
+>
+> F-6, a gate on the boost, was designed and withdrawn: it made the Doco's hand stall worse (96 phases).
+>
+> Model results:
+> - Doco: no hunt and no second state at any supply to 1,050e6, across the Lh and J brackets. The rated step at
+>   the 2023 rows faults 0 of 96 (as built: 38 at 14.8 V, 3 at 22.2 V). `docohand` is identical to as built.
+> - 6.5in: identical to the digit in every mode below 201e6. Above it, its own top-speed hunt is gone.
+>
+> pasm_equiv:
+> - 2,062 scenarios equal to REV 58, with stop-hold false and true, and at 160 MHz.
+> - With both gates shut, equal to REV 58.
+> - 300 high-speed scenarios: 213 diverge, every one after a gate opened.
+>
+> Memory, after the layout moves: cog 475/496 (21 free), LUT run image 502/512 (10 free), start image 152 (`held_seen`
+> now zeroed at start), release image 34. The ceilings are re-tabled under PL-216.
+>
+> **Found on the way:** without the hunt's surplus duty, the Doco's top runs field-weakened in the model (duty 14–33 %
+> under the back-EMF line at 24 V). D4 measured the good state on the line, so this is the model's calibration, not the
+> drive's (PL-216's note).
+>
 > **Status (2026-10-08, D4): the timing part VERIFIED as far as timing reaches; the servo part is ALL of what is left
 > (MEASURED, D4 rows 1–6).** On the lead table the model holds (the DC-current minima sit 3–4° from the table, inside
 > its 4.3° scatter), and 7.4 V stays at the servo's setpoint to its top. From 11.1 V up, the drive runs at the same
@@ -1906,6 +1935,26 @@ offsets, and it shapes how the Doco's speed-dependent lead can be measured (PL-2
 this board can resolve, decided with PL-212's desk work.
 
 ### PL-216 -- the Doco's shipped speed limits sit well inside its measured range
+
+> **Status (2026-10-10): FIXED at DRIVER_REV 59 (the certification visit's range rows certify).** Stephen,
+> 2026-10-10: the Doco serves gantries, so its limits are accurate speed and accurate distance (overlay P14).
+>
+> **Ceiling.** The 6.5in's rule: the fastest speed held on the back-EMF line with 7.5 % of duty in reserve, never by
+> field weakening (PL-108). It is anchored on D4's measured 7.4 V point, 302.5e6 (130944:114, :118), so
+> `DOCO_CEIL_INCR_AT_NOMINAL` is 756e6, scaled by the supply. `DOCO_CEIL_INCR_MAX` is removed, because H-2 removed
+> the 24 V fault edge it stood for. The rows are 302.0 / 453.5 / 490.0 / 604.5 / 756.0 / 907.0 / 980.5e6
+> (2,018 to 6,551 rpm), inside the sheet's no-load speed. MODEL (`$M pl212 doco=1 rev58=1 hcont=3 damp=3 dv=V
+> pl_set=row`): every row follows 1,000 ‰, speed sd ≤ 1 ‰, err 47.9–48.0, peak 69–70, held 0.
+>
+> **Floor.** 11.1 V up take 0.10 ticks/s (37_418), MEASURED by D4 both ways at 11.1–24 V; 24 V holds it on both
+> units. 12.0 V is DERIVED. 7.4 V keeps 4.00, the larger of the two units.
+>
+> **Harness.** test_bench_single SRC_REV 19 mirrors the ceilings and lifts PK1_CAP_INCR above them. PK-1's
+> retirement and LIM_BIG's clamp above 999,999,999 are «#3707»'s.
+>
+> **Model calibration note (not a drive defect).** At these rows the model's duty sits 3–31 % under the line
+> (field-weakened); D4's good state sat on it (+3.0 / +4.6 %, 150741:138, :142). The model's lead zero (lzero 53.5)
+> is the likely gap. The bench's range rows read the true duty.
 
 > **Status (2026-10-08, D4): MEASURED on unit 2; the ceilings at 11.1 V and up are caps of PL-212's servo state, so
 > nothing is re-tabled yet.** Slowest steady: 0.10 ticks/s both ways at 11.1–24 V (the lowest tried), 0.20 / 0.30 at
