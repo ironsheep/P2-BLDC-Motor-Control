@@ -110,6 +110,15 @@
 ''               10 Oct 2026 -- SRC_REV 19 (no format change): DRIVER_REV 59 (PL-212, PL-216). DAT rowCeilIncr mirrors the
 ''               new Rev A ceilings, 302.0e6 .. 980.5e6, uncapped. PK1_CAP_INCR rises to 999_999_999, above every ceiling,
 ''               so it binds no row: PK-1's mechanism went with fieldSteps (DRIVER_REV 54), and the release jump with H-1b.
+''               10 Oct 2026 -- SRC_REV 20, fmt 16, task 3707: PK-1 retired (the row's top is its ceiling; TOP_POWER 100;
+''               topPowerFor(), ladderExtIncr, LADDER_EXT_COUNT, PK1_CAP_* gone; B1-ROW loses top_incr, top_power, cap_incr,
+''               cap_from_mv, shipped_min; B1-MOTOR2 loses cap_incr, cap_from_mv, ext_rungs); every increment field prints to
+''               the command range (LIM_INCR, 2^30 - 1); SHIPPED_MIN_INCR gone, L-mininc's seventh rung is 1.5 ticks/s
+''               (DRIVER_REV 59's minimums, 4.00 and 0.10, are rungs of the sweep); PL-220: B1-RANGEV gains fault_kind,
+''               hall_missed, hall_illegal and B1-RANGEEND end_kind; PL-219: R23-SGL-MISDIAL reads a dedicated misdial pass
+''               (ENTRY_MIS: one climb a sign at 650 / 900 / 1,150 / 1,400 rpm, ONE pair 304 / 48, the schedule put back by
+''               bRestoreOffsets(), now an OFS_HELPERS routine) on KE_FITTED 3,630; B1-RUNG / -RUNGD entry may be MIS,
+''               B1-MISDIAL2 is new (the pair, the rest pair, the line's points).
 ''
 
 '' =================================================================================================
@@ -140,10 +149,11 @@
     SINGLE_PART_POWER     L-power (task 3686, plan sec 7): driveAtPower() at DAT powerPcts (25, 50, 75 and the row's
                           top power) each power sign, each from rest, held >= 5 s; the encoder's speed against the
                           increment the library wrote for the power (R23-SGL-POWER)
-    SINGLE_PART_LADDER    L-ladder (the analysis's L2): rungs at 25/50/75/100 % of the row's shipped ceiling (and, from
-                          12 V up, extension rungs to 400e6, never past PK1_CAP_INCR), each entered from rest on the
-                          built-in ramp AND by a step from the rung below, held >= 5 s; the feedforward line, the
-                          reserve ceiling, the misdial check (R23-SGL-FOLLOW, -MISDIAL, -SMOOTH, -TOPSPD)
+    SINGLE_PART_LADDER    L-ladder (the analysis's L2): rungs at 25/50/75/100 % of the row's shipped ceiling, each
+                          entered from rest on the built-in ramp AND by a step from the rung below, held >= 5 s; the
+                          feedforward line and the reserve ceiling; then the misdial pass (task 3707, PL-219): one
+                          climb a sign through DAT misdialRpm (650 .. 1,400 rpm) at ONE fixed pair, the schedule put
+                          back after, and the misdial check on its line (R23-SGL-FOLLOW, -MISDIAL, -SMOOTH, -TOPSPD)
     SINGLE_PART_RAMP      L-ramp (L7): power to the row's top from rest on the built-in ramp, then stopMotor(); and a
                           reversal at the top (R23-SGL-RAMPARR, -SMOOTH, -TOPSPD)
     SINGLE_PART_STOPS     L-stops (L8): stopAfterRotation(N) and stopAfterTime(T) armed at rest, at the top and at a
@@ -223,8 +233,8 @@
   In the 2a legs (phase 2a): the same current, charge and time guards every SAMPLE_MS, each ending the run; a driver
   fault is a FINDING there (it is what the reference legs measure), recorded, cleared with testResetFault(), and the
   leg climbs no higher in that entry; every measuring window checks the encoder against the driver's hall position
-  (bWindowEncOk()) and a disagreement ends the run; no hands-off command passes PK1_CAP_INCR at a row from 12 V up (a
-  power-commanded drive reads the increment the library wrote back and ends the run if it does). The test limit is
+  (bWindowEncOk()) and a disagreement ends the run; no power-commanded drive passes the row's mirrored ceiling (it
+  reads the increment the library wrote back and ends the run if it does: a stale mirror). The test limit is
   the library's own 40 A since SRC_REV 14 (TEST_PEAK_A, why): the absolute abort is the bench's current protection.
   In the 2b legs (phase 2b): the same guards. L-offscan changes the commutation offsets; it reads what was in force
   before it, restores it on its one exit whatever ended it, reads it back, and ends the run (AR_SETTING) if the restore
@@ -233,8 +243,7 @@
   the sheet's no-load ceiling): a step's (HAND_STEP_CAP_MAS) stops that step's motor, the leg's (HAND_LEG_CAP_MAS) ends
   the run; the default-limit step runs only at 11.1 V, never at 24 V, and only when a whole step's cap is left in the
   leg; it raises the absolute abort to HAND_DEF_ABORT_MA for its own drive only. Every limit, hold and abort a step
-  changes is put back on its exit and read back. L-sag commands the 22.2 V row's shipped top, 470e6, past PK1_CAP_INCR
-  ON PURPOSE: it is the analysis's fault-first case (P-S7), attended, and optional. STOP MOTOR is live whenever the
+  changes is put back on its exit and read back. STOP MOTOR is live whenever the
   shaft is driven. The run's time cap counts only the time a step runs (runIdleMs: a screen waiting on him is not
   an unwatched motor).
   Task 3686: L-wiring's walk (checkWiring(), the library's own: power 10, one electrical cycle each way, a leg that
@@ -280,8 +289,8 @@ CON { timing }
 
 CON { build identity }
 
-    SRC_REV     = 19                                       ' hand-bumped whenever this file changes
-    FMT_VERSION = 15                                        ' B1- record-format version (15: B1-RANGET gains base, the offset its points are about (the lead schedule's pair at that speed, DRIVER_REV 57); B1-RANGEV turn_rip_pm binned by edge index (PL-214); charge_mas counted in whole mA x s (PL-213); 14: B1-RANGE, B1-RANGEV, B1-RANGET, B1-RANGEEND are new; B1-BUILD range; B1-STOPDEC held_d, rest_after_zero_ms; B1-MININC may carry rungs 10-14 (0.4 .. 0.1 ticks/s); 13:B1-STOPDEC is new; B1-MOTOR4 walk_rise_ma -> walk_fall_ma; B1-MOTOR2 loses mininc_hi_x100 (the MININC bound is the library's own minimum, in the SIGNOFF); B1-MISDIAL gains pair_dev_pm, asym_pm, the cell judges the two signs' mean; 12:B1-OFSSIDE and B1-NOISE are new; B1-BUILD noise; B1-MOTOR4 ofs_walk, walk_rise_ma; B1-OFSPT/-OFSPTD may carry points past ofs_span; folds fields count FRAMES (testGetFoldFrames()); 11: B1-ACROSS pair, dir, cps, x_mv, y_mv, lo_mv, hi_mv for phase, t_us, dur_us; B1-AGUIDE target, band_uv/vw/wu_mv for speed, turns, ticks, hyst_*, band_railed; B1-ALEG by_target, tick_edges, peak_ma, mean_peak_ma for speed, edge_s_x10, rpm_x10; B1-ALEG2 rise, fall, ref_half, ref_rail, ref_still, against, clip_kept for cross, unusable, band_railed, peak_ma, mean_peak_ma, swing_hz_x10; B1-MOTOR6 al_target, al_max_edges for al_ticks, al_slow_rpm, al_fast_rpm; 10: B1-HALLSEQ, B1-SIGNMAP; 9: B1-AGUIDE, B1-ACROSS, B1-AEDGE, B1-ALEG, B1-ALEG2, B1-ASUM, B1-MOTOR6; 8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
+    SRC_REV     = 20                                       ' hand-bumped whenever this file changes
+    FMT_VERSION = 16                                        ' B1- record-format version (16: B1-RUNG / B1-RUNGD entry may be MIS, pct NA; B1-MISDIAL is fitted over the MIS rungs; B1-MISDIAL2 is new (fwd, rev, rest_fwd, rest_rev, pts, lo_x10, hi_x10); B1-OFSREST also follows L-ladder; B1-MOTOR2 ke_used reads 3,630 under SINGLE_QUALIFY; B1-ROW loses top_incr, top_power, cap_incr, cap_from_mv, shipped_min; B1-MOTOR2 loses cap_incr, cap_from_mv, ext_rungs; every increment field prints unclamped to 2^30 - 1; B1-RANGEV gains fault_kind, hall_missed, hall_illegal; B1-RANGEEND gains end_kind; 15:B1-RANGET gains base, the offset its points are about (the lead schedule's pair at that speed, DRIVER_REV 57); B1-RANGEV turn_rip_pm binned by edge index (PL-214); charge_mas counted in whole mA x s (PL-213); 14: B1-RANGE, B1-RANGEV, B1-RANGET, B1-RANGEEND are new; B1-BUILD range; B1-STOPDEC held_d, rest_after_zero_ms; B1-MININC may carry rungs 10-14 (0.4 .. 0.1 ticks/s); 13:B1-STOPDEC is new; B1-MOTOR4 walk_rise_ma -> walk_fall_ma; B1-MOTOR2 loses mininc_hi_x100 (the MININC bound is the library's own minimum, in the SIGNOFF); B1-MISDIAL gains pair_dev_pm, asym_pm, the cell judges the two signs' mean; 12:B1-OFSSIDE and B1-NOISE are new; B1-BUILD noise; B1-MOTOR4 ofs_walk, walk_rise_ma; B1-OFSPT/-OFSPTD may carry points past ofs_span; folds fields count FRAMES (testGetFoldFrames()); 11: B1-ACROSS pair, dir, cps, x_mv, y_mv, lo_mv, hi_mv for phase, t_us, dur_us; B1-AGUIDE target, band_uv/vw/wu_mv for speed, turns, ticks, hyst_*, band_railed; B1-ALEG by_target, tick_edges, peak_ma, mean_peak_ma for speed, edge_s_x10, rpm_x10; B1-ALEG2 rise, fall, ref_half, ref_rail, ref_still, against, clip_kept for cross, unusable, band_railed, peak_ma, mean_peak_ma, swing_hz_x10; B1-MOTOR6 al_target, al_max_edges for al_ticks, al_slow_rpm, al_fast_rpm; 10: B1-HALLSEQ, B1-SIGNMAP; 9: B1-AGUIDE, B1-ACROSS, B1-AEDGE, B1-ALEG, B1-ALEG2, B1-ASUM, B1-MOTOR6; 8: B1-CODEW; B1-SECT grid_dev_x10, grid_slot; 7: B1-HTURN, B1-HTURN2, B1-HTEDGE, B1-NOWHEEL; B1-BUILD handturn; 6: no B1-COAST / -COASTF / -COASTPT / -FLTREST / -SAG / -SAGPT / -PINCH / -PINCHPT; B1-BUILD, B1-ROW, B1-MOTOR3, B1-MOTOR5 lose their coast / sag / pinch fields; 5: B1-WIRING, B1-POWER; B1-BUILD wiring/power/qualify; B1-MOTOR2 ke_used; B1-HPUSHR limit_ticks)
 
 CON { the bench this image is built for }
 
@@ -396,34 +405,19 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
   '  (B1-RAMP lib_incr), so a stale mirror shows in the first such record. 6.5in: one measured ceiling scaled by the
   '  voltage (HUB_CEIL_INCR_AT_NOMINAL); the 6.5in instruments chose their own rungs.
     ROW_COUNT               = 7
-    ' the shipped reverse minimum, "anything below yields NO rotation" (:5421); the forward sign's is 1 (0 - VALUE_NOT_SET,
-    '  PL-71). L-mininc runs it as one of its rungs. 6.5in: HUB_FLOOR_INCR 100_000 (Visit 9 E4)
-    SHIPPED_MIN_INCR        = 544_628
+    ' The row's minimum is not mirrored: every judgement of it reads the library's own (testGetIncrLimits(), PL-208).
+    '  DRIVER_REV 59's are rungs of L-mininc's sweep: 4.00 ticks/s at 7.4 V, 0.10 from 11.1 V up. 6.5in: HUB_FLOOR_INCR
+    '  100_000 (Visit 9 E4)
+  ' THE ROW'S TOP is its ceiling, at every row. PK-1, the cap that held the hands-off commands under 419e6 from 12 V up
+  '  (one pass's field step past the hold-to-fault margin), is retired (task 3707): its mechanism went with fieldSteps
+  '  (DRIVER_REV 54, the field moves a frame at a time) and its last trace, the release's jump, with H-1b (DRIVER_REV 59)
 
-  ' PK-1 (analysis F3, sec 5.2 row D1): one drive pass's field step passes the LAG_HOLD-to-fault margin (25 counts) above
-  '  419.4e6 on this motor (2,806 rpm), where a disturbance faults instead of slipping. DERIVED, exact. No hands-off
-  '  command passes PK1_CAP_INCR at a row from PK1_CAP_FROM_MV up (the arbiter's 2a ruling: "at 12-24 V ... never past
-  '  419e6"): the 22.2 V row's top runs at 419e6 (power 89), not its shipped 470e6. 11.1 V's shipped top, 545e6, is
-  '  P-S2's own measurement (the model predicts its climb faults near 3,000-3,200 rpm) and runs uncapped; 7.4 V's, 282e6,
-  '  is under the cap. 6.5in: none (its top field step is 12.8 counts, analysis 5.1)
-  '  DRIVER_REV 54 (task 3684): the field now moves a frame at a time (fieldSteps), so no frame sees a whole pass's
-  '  step and PK-1's mechanism is gone (DERIVED). The library's Rev A ceilings are now capped at this same 419e6
-  '  (DOCO_CEIL_INCR_MAX) until D2 certifies the tops, so no row's top passes it and this cap no longer binds
-  '  DRIVER_REV 59 (PL-212): H-1b removes the release's 12/23-pass jump, the last whole-step move of the field, and H-2
-  '  the hunt that set D4's 24 V fault edge, so the library's ceilings are uncapped (302.0e6 .. 980.5e6). The cap now
-  '  binds no row and no rung: it sits above the largest ceiling, at the largest value B1-ROW's LIM_BIG field prints
-  '  unclamped. Task 3707 retires PK-1 from both instruments
-    PK1_CAP_INCR            = 999_999_999
-    PK1_CAP_FROM_MV         = 12_000
-
-  ' THE LADDER (L-ladder). Rungs at DAT ladderPcts (25, 50, 75, 100) % of the row's shipped ceiling, a rung over the cap
-  '  run at the cap; then, at a capped row, each DAT ladderExtIncr rung (360e6, 400e6) above the ceiling and not past the
-  '  cap -- the analysis's "add rungs up to 400e6" (L2), toward the duty reserve (P-S3: 12 V's top runs 71-76 % duty). The
-  '  100 % rung is the row's CEILING (R23-SGL-SMOOTH). 6.5in: test_bench_dual's LADDER and the scan's own speeds
+  ' THE LADDER (L-ladder). Rungs at DAT ladderPcts (25, 50, 75, 100) % of the row's shipped ceiling. The 100 % rung is the
+  '  row's CEILING (R23-SGL-SMOOTH); L-range climbs past it. 6.5in: test_bench_dual's LADDER and the scan's own speeds
     LADDER_PCT_COUNT        = 4
-    LADDER_EXT_COUNT        = 2
-    LADDER_MAX_RUNGS        = LADDER_PCT_COUNT + LADDER_EXT_COUNT
+    LADDER_MAX_RUNGS        = LADDER_PCT_COUNT
     LADDER_CEIL_RUNG        = LADDER_PCT_COUNT - 1
+    TOP_POWER               = 100                           ' the power that commands the row's top, the ceiling
     ' the misdial check's fit: at least this many clean rungs, spanning at least this fraction of the fastest one's speed
     '  (per mille). DERIVED: two points fit any line; three expose a bad one; half the range keeps the slope's error under
     '  the 3 % the check judges when each duty is good to 1 %
@@ -432,14 +426,26 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     '  360-436 above it; 20 (2 counts) separates them with room on both sides.
     FIT_SETPOINT_TOL_X10    = 20
     MISDIAL_MIN_POINTS      = 3
-    MISDIAL_MIN_SPAN_PM     = 500
+    MISDIAL_MIN_SPAN_PM     = 500                           ' the pass's rungs span 536 (650 .. 1,400 rpm)
+    ' THE MISDIAL PASS (task 3707, PL-219): MISDIAL_RUNGS rungs at DAT misdialRpm; TPS_X100_PER_RPM turns an rpm into its rate
+    MISDIAL_RUNGS           = 4
+    MISDIAL_RUNGS_FIT       = (MISDIAL_RUNGS <= LADDER_MAX_RUNGS)   ' the pass records in the ladder's slots
+    CHECK_MISDIAL_RUNGS     = 1 / -MISDIAL_RUNGS_FIT        ' MISDIAL_RUNGS exceeds LADDER_MAX_RUNGS: raise it (the slot arrays follow)
+    TPS_X100_PER_RPM        = HALL_TICKS_PER_REV * 100 / 60 ' 40: a rpm is HALL_TICKS_PER_REV / 60 hall ticks/s
+    ' The pass's ONE pair, degrees. DERIVED from isp_bldc_motor.spin2 (the Rev A Doco lead table, DRIVER_REV 57): the pair
+    '  is written zero -/+ lead, DOCO_LEAD_ZERO_TENTHS -40 and the table's flat first lead docoLeadTenthsTbl[0] 523 (up to
+    '  105e6): fwd -40 - 523 = -563 -> 3,037 tenths, rev -40 + 523 = 483 tenths = 303.7 / 48.3, rounded to whole degrees as
+    '  testGetFwdRevIndep() rounds (writeOffsetsTenths(): +5 tenths, / 10) -> 304 / 48
+    MISDIAL_FWD_DEG         = 304
+    MISDIAL_REV_DEG         = 48
     ' THE RESERVE CEILING (B1-FFLINE): the increment where the duty line reaches DUTY_RESERVE_PM of the drive's duty ceiling
     '  -- the 6.5in's reserve, CARRIED UNCHANGED (ADDING_MOTOR.md step 6, "about 7 % in hand"; 165e6 ran at 92-93 %
     '  MEASURED, Visit 8b/9; the analysis's doco_top() uses 0.925): the same rule, so the two motors' ceilings compare
     DUTY_RESERVE_PM         = 925
 
-  ' THE MISDIAL CHECK (R23-SGL-MISDIAL). The duty line's slope against the encoder's speed predicts the supply from the
-  '  sheet's back-EMF constant (KE_MV_PER_KRPM above) through the drive's duty-to-volts scale: the phase voltage's peak is
+  ' THE MISDIAL CHECK (R23-SGL-MISDIAL). The slope of the duty line of the MISDIAL PASS's rungs (task 3707, PL-219: not the
+  '  ladder's -- on the lead schedule the slope flattens) against the encoder's speed predicts the supply from the
+  '  back-EMF constant (KE_MV_PER_KRPM above, the sheet's; KE_FITTED_MV_PER_KRPM, the pass's own) through the drive's duty-to-volts scale: the phase voltage's peak is
   '  Vbus x duty / (DUTY_VOLT_DIV x frame_cnt) (MODELED: DOCs/plans/servo-model/spin2_model.py:521, Vbus x duty / (16 x
   '  3_068), 3_068 = frame_cnt / 2 at 270 MHz; the model's 6.5in ladder fit rests on it). Its tolerance is DERIVED from the
   '  sheet and D1's first run (plan sec 4). UNFITTED (KE_IS_FITTED FALSE): the sheet's +-10 % on Ke (its no-load speed,
@@ -457,18 +463,20 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     KE_IS_FITTED            = FALSE
 #endif
     KE_SHEET_TOL_PCT        = 10
-    ' THE FITTED Ke, mV per 1,000 rpm, line-to-line peak: PROVISIONAL, the sheet's 3,530 until D1's EVALUATION fits it
-    '  across the rows (arbiter decision D5) and sets it here, before the D2 pack is built. A D2 build left at the sheet's
-    '  value judges +-30 per mille against a Ke that may be off the sheet by up to its 10 %: a correct motor whose Ke is
-    '  5 % under the sheet then reads -50 and FAILS (the 3686 desk model) -- so this number is a D2 precondition
-    KE_FITTED_MV_PER_KRPM   = 3_530
+    ' THE FITTED Ke, mV per 1,000 rpm, line-to-line peak: the misdial pass's LINE CONSTANT at its pair (MISDIAL_FWD_DEG /
+    '  MISDIAL_REV_DEG) and band (650 .. 1,400 rpm) -- the sheet's Ke (3,530) x the pair's own factor, not the motor's Ke
+    '  alone (task 3707, PL-219). FITTED on the timing scans' points at 304 / 48 (+-2 deg): unit 1 and unit 2 read -28 / -29
+    '  per mille on the sheet's Ke (mean -27.7), one value serves both units (R23-SGL-MISDIAL's CORRECT CASE). A build left at
+    '  the sheet's value judges +-30 per mille against a line that sits 2.8 % off it, and fails correct supplies
+    KE_FITTED_MV_PER_KRPM   = 3_630
     ' the Ke the misdial check predicts from: the sheet's (KE_MV_PER_KRPM) unfitted, KE_FITTED_MV_PER_KRPM fitted (TRUE is -1)
     KE_USED_MV_PER_KRPM     = KE_MV_PER_KRPM + (-KE_IS_FITTED) * (KE_FITTED_MV_PER_KRPM - KE_MV_PER_KRPM)
     DUTY_VOLT_DIV           = 8
 
   ' THE MINIMUM INCREMENT (L-mininc, PL-71). A descending sweep of crawl rates, DAT minincTpsX100 (hall ticks/s x 100):
-  '  24, 12, 6, 4, 3, 2, the shipped minimum's own increment (1.46 ticks/s), 1, 0.75, 0.6 (SRC_REV 17: and 0.4, 0.3, 0.2,
-  '  0.15, 0.1, with the window cap at a cycle at 0.1). DERIVED: from the hall map's
+  '  24, 12, 6, 4, 3, 2, 1.5, 1, 0.75, 0.6 (SRC_REV 17: and 0.4, 0.3, 0.2, 0.15, 0.1, with the window cap at a cycle at
+  '  0.1). SRC_REV 20: the seventh rung was the 2023 reverse minimum's own increment, 544_628 (1.46 ticks/s), until
+  '  DRIVER_REV 59's minimums, 4.00 and 0.10, became rungs of the sweep; it is now 1.5. DERIVED: from the hall map's
   '  slow rung, past the shipped minimum, to where one electrical cycle (360 counts, MININC_WIN_COUNTS) takes 10 s
   '  (MININC_MAX_WIN_MS) -- a window at least a cycle long sees every sector of the field's pattern. 6.5in: Visit 9 E4's
   '  rungs from 544_628 down to 100_000 (0.27 ticks/s of 90 a revolution), each "rotated at exactly its commanded rate"
@@ -477,7 +485,6 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     '  edge is the motor's: at 11.1 V and up every D2 rung to 0.6, the old last one, turned steadily. A sign still steady
     '  at 0.1 is reported as steady to the lowest rung TRIED, not as the motor's floor (overlay P10)
     MININC_RUNGS            = 15
-    MININC_SHIPPED_RUNG     = -1                            ' the DAT entry that means SHIPPED_MIN_INCR
     ' STEADY, from the encoder: the window's travel within MININC_SYNC_TOL_COUNTS of the field's commanded travel -- a
     '  quarter of an electrical cycle; a rotor that slips a pole pair reads a whole cycle (360 counts) short -- and every one
     '  of MININC_SUBWINS equal sub-windows advancing the window's way by at least MININC_SUB_MIN_PCT % of its share of the
@@ -487,11 +494,9 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
     MININC_SUBWINS          = 4
     MININC_SUB_MIN_PCT      = 50
 
-  ' THE TOP AND THE CRAWL (L-ramp, L-stops). The power-commanded legs drive at the row's TOP POWER: 100 (the shipped
-  '  ceiling), or at a capped row whose ceiling passes PK1_CAP_INCR the largest power whose increment stays under it,
-  '  computed from the mirrored ceiling (topPowerFor(): 89 at 22.2 V, which the library maps to 417.8e6 either sign). The
-  '  crawl is STOPS_CRAWL_POWER, 30-42 ticks/s by the rows' tables (4/99 of the ceiling). 6.5in: test_bench_t0 T0-25's
-  '  power 15 (~59 ticks/s of 90)
+  ' THE TOP AND THE CRAWL (L-ramp, L-stops). The power-commanded legs drive at TOP_POWER, 100, the row's shipped
+  '  ceiling. The crawl is STOPS_CRAWL_POWER, 4/99 of the ceiling: 33 ticks/s at 7.4 V to 106 at 24 V by DRIVER_REV 59's
+  '  table (it was 30-42 under the 419e6 cap). 6.5in: test_bench_t0 T0-25's power 15 (~59 ticks/s of 90)
     STOPS_CRAWL_POWER       = 5
 
   ' THE STOP LIMITS (L-stops, L8). stopAfterRotation() armed at rest, in hall ticks (DRU_HALL_TICKS): at the top, DAT
@@ -665,9 +670,8 @@ CON { the Doco's numbers -- THE ONE PER-MOTOR BLOCK }
 
   ' ---- TASK 3686: the D2 qualification (plan sec 7) ----
 
-  ' THE POWER RUNGS (L-power). driveAtPower() -- the user's path -- at DAT powerPcts, each capped at the row's top power
-  '  (rowTopPower: 100 at every row since DRIVER_REV 54's ceilings; it was 89 at 22.2 V, where 100 passed PK1_CAP_INCR),
-  '  each power sign, each from rest on the
+  ' THE POWER RUNGS (L-power). driveAtPower() -- the user's path -- at DAT powerPcts (until DRIVER_REV 54 capped at 89 at
+  '  22.2 V, where 100 passed PK-1's cap), each power sign, each from rest on the
   '  built-in ramp, then LADDER_SETTLE_MS and a LADDER_WINDOW_MS window, as the ladder's rungs; under the row's ladder
   '  test limit (DAT rowLadderA: 11.1 V's 75 % rung needs 2.57 A). DERIVED: the arbiter's D7 left the ladder commanding
   '  by increment, so the power path's rungs are their own leg; the quarters of the power range are the ladder's
@@ -850,6 +854,10 @@ CON { legs -- what this image carries }
 #endif
 #ifdef SINGLE_PART_LADDER
     PART_LADDER_BUILT  = TRUE
+  ' task 3707, PL-219: the misdial pass sets a pair and puts the shipped one back (OFS_HELPERS)
+#ifndef OFS_HELPERS
+#define OFS_HELPERS
+#endif
 #else
     PART_LADDER_BUILT  = FALSE
 #endif
@@ -992,7 +1000,7 @@ CON { legs -- what this image carries }
     LEG_POWER_EST_S    = 150
     LEG_HALLMAP_EST_S  = 40
     LEG_MININC_EST_S   = 490                                ' SRC_REV 17: was 130; five rungs a sign below 0.6 ticks/s, 15-60 s windows
-    LEG_LADDER_EST_S   = 300
+    LEG_LADDER_EST_S   = 360                                ' task 3707: was 300; the misdial pass adds ~62 s (eight rungs, two stops)
     LEG_RAMP_EST_S     = 90
     LEG_STOPS_EST_S    = 140
     LEG_OFFSCAN_EST_S  = 760
@@ -1151,9 +1159,10 @@ CON { run sequencing enums }
     #0, DIR_RISE, DIR_FALL
     DIR_COUNT = DIR_FALL + 1
 
-  ' The ladder's two entries to a rung: ENTRY_REST from rest on the built-in ramp, ENTRY_STEP from the rung below
-    #0, ENTRY_REST, ENTRY_STEP
-    ENTRY_COUNT = ENTRY_STEP + 1
+  ' The ladder's entries to a rung: ENTRY_REST from rest on the built-in ramp, ENTRY_STEP from the rung below; and
+  '  ENTRY_MIS (task 3707, PL-219), the misdial pass's rungs (DAT misdialRpm, one climb a sign at one fixed pair)
+    #0, ENTRY_REST, ENTRY_STEP, ENTRY_MIS
+    ENTRY_COUNT = ENTRY_MIS + 1
     LADDER_SLOTS = SIGN_COUNT * ENTRY_COUNT * LADDER_MAX_RUNGS
 
   ' The stop legs' two speeds: KIND_TOP (the row's top power) and KIND_CRAWL (STOPS_CRAWL_POWER)
@@ -1375,30 +1384,29 @@ CON { cells -- sign-off format sf 1 (DOCs/plans/VISIT-SIGNOFF-DESIGN.md sec B.1)
     FOLLOW_LO_PM  = 0
     FOLLOW_TOL_PM = 30
 
-    ' R23-SGL-MISDIAL (L-ladder), crit VPRED_DEV_PM, units PERMILLE, ONE instance, PAIR (SRC_REV 16, PL-206; was one per
-    '  sign): the MEAN over the two increment signs of (the supply each sign's duty line predicts - TOLD_MV) / TOLD_MV. A
-    '  misdial moves both signs alike; the direction asymmetry moves them apart, and failed the per-sign cell at D2 (11.1 V
-    '  -22 / +37, 7.4 V -80 / +93: means +7.5 / +6.5, the told supplies right); the half-difference prints as asym_pm.
-    '  Each line is least squares of duty against the encoder's speed over the clean rungs
-    '  (arrived, no fault, no held, capped or folded pass, following within FOLLOW_TOL_PM).
-    ' PRECONDITION: for EACH sign, MISDIAL_MIN_POINTS clean rungs spanning MISDIAL_MIN_SPAN_PM of the fastest one's speed,
-    '  the line rising; otherwise NOMEAS. A FAIL marks every B1-RUNG of this run usable FALSE (the supply is one).
-    ' BOUND: -MISDIAL_TOL_PM .. +MISDIAL_TOL_PM: 130 while KE_IS_FITTED is FALSE (all of D1, in the run), 30 once a build
-    '  sets it TRUE (D2); D1's evaluation applies the 30 offline to the logged ratio_ppm (arbiter decision D5, CON { the
-    '  Doco's numbers }, THE MISDIAL CHECK).
-    ' CORRECT CASE: the model's 12 V ladder (P-S3, duty 20-71 % over 560-2,238 rpm) predicts 11.94 V -> -5 -> PASS; its 24 V
-    '  ladder 23.69 V -> -13 -> PASS. Broken: told 12 V with 24 V set halves every duty -> +990 -> FAIL; told 24 V with 22.2 V
-    '  set -> -87: PASS unfitted (not resolved), FAIL once fitted. UNFIXED: nothing checks a told voltage today.
-    '  Rival: a Ke off the sheet (or the duty-to-volts scale off) moves every row's prediction by one factor, a misdial one
-    '  row's: across D1's rows a common ratio is the motor (fit it; KE_IS_FITTED), a lone row is that row's supply.
-    '  TASK 3686, the D2 build (SINGLE_QUALIFY): fitted, +-30, predicting from KE_FITTED_MV_PER_KRPM. Desk model
-    '  (sgl3686_model.py): 12 V -5 and 24 V -13 PASS; told 24 V set 22.2 V -87, told 12 V set 11.1 V -80, FAIL; a motor
-    '  whose Ke is 5 % under the sheet reads +47 and FAILS on the sheet's value, -5 on its fitted one -- the fitted Ke is
-    '  a D2 precondition. THE EXCLUSION CHECK: a clean rung excludes a capped, held or folded one; the fitted negative (an
-    '  adjacent row) raises the top duty to 45-77 % of duty_max, under the 92.5 % reserve, so no rung it needs is
-    '  excluded. A supply far under the told one caps the top rungs and can leave fewer than MISDIAL_MIN_POINTS clean:
-    '  NOMEAS here, and FOLLOW, POWER and TOPSPD are the cells that fail it (a capped rotor falls behind its field, which
-    '  the lag hold then holds back, or it faults: SMOOTH).
+    ' R23-SGL-MISDIAL (L-ladder's misdial pass), crit VPRED_DEV_PM, units PERMILLE, ONE instance, PAIR: the MEAN over the
+    '  two increment signs of (the supply each sign's duty line predicts - TOLD_MV) / TOLD_MV; the half-difference prints
+    '  as asym_pm. SRC_REV 20 (PL-219): each line is least squares of duty against the encoder's speed over the MISDIAL
+    '  PASS's clean rungs -- DAT misdialRpm (650 .. 1,400 rpm, the same at every row), one climb per sign, at ONE pair,
+    '  MISDIAL_FWD_DEG / MISDIAL_REV_DEG (304 / 48, the lead table's flat-region pair), the schedule put back after. Duty
+    '  follows back-EMF only at one lead: on the schedule the lead rises with speed and the line flattens (D4 +96 / +204 /
+    '  +250 on supplies told right); even at one pair, a lead past the bowl's zero flattens it by w x tau (D2 +6 .. +68,
+    '  PL-211; D2's per-sign -80 / +93 at 7.4 V is each sign's lead). At one pair and one band those terms are one number
+    '  at every supply; KE_FITTED_MV_PER_KRPM carries it, and what is left is the supply.
+    ' PRECONDITION: the pair read back is the one set; for EACH sign, MISDIAL_MIN_POINTS clean rungs on the line
+    '  (bRungOnLine()) spanning MISDIAL_MIN_SPAN_PM of the fastest one's speed, the line rising; otherwise NOMEAS. A FAIL
+    '  marks every B1-RUNG of this run usable FALSE (the supply is one).
+    ' BOUND: -MISDIAL_TOL_PM .. +MISDIAL_TOL_PM: 130 while KE_IS_FITTED is FALSE, 30 under SINGLE_QUALIFY.
+    ' CORRECT CASE (MEASURED: the timing scans' points at 304 / 48 +-2 deg, 620-1,400 rpm, debug_261005-123104 /
+    '  -125549 / -132917 / -143149, debug_261006-211003, D3 debug_261007-205352): on the sheet's Ke -23 / -31 / -32 / -20 /
+    '  -31 (unit 1; 7.4 / 14.8 / 18.5 / 24 / 11.1 V) and -29 (unit 2, 14.8 V), mean -27.7: KE_FITTED 3,630; on it +5 / -4 /
+    '  -5 / +8 / -4 / -1 -> PASS. D2's and D4's ladder rungs moved to the pair through the lead model (LEAD-CURVE-MODEL
+    '  sec 1): -22 .. +14 -> PASS. Broken: told 24 V with 22.2 V set -> -62 .. -80; told 22.2 / set 24 -> +69; told 11.1 /
+    '  set 12 -> +67 .. +83 -> FAIL; told 12 V with 24 V set -> about +1,000 -> FAIL. UNFIXED: the ladder's line on the
+    '  schedule, +96 .. +250 on correct supplies (D4, PL-219).
+    '  Rival: a Ke off the sheet moves every row by one factor, a misdial one row's: units 1 and 2 read -28 / -29 at the
+    '  pair, one constant. D4's 24 V row would read +40: its phase voltage sat 3.4-4.1 % under 14.8 V's at the same speeds
+    '  and lead (141030, 152558) -- a supply ~4 % over its dial, or a unit-2 effect at 24 V; the logs do not separate them.
     MISDIAL_FIT_TOL_PM = 30
     MISDIAL_TOL_PM     = MISDIAL_FIT_TOL_PM + (KE_IS_FITTED + 1) * KE_SHEET_TOL_PCT * X10   ' 130, or 30 once fitted (TRUE is -1)
 
@@ -1911,6 +1919,7 @@ CON { record widths -- every numeric field is clamped to one of these }
     LIM_SMALL = benchLog.LIM_SMALL                          ' prints at most 7 bytes: -99_999
     LIM_MID   = benchLog.LIM_MID                            ' prints at most 10 bytes: -9_999_999
     LIM_BIG   = benchLog.LIM_BIG                            ' prints at most 12 bytes: -999_999_999
+    LIM_INCR  = benchLog.LIM_INCR                           ' prints at most 14 bytes: every increment, unclamped
 
     ' token field length limits (a longer token prints as "?")
     TOKMAX_CFG       = 8
@@ -2155,12 +2164,15 @@ rowCeilIncr     LONG    302_000_000, 453_500_000, 490_000_000, 604_500_000, 756_
   '  11.1 V; why it changed: TEST_PEAK_A). Kept per row so a row can be set apart again.
 rowLadderA      LONG    TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A, TEST_PEAK_A
 
-  ' L-ladder: the table rungs, % of the row's ceiling (LADDER_PCT_COUNT), and the extension rungs (LADDER_EXT_COUNT)
+  ' L-ladder: the table rungs, % of the row's ceiling (LADDER_PCT_COUNT)
 ladderPcts      LONG    25, 50, 75, 100
-ladderExtIncr   LONG    360_000_000, 400_000_000
 
-  ' L-mininc: the sweep, hall ticks/s x 100, fastest first (MININC_RUNGS); MININC_SHIPPED_RUNG is SHIPPED_MIN_INCR itself
-minincTpsX100   LONG    2_400, 1_200, 600, 400, 300, 200, MININC_SHIPPED_RUNG, 100, 75, 60, 40, 30, 20, 15, 10
+  ' L-ladder's misdial pass (task 3707, PL-219): its rungs, rpm, the same at every row (MISDIAL_RUNGS). The fastest, 1,400 rpm
+  '  (560 ticks/s), is under the lowest Rev A ceiling (7.4 V, 302e6, 754 ticks/s)
+misdialRpm      LONG    650, 900, 1_150, 1_400
+
+  ' L-mininc: the sweep, hall ticks/s x 100, fastest first (MININC_RUNGS); DRIVER_REV 59's minimums are 400 and 10
+minincTpsX100   LONG    2_400, 1_200, 600, 400, 300, 200, 150, 100, 75, 60, 40, 30, 20, 15, 10
 
   ' L-stops: stopAfterRotation()'s N, hall ticks (STOPS_ROT_COUNT each): at the top (300 and 400 revolutions), at the crawl
 stopTopTicks    LONG    7_200, 9_600
@@ -2179,7 +2191,7 @@ rowHandDef      LONG    FALSE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE
   ' L-handload's steps (HL_COUNT): each step's test limit, whole amps; 0 is the library's default (I_PEAK_A / I_CONT_A)
 handLimitA      LONG    4, 2, 0
 
-  ' TASK 3686, L-power's rungs (POWER_RUNG_COUNT): the power commanded, each capped at the row's top power (rowTopPower)
+  ' TASK 3686, L-power's rungs (POWER_RUNG_COUNT): the power commanded
 powerPcts       LONG    25, 50, 75, 100
 
 #ifdef SINGLE_ATTENDED
@@ -2303,6 +2315,7 @@ sRoWall         BYTE    "WALL", 0
 
 sEntryRest      BYTE    "REST", 0
 sEntryStep      BYTE    "STEP", 0
+sEntryMis       BYTE    "MIS", 0
 sKindTop        BYTE    "TOP", 0
 sKindCrawl      BYTE    "CRAWL", 0
 sChgUp          BYTE    "UP", 0
@@ -2536,9 +2549,7 @@ VAR { the hall map, per set }
 VAR { phase 2a: the row, the drive's constants, the sampler }
 
     LONG    rowIdx                                          ' the told voltage's row in DAT rowMv, or -1
-    LONG    rowCeil                                         ' the row's shipped ceiling (the mirror), increment
-    LONG    rowTop                                          ' the row's top: the ceiling, capped at PK1_CAP_INCR from PK1_CAP_FROM_MV up
-    LONG    rowTopPower                                     ' the power that commands no more than rowTop
+    LONG    rowCeil                                         ' the row's shipped ceiling (the mirror), increment: its top
     LONG    cpsLawK                                         ' the drive law in counts: counts/s x 1000 = |incr| x this / 2^31
     LONG    dutyMax                                         ' the drive's duty ceiling (testGetDriveConstants())
     LONG    frameCnt                                        ' the PWM frame, clocks (testGetDriveConstants())
@@ -2562,7 +2573,7 @@ VAR { phase 2a: L-ladder }
 
     LONG    ladRungs                                        ' rungs this row runs (LADDER_MAX_RUNGS at most)
     LONG    ladRungIncr[LADDER_MAX_RUNGS]                   ' each rung's increment, magnitude
-    LONG    ladRungPct[LADDER_MAX_RUNGS]                    ' its % of the ceiling (0: an extension rung)
+    LONG    ladRungPct[LADDER_MAX_RUNGS]                    ' its % of the ceiling
     LONG    rgOutcome[LADDER_SLOTS], rgIncr[LADDER_SLOTS], rgArrMs[LADDER_SLOTS], rgWinMs[LADDER_SLOTS]
     LONG    rgEnc[LADDER_SLOTS], rgCpsX10[LADDER_SLOTS], rgCmdCpsX10[LADDER_SLOTS], rgFolPm[LADDER_SLOTS], rgWchk[LADDER_SLOTS]
     LONG    rgDuty[LADDER_SLOTS], rgDutyLo[LADDER_SLOTS], rgDutyHi[LADDER_SLOTS], rgErrX10[LADDER_SLOTS], rgErrPk[LADDER_SLOTS]
@@ -2571,6 +2582,10 @@ VAR { phase 2a: L-ladder }
     LONG    fitOk[SIGN_COUNT], fitA[SIGN_COUNT], fitB[SIGN_COUNT], fitRms[SIGN_COUNT], fitPts[SIGN_COUNT]     ' fitA/B/Rms are floats
     LONG    fitLoCps[SIGN_COUNT], fitHiCps[SIGN_COUNT], fitResIncr[SIGN_COUNT], bFitResExtrap[SIGN_COUNT], fitVpredMv[SIGN_COUNT]
     LONG    fitRatioPpm[SIGN_COUNT]                         ' phase 2b: the predicted supply / TOLD_MV - 1, ppm (arbiter decision D5)
+    LONG    misRungIncr[MISDIAL_RUNGS]                      ' task 3707 (PL-219): the misdial pass's rungs, increments, magnitude
+    LONG    misFwd, misRev, misRestFwd, misRestRev          '  the pair it set (read back) and the one it found, degrees (-1 not read)
+    LONG    misFitOk[SIGN_COUNT], misFitB[SIGN_COUNT], misFitPts[SIGN_COUNT]    '  each sign's line over its rungs (misFitB is a float)
+    LONG    misFitLoCps[SIGN_COUNT], misFitHiCps[SIGN_COUNT]
 
 VAR { phase 2a: L-mininc }
 
@@ -2866,8 +2881,7 @@ PRI runSession() | bGoOn
     shutdown()
 
 PRI bFindRow() : bFound | idx, nLadderA
-' Find the told voltage's row in DAT rowMv, and derive the row's top: its shipped ceiling, capped at PK1_CAP_INCR from
-' PK1_CAP_FROM_MV up, and the power that commands no more than that top (topPowerFor()). Emits B1-ROW. Nothing is started.
+' Find the told voltage's row in DAT rowMv and its shipped ceiling, the row's top. Emits B1-ROW. Nothing is started.
 '
 ' @returns bFound - T/F where T means the told voltage has a row
 
@@ -2881,47 +2895,22 @@ PRI bFindRow() : bFound | idx, nLadderA
             rowIdx := idx
     bFound := (rowIdx >= 0)
     rowCeil := 0
-    rowTop := 0
-    rowTopPower := 0
     nLadderA := 0
     if bFound
         rowCeil := rowCeilIncr[rowIdx]
-        rowTop := rowCeil
-        if (TOLD_MV >= PK1_CAP_FROM_MV) and (rowTop > PK1_CAP_INCR)
-            rowTop := PK1_CAP_INCR
-        rowTopPower := topPowerFor(rowCeil, rowTop)
         nLadderA := rowLadderA[rowIdx]
     benchLog.begin(@"B1-ROW")
     benchLog.numField(@"told_mv", TOLD_MV, LIM_MID)
     benchLog.naNumField(@"row", rowIdx, LIM_TINY, bFound)
-    benchLog.naNumField(@"ceil_incr", rowCeil, LIM_BIG, bFound)
-    benchLog.naNumField(@"top_incr", rowTop, LIM_BIG, bFound)
-    benchLog.naNumField(@"top_power", rowTopPower, LIM_TINY, bFound)
-    benchLog.numField(@"cap_incr", PK1_CAP_INCR, LIM_BIG)
-    benchLog.numField(@"cap_from_mv", PK1_CAP_FROM_MV, LIM_MID)
+    benchLog.naNumField(@"ceil_incr", rowCeil, LIM_INCR, bFound)
     benchLog.naNumField(@"ladder_a", nLadderA, LIM_TINY, bFound)
-    benchLog.numField(@"shipped_min", SHIPPED_MIN_INCR, LIM_BIG)
-    if bFound                                               ' phase 2b: whether L-offscan drives here
+    if bFound                                              ' phase 2b: whether L-offscan drives here
         benchLog.boolField(@"l13", rowL13[rowIdx])
     else
         benchLog.textField(@"l13", @sNa)
     lineEmit()
     if bFound == FALSE
         setAbort(AR_ROW, TOLD_MV)
-
-PRI topPowerFor(nCeil, nTop) : nPower
-' The largest power whose increment stays at or under {nTop}, by the library's own mapping of power to increment
-' (incrementForPower(): the row's minimum at power 1 to the ceiling at 100, linearly). It is computed from the reverse
-' sign's minimum, SHIPPED_MIN_INCR, the larger of the two (the forward one is 1), so it holds for both signs; every
-' power-commanded drive also reads back what the library wrote (bCheckTop()). 100 when the top is the ceiling.
-'
-' @param nCeil - the row's ceiling, increment
-' @param nTop - the row's top, increment, at most nCeil
-' @returns nPower - 1..100
-
-    nPower := 100
-    if nTop < nCeil
-        nPower := 1 + muldiv64(nTop - SHIPPED_MIN_INCR, 99, nCeil - SHIPPED_MIN_INCR)
 
 PRI bPrepareDrive() : bReady | eSpdErr
 ' Read the drive's constants and the built-in ramp's limits the 2a legs predict from, and allow power 100
@@ -3663,7 +3652,7 @@ PRI emitSeqSet(setIdx)
 
     benchLog.begin(@"B1-HALLSEQ")
     benchLog.tokenField(@"set", setToken(setIdx), TOKMAX_SET)
-    benchLog.numField(@"incr", hallMapIncrement(setIdx), LIM_BIG)
+    benchLog.numField(@"incr", hallMapIncrement(setIdx), LIM_INCR)
     benchLog.tokenField(@"dir", directionToken(setTicks[setIdx]), TOKMAX_DIR)
     benchLog.numField(@"enc_sign", seqSign(setSeqEncNet[setIdx]), LIM_TINY)
     benchLog.numField(@"enc_net", setSeqEncNet[setIdx], LIM_MID)
@@ -3792,7 +3781,7 @@ PRI emitRung(setIdx, nIncr)
     benchLog.begin(@"B1-HMRUNG")
     benchLog.tokenField(@"set", setToken(setIdx), TOKMAX_SET)
     benchLog.numField(@"tps", rungTps(setIdx), LIM_SMALL)
-    benchLog.numField(@"incr", nIncr, LIM_BIG)
+    benchLog.numField(@"incr", nIncr, LIM_INCR)
     benchLog.numField(@"bursts", BURSTS_PER_SET, LIM_TINY)
     benchLog.numField(@"span_ticks", BURST_SPAN_TICKS, LIM_SMALL)
     lineEmit()
@@ -3820,7 +3809,7 @@ PRI emitBurst(setIdx, burstIdx, nIncr, eOutcome, nPreEdges, nRingEdges, nLost, n
     benchLog.begin(@"B1-BURST")
     benchLog.tokenField(@"set", setToken(setIdx), TOKMAX_SET)
     benchLog.numField(@"burst", burstIdx, LIM_TINY)
-    benchLog.numField(@"incr", nIncr, LIM_BIG)
+    benchLog.numField(@"incr", nIncr, LIM_INCR)
     benchLog.tokenField(@"outcome", outcomeToken(eOutcome), TOKMAX_OUTCOME)
     benchLog.numField(@"pre", nPreEdges, LIM_SMALL)
     benchLog.numField(@"edges", burstEdges, LIM_SMALL)
@@ -4453,14 +4442,13 @@ PRI bSetTestLimit(nAmps) : bSet | eLimErr, nPeakA, nContA
         setAbort(AR_LIMITS, (eLimErr <> wheel.NO_ERROR) ? eLimErr : nPeakA)
 
 PRI bCheckTop(nCmd) : bOk
-' A power-commanded drive's increment, read back from the library, must not pass the row's top (PK1_CAP_INCR from
-' PK1_CAP_FROM_MV up): if it does, the motor coasts at once and the run ends (AR_CAP) -- a harness defect (a stale
-' mirror, or topPowerFor()), never a finding.
+' A power-commanded drive's increment, read back from the library, must not pass the row's top, its mirrored ceiling:
+' if it does, the motor coasts at once and the run ends (AR_CAP) -- a harness defect (a stale mirror), never a finding.
 '
 ' @param nCmd - the increment the library wrote
 ' @returns bOk - T/F where T means it is within the row's top
 
-    bOk := (abs(nCmd) <= rowTop)
+    bOk := (abs(nCmd) <= rowCeil)
     if bOk == FALSE
         coastNow()
         setAbort(AR_CAP, nCmd)
@@ -4601,13 +4589,13 @@ PRI clampedRound(fValue, nLimit) : nValue
         nValue := round(fValue)
 
 PRI speedIncr(pctIdx, eSign) : nIncr
-' A 2b speed's increment: DAT speedPcts % of the row's shipped ceiling, capped at the row's top (as ladderPlan()), signed.
+' A 2b speed's increment: DAT speedPcts % of the row's shipped ceiling, signed.
 '
 ' @param pctIdx - 0 .. SPEED_PCT_COUNT - 1
 ' @param eSign - SIGN_NEG or SIGN_POS
 ' @returns nIncr - the signed increment
 
-    nIncr := (rowCeil / 100 * speedPcts[pctIdx]) <# rowTop
+    nIncr := rowCeil / 100 * speedPcts[pctIdx]
     if eSign == SIGN_NEG
         nIncr := -nIncr
 
@@ -4717,11 +4705,7 @@ PRI bMinIncRung(eSign, rungIdx, slotIdx) : bGoOn, bSteady | nTps, nIncr, nCmdX10
     bGoOn := TRUE
     bSteady := FALSE
     nTps := minincTpsX100[rungIdx]
-    if nTps == MININC_SHIPPED_RUNG
-        nIncr := SHIPPED_MIN_INCR
-        nTps := tpsX100ForIncr(nIncr)
-    else
-        nIncr := incrForTpsX100(nTps)
+    nIncr := incrForTpsX100(nTps)
     if eSign == SIGN_NEG
         nIncr := -nIncr
     miIncr[slotIdx] := nIncr
@@ -4828,7 +4812,7 @@ PRI emitMinInc(slotIdx)
     benchLog.tokenField(@"sign", (slotIdx < MININC_RUNGS) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
     benchLog.numField(@"rung", slotIdx // MININC_RUNGS, LIM_TINY)
     benchLog.numField(@"tps_x100", miTpsX100[slotIdx], LIM_SMALL)
-    benchLog.numField(@"incr", miIncr[slotIdx], LIM_BIG)
+    benchLog.numField(@"incr", miIncr[slotIdx], LIM_INCR)
     benchLog.tokenField(@"outcome", roToken(miOutcome[slotIdx]), TOKMAX_RO)
     benchLog.numField(@"win_ms", miWinMs[slotIdx], LIM_SMALL)
     benchLog.numField(@"travel", miTravel[slotIdx], LIM_MID)
@@ -4899,7 +4883,7 @@ PRI bPowerRung(nPowIdx, rungIdx) : bGoOn | slotIdx, nPower, nCmd, nWholeMs, nRes
 
     bGoOn := TRUE
     slotIdx := nPowIdx * POWER_RUNG_COUNT + rungIdx
-    nPower := powerPcts[rungIdx] <# rowTopPower
+    nPower := powerPcts[rungIdx]
     if nPowIdx == 1
         nPower := -nPower
     pwPower[slotIdx] := nPower
@@ -4995,7 +4979,7 @@ PRI emitPowerRung(nPowIdx, slotIdx)
     benchLog.begin(@"B1-POWER")
     benchLog.tokenField(@"psign", powToken(nPowIdx), TOKMAX_INST)
     benchLog.numField(@"power", pwPower[slotIdx], LIM_TINY)
-    benchLog.numField(@"lib_incr", pwIncr[slotIdx], LIM_BIG)
+    benchLog.numField(@"lib_incr", pwIncr[slotIdx], LIM_INCR)
     benchLog.tokenField(@"outcome", roToken(pwOutcome[slotIdx]), TOKMAX_RO)
     benchLog.naNumField(@"arr_ms", pwArrMs[slotIdx], LIM_SMALL, pwArrMs[slotIdx] >= 0)
     benchLog.numField(@"win_ms", pwWinMs[slotIdx], LIM_SMALL)
@@ -5056,30 +5040,88 @@ PRI bRunLadder() : bCompleted | eSign, rungIdx, bGoOn, bEnded
         if bGoOn and (bEnded == FALSE)
             bGoOn, _ := bStopAndRest(TRUE)                  ' the step climb ends at its top
     if bGoOn
+        bGoOn := bMisdialPass()                             ' PL-219: under the ladder's limit, at the one pair
+    if bGoOn
         bGoOn := bSetTestLimit(TEST_PEAK_A)
     ladderFinish()
     bCompleted := bGoOn
 
-PRI ladderPlan() | idx, nIncr
-' The row's rungs: DAT ladderPcts % of the shipped ceiling, each capped at the row's top; then, at a row from
-' PK1_CAP_FROM_MV up, each DAT ladderExtIncr rung above the ceiling and not past PK1_CAP_INCR.
+PRI misdialPlan() | idx
+' The misdial pass's rungs: DAT misdialRpm, the same at every row, as increments by the drive law (incrForTpsX100()).
+
+' Local Variables:
+' @local idx - a rung
+
+    repeat idx from 0 to MISDIAL_RUNGS - 1
+        misRungIncr[idx] := incrForTpsX100(misdialRpm[idx] * TPS_X100_PER_RPM)
+
+PRI bMisdialPass() : bGoOn | eSign, rungIdx, bEnded, bRestored
+' The misdial pass (task 3707, PL-219), under the ladder's test limit and at rest: read the pair and the lead schedule's
+' state (the restore needs them); set the ONE pair, MISDIAL_FWD_DEG / MISDIAL_REV_DEG, which turns the schedule off, and
+' read it back; each sign NEG then POS, one climb through the DAT misdialRpm rungs (the first from rest, each later one by
+' a step from the one below), stopped at its top. Whatever ended it, the pass leaves through bRestoreOffsets(): the shipped
+' pair written back, the schedule on again where it was on, B1-OFSREST emitted, AR_SETTING if it does not read back.
+'
+' @returns bGoOn - T/F where T means nothing ended the run (a pair that did not restore does)
+
+' Local Variables:
+' @local eSign - SIGN_NEG or SIGN_POS
+' @local rungIdx - a rung
+' @local bEnded - T/F where T means this sign's climb has ended (the motor rests)
+' @local bRestored - T/F where T means the shipped pair and schedule are back
+
+    bGoOn := TRUE
+    misdialPlan()
+    ofsShipFwd, ofsShipRev := wheel.testGetFwdRevIndep()    ' what bRestoreOffsets() puts back
+    bShipSched, _ := wheel.testGetLead()
+    misRestFwd := ofsShipFwd
+    misRestRev := ofsShipRev
+    wheel.testSetFwdRevIndep(MISDIAL_FWD_DEG, MISDIAL_REV_DEG)
+    misFwd, misRev := wheel.testGetFwdRevIndep()            ' what the driver applies; the check requires it to be the one set
+    repeat eSign from SIGN_NEG to SIGN_POS
+        bEnded := FALSE
+        repeat MISDIAL_RUNGS with rungIdx
+            if bGoOn and (bEnded == FALSE)
+                bGoOn, bEnded := bLadderRung(eSign, ENTRY_MIS, rungIdx)
+            elseif bGoOn
+                rgOutcome[ladSlot(eSign, ENTRY_MIS, rungIdx)] := RO_SKIPPED
+        if bGoOn and (bEnded == FALSE)
+            bGoOn, _ := bStopAndRest(TRUE)                  ' the climb ends at its top
+    bRestored := bRestoreOffsets()                          ' the pass's one exit: whatever ended it
+    bGoOn := bGoOn and bRestored
+
+PRI entryRungs(eEntry) : nRungs
+' The rungs an entry runs: the ladder's (ladRungs) for REST and STEP, MISDIAL_RUNGS for MIS.
+'
+' @param eEntry - ENTRY_*
+' @returns nRungs - the entry's rung count
+
+    nRungs := (eEntry == ENTRY_MIS) ? MISDIAL_RUNGS : ladRungs
+
+PRI entryToken(eEntry) : pToken
+' A rung entry's record token.
+'
+' @param eEntry - ENTRY_*
+' @returns pToken - pointer to REST, STEP or MIS
+
+    if eEntry == ENTRY_REST
+        pToken := @sEntryRest
+    elseif eEntry == ENTRY_STEP
+        pToken := @sEntryStep
+    else
+        pToken := @sEntryMis
+
+PRI ladderPlan() | idx
+' The row's rungs: DAT ladderPcts % of the shipped ceiling.
 
 ' Local Variables:
 ' @local idx - a table entry
-' @local nIncr - an extension rung's increment
 
     ladRungs := 0
     repeat idx from 0 to LADDER_PCT_COUNT - 1
-        ladRungIncr[ladRungs] := (rowCeil / 100 * ladderPcts[idx]) <# rowTop
+        ladRungIncr[ladRungs] := rowCeil / 100 * ladderPcts[idx]
         ladRungPct[ladRungs] := ladderPcts[idx]
         ladRungs++
-    if TOLD_MV >= PK1_CAP_FROM_MV
-        repeat idx from 0 to LADDER_EXT_COUNT - 1
-            nIncr := ladderExtIncr[idx]
-            if (nIncr > rowCeil) and (nIncr <= PK1_CAP_INCR)
-                ladRungIncr[ladRungs] := nIncr
-                ladRungPct[ladRungs] := 0
-                ladRungs++
 
 PRI clearLadder() | slotIdx, eSign
 ' Clear every rung's record and every fit before the leg.
@@ -5097,6 +5139,12 @@ PRI clearLadder() | slotIdx, eSign
         fitOk[eSign] := FALSE
         fitPts[eSign] := 0
         bSfMisMeas[eSign] := FALSE
+        misFitOk[eSign] := FALSE                            ' PL-219: the misdial pass's line
+        misFitB[eSign] := 0.0
+        misFitPts[eSign] := 0
+        misFitLoCps[eSign] := 0
+        misFitHiCps[eSign] := 0
+    misFwd := misRev := misRestFwd := misRestRev := -1      ' not yet read: NA in B1-MISDIAL2
 
 PRI ladSlot(eSign, eEntry, rungIdx) : slotIdx
 ' A rung's record slot.
@@ -5109,7 +5157,8 @@ PRI ladSlot(eSign, eEntry, rungIdx) : slotIdx
     slotIdx := (eSign * ENTRY_COUNT + eEntry) * LADDER_MAX_RUNGS + rungIdx
 
 PRI bLadderRung(eSign, eEntry, rungIdx) : bGoOn, bEnded | slotIdx, nIncr, nFrom, nWholeMs, nResync0
-' One rung: command it (ENTRY_REST, and the step climb's first rung, from rest; a later step from the rung below), then
+' One rung: command it (ENTRY_REST, and a climb's first rung (ENTRY_STEP, ENTRY_MIS), from rest; a later step from the
+' rung below; ENTRY_MIS rungs are misRungIncr[], the misdial pass's), then
 ' measure it (bLadderMeasure()). A refused command (a protective stop latched: cleared) ends its entry's climb, stopped.
 '
 ' @param eSign - SIGN_*
@@ -5128,10 +5177,10 @@ PRI bLadderRung(eSign, eEntry, rungIdx) : bGoOn, bEnded | slotIdx, nIncr, nFrom,
     bGoOn := TRUE
     bEnded := FALSE
     slotIdx := ladSlot(eSign, eEntry, rungIdx)
-    nIncr := ladRungIncr[rungIdx]
+    nIncr := (eEntry == ENTRY_MIS) ? misRungIncr[rungIdx] : ladRungIncr[rungIdx]    ' PL-219: the misdial pass has its own rungs
     nFrom := 0
-    if (eEntry == ENTRY_STEP) and (rungIdx > 0)
-        nFrom := ladRungIncr[rungIdx - 1]
+    if (eEntry <> ENTRY_REST) and (rungIdx > 0)             ' a step climb (STEP, or MIS): from the rung below
+        nFrom := (eEntry == ENTRY_MIS) ? misRungIncr[rungIdx - 1] : ladRungIncr[rungIdx - 1]
     if eSign == SIGN_NEG
         nIncr := -nIncr
         nFrom := -nFrom
@@ -5229,13 +5278,15 @@ PRI storeRung(slotIdx, nIncr)
     rgN[slotIdx] := winN
     bRgClean[slotIdx] := (rgOutcome[slotIdx] == RO_DONE) and (winLagD == 0) and (winCapD == 0) and (winFoldD == 0) and (rgResyncs[slotIdx] == 0) and (abs(rgFolPm[slotIdx] - PM) <= FOLLOW_TOL_PM)
 
-PRI ladderFinish() | eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown, nDev
-' At rest after the ladder: each sign's duty line (fitSign()) and misdial check (misdialSign()); the run's rows usable
-' unless a measured misdial check missed; R23-SGL-FOLLOW's and R23-SGL-SMOOTH's readings; then every record.
+PRI ladderFinish() | eSign, eEntry, nRungs, rungIdx, slotIdx, bUsable, bUsableKnown, nDev
+' At rest after the ladder and its misdial pass: each sign's duty line (fitSign()) and misdial check (misdialSign(), on the
+' misdial pass's own line); the run's rows usable unless a measured misdial check missed; R23-SGL-FOLLOW's and
+' R23-SGL-SMOOTH's readings over the REST and STEP rungs; then every record, the misdial pass's rungs too.
 
 ' Local Variables:
 ' @local eSign - a sign
 ' @local eEntry - an entry
+' @local nRungs - the entry's rungs
 ' @local rungIdx - a rung
 ' @local slotIdx - its record slot
 ' @local bUsable - T/F where T means no measured misdial check missed
@@ -5256,104 +5307,58 @@ PRI ladderFinish() | eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown, nDe
     bUsableKnown := bMisPairMeas
     bUsable := bMisPairMeas and (abs(misPairPm) <= MISDIAL_TOL_PM)
     repeat eSign from SIGN_NEG to SIGN_POS
-        repeat eEntry from ENTRY_REST to ENTRY_STEP
-            repeat ladRungs with rungIdx
+        repeat eEntry from ENTRY_REST to ENTRY_MIS
+            nRungs := entryRungs(eEntry)
+            repeat nRungs with rungIdx
                 slotIdx := ladSlot(eSign, eEntry, rungIdx)
-                if ladRungPct[rungIdx] <> 0                 ' FOLLOW: the table's rungs only
-                    if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT)
+                if eEntry <> ENTRY_MIS                      ' PL-219: FOLLOW, SMOOTH and TOPSPD judge the REST and STEP rungs, on the shipped schedule
+                    if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT)    ' FOLLOW: every rung
                         nDev := abs(rgFolPm[slotIdx] - PM)
                         sfFolWorst[eSign] #>= nDev
                         sfFolN[eSign]++
                     elseif rgOutcome[slotIdx] == RO_FAULT
                         sfFolWorst[eSign] #>= PM            ' it did not hold its speed
                         sfFolN[eSign]++
-                if rungIdx == LADDER_CEIL_RUNG              ' SMOOTH and TOPSPD: the ceiling, from rest and by a step
-                    if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT) or (rgOutcome[slotIdx] == RO_FAULT)
-                        noteSmooth(eSign, (rgOutcome[slotIdx] == RO_FAULT) or (rgResyncs[slotIdx] > 0))
-                    if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT)
-                        noteTopSpd(eSign, abs(rgFolPm[slotIdx] - PM))
-                    elseif rgOutcome[slotIdx] == RO_FAULT
-                        noteTopSpd(eSign, PM)               ' it did not hold the law
+                    if rungIdx == LADDER_CEIL_RUNG          ' SMOOTH and TOPSPD: the ceiling, from rest and by a step
+                        if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT) or (rgOutcome[slotIdx] == RO_FAULT)
+                            noteSmooth(eSign, (rgOutcome[slotIdx] == RO_FAULT) or (rgResyncs[slotIdx] > 0))
+                        if (rgOutcome[slotIdx] == RO_DONE) or (rgOutcome[slotIdx] == RO_TIMEOUT)
+                            noteTopSpd(eSign, abs(rgFolPm[slotIdx] - PM))
+                        elseif rgOutcome[slotIdx] == RO_FAULT
+                            noteTopSpd(eSign, PM)           ' it did not hold the law
                 if rgOutcome[slotIdx] <> RO_NOT_RUN
                     emitLadderRung(eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown)
     repeat eSign from SIGN_NEG to SIGN_POS
         emitFfLine(eSign)
         emitMisdial(eSign, bUsable, bUsableKnown)
 
-PRI fitSign(eSign) | eEntry, rungIdx, slotIdx, nPts, nLo, nHi, fSx, fSy, fMx, fMy, fSxx, fSxy, fSrr, fX, fY, fB, fA, fCpsRes, fIncrRes
-' The sign's duty line: least squares of the mean duty against the encoder's speed (counts/s x10) over its clean rungs,
-' both entries (in float, about the means); its rms residual; and the reserve ceiling -- the increment where the line
-' reaches DUTY_RESERVE_PM of the drive's duty ceiling (the 6.5in's reserve, ADDING_MOTOR.md step 6), flagged when it lies
-' past the fastest clean rung (an extrapolation).
+PRI fitSign(eSign) | bOk, fA, fB, fRms, nPts, nLo, nHi, fCpsRes, fIncrRes
+' The sign's duty line over the ladder's REST and STEP rungs (fitDutyLine()); and the reserve ceiling -- the increment
+' where the line reaches DUTY_RESERVE_PM of the drive's duty ceiling (the 6.5in's reserve, ADDING_MOTOR.md step 6),
+' flagged when it lies past the fastest clean rung (an extrapolation). The misdial check does not use this line (PL-219:
+' misdialSign() fits its own over the misdial pass's rungs).
 '
 ' @param eSign - SIGN_*
 
 ' Local Variables:
-' @local eEntry - an entry
-' @local rungIdx - a rung
-' @local slotIdx - its record slot
+' @local bOk - T/F where T means the line resolved and rises
+' @local fA - the intercept, duty
+' @local fB - the slope, duty per (counts/s x10)
+' @local fRms - the rms residual
 ' @local nPts - clean rungs
 ' @local nLo - the slowest clean rung's speed, counts/s x10
 ' @local nHi - the fastest's
-' @local fSx - float sum of the speeds
-' @local fSy - float sum of the duties
-' @local fMx - their mean speed
-' @local fMy - their mean duty
-' @local fSxx - float sum of squared speed deviations
-' @local fSxy - float sum of speed x duty deviations
-' @local fSrr - float sum of squared residuals
-' @local fX - one rung's speed
-' @local fY - its duty
-' @local fB - the slope, duty per (counts/s x10)
-' @local fA - the intercept, duty
 ' @local fCpsRes - the reserve ceiling's speed, counts/s x10
 ' @local fIncrRes - its increment
 
-    nPts := 0
-    nLo := posx
-    nHi := 0
-    fSx := 0.0
-    fSy := 0.0
-    repeat eEntry from ENTRY_REST to ENTRY_STEP
-        repeat ladRungs with rungIdx
-            slotIdx := ladSlot(eSign, eEntry, rungIdx)
-            if bRungOnLine(slotIdx)
-                nPts++
-                fSx := fSx +. float(abs(rgCpsX10[slotIdx]))
-                fSy := fSy +. float(rgDuty[slotIdx])
-                nLo <#= abs(rgCpsX10[slotIdx])
-                nHi #>= abs(rgCpsX10[slotIdx])
+    bOk, fA, fB, fRms, nPts, nLo, nHi := fitDutyLine(eSign, ENTRY_REST, ENTRY_STEP)
     fitPts[eSign] := nPts
-    fitLoCps[eSign] := (nPts > 0) ? nLo : 0
+    fitLoCps[eSign] := nLo
     fitHiCps[eSign] := nHi
-    fitOk[eSign] := FALSE
-    if nPts >= 2
-        fMx := fSx /. float(nPts)
-        fMy := fSy /. float(nPts)
-        fSxx := 0.0
-        fSxy := 0.0
-        repeat eEntry from ENTRY_REST to ENTRY_STEP
-            repeat ladRungs with rungIdx
-                slotIdx := ladSlot(eSign, eEntry, rungIdx)
-                if bRungOnLine(slotIdx)
-                    fX := float(abs(rgCpsX10[slotIdx])) -. fMx
-                    fY := float(rgDuty[slotIdx]) -. fMy
-                    fSxx := fSxx +. fX *. fX
-                    fSxy := fSxy +. fX *. fY
-        if fSxx >. 0.0
-            fB := fSxy /. fSxx
-            fA := fMy -. fB *. fMx
-            fSrr := 0.0
-            repeat eEntry from ENTRY_REST to ENTRY_STEP
-                repeat ladRungs with rungIdx
-                    slotIdx := ladSlot(eSign, eEntry, rungIdx)
-                    if bRungOnLine(slotIdx)
-                        fY := float(rgDuty[slotIdx]) -. (fA +. fB *. float(abs(rgCpsX10[slotIdx])))
-                        fSrr := fSrr +. fY *. fY
-            fitA[eSign] := fA
-            fitB[eSign] := fB
-            fitRms[eSign] := fsqrt(fSrr /. float(nPts))
-            fitOk[eSign] := (fB >. 0.0)
+    fitA[eSign] := fA
+    fitB[eSign] := fB
+    fitRms[eSign] := fRms
+    fitOk[eSign] := bOk
     fitResIncr[eSign] := 0
     bFitResExtrap[eSign] := FALSE
     if fitOk[eSign]
@@ -5367,6 +5372,85 @@ PRI fitSign(eSign) | eEntry, rungIdx, slotIdx, nPts, nLo, nHi, fSx, fSy, fMx, fM
         fitResIncr[eSign] := round(fIncrRes)
         bFitResExtrap[eSign] := (fCpsRes >. float(nHi))
 
+PRI fitDutyLine(eSign, eEntryLo, eEntryHi) : bOk, fA, fB, fRms, nPts, nLo, nHi | eEntry, nRungs, rungIdx, slotIdx, fSx, fSy, fMx, fMy, fSxx, fSxy, fSrr, fX, fY
+' A sign's duty line: least squares of the mean duty against the encoder's speed (counts/s x10) over its rungs on the
+' line (bRungOnLine()) of the entries {eEntryLo} .. {eEntryHi} (in float, about the means); its rms residual. The slope
+' is returned whenever the speeds differ; {bOk} says it also rises (a falling slope is no back-EMF line) from two points.
+' Extracted from fitSign() for task 3707 (PL-219): fitSign() fits REST..STEP, misdialSign() MIS..MIS.
+'
+' @param eSign - SIGN_*
+' @param eEntryLo - the first entry of the range, ENTRY_*
+' @param eEntryHi - the last
+' @returns bOk - T/F where T means two or more rungs gave a line of positive slope
+' @returns fA - the intercept, duty (float; 0.0 with no line)
+' @returns fB - the slope, duty per (counts/s x10) (float)
+' @returns fRms - the rms residual (float)
+' @returns nPts - rungs on the line
+' @returns nLo - the slowest rung's speed, counts/s x10 (0 with none)
+' @returns nHi - the fastest's
+
+' Local Variables:
+' @local eEntry - an entry
+' @local nRungs - the entry's rungs
+' @local rungIdx - a rung
+' @local slotIdx - its record slot
+' @local fSx - float sum of the speeds
+' @local fSy - float sum of the duties
+' @local fMx - their mean speed
+' @local fMy - their mean duty
+' @local fSxx - float sum of squared speed deviations
+' @local fSxy - float sum of speed x duty deviations
+' @local fSrr - float sum of squared residuals
+' @local fX - one rung's speed
+' @local fY - its duty
+
+    bOk := FALSE
+    fA := fB := fRms := 0.0
+    nPts := 0
+    nLo := posx
+    nHi := 0
+    fSx := 0.0
+    fSy := 0.0
+    repeat eEntry from eEntryLo to eEntryHi
+        nRungs := entryRungs(eEntry)
+        repeat nRungs with rungIdx
+            slotIdx := ladSlot(eSign, eEntry, rungIdx)
+            if bRungOnLine(slotIdx)
+                nPts++
+                fSx := fSx +. float(abs(rgCpsX10[slotIdx]))
+                fSy := fSy +. float(rgDuty[slotIdx])
+                nLo <#= abs(rgCpsX10[slotIdx])
+                nHi #>= abs(rgCpsX10[slotIdx])
+    if nPts == 0
+        nLo := 0
+    if nPts >= 2
+        fMx := fSx /. float(nPts)
+        fMy := fSy /. float(nPts)
+        fSxx := 0.0
+        fSxy := 0.0
+        repeat eEntry from eEntryLo to eEntryHi
+            nRungs := entryRungs(eEntry)
+            repeat nRungs with rungIdx
+                slotIdx := ladSlot(eSign, eEntry, rungIdx)
+                if bRungOnLine(slotIdx)
+                    fX := float(abs(rgCpsX10[slotIdx])) -. fMx
+                    fY := float(rgDuty[slotIdx]) -. fMy
+                    fSxx := fSxx +. fX *. fX
+                    fSxy := fSxy +. fX *. fY
+        if fSxx >. 0.0
+            fB := fSxy /. fSxx
+            fA := fMy -. fB *. fMx
+            fSrr := 0.0
+            repeat eEntry from eEntryLo to eEntryHi
+                nRungs := entryRungs(eEntry)
+                repeat nRungs with rungIdx
+                    slotIdx := ladSlot(eSign, eEntry, rungIdx)
+                    if bRungOnLine(slotIdx)
+                        fY := float(rgDuty[slotIdx]) -. (fA +. fB *. float(abs(rgCpsX10[slotIdx])))
+                        fSrr := fSrr +. fY *. fY
+            fRms := fsqrt(fSrr /. float(nPts))
+            bOk := (fB >. 0.0)
+
 PRI bRungOnLine(slotIdx) : bOn
 ' T when a rung's duty is the motor's own requirement and may go into the sign's duty line: the rung is clean AND the
 ' drive's duty loop sat at its setpoint over the window (mean |err| within FIT_SETPOINT_TOL_X10 of SERVO_SETPOINT).
@@ -5379,22 +5463,37 @@ PRI bRungOnLine(slotIdx) : bOn
 
     bOn := bRgClean[slotIdx] and (abs(rgErrX10[slotIdx] - wheel.SERVO_SETPOINT * X10) <= FIT_SETPOINT_TOL_X10)
 
-PRI misdialSign(eSign) | fV
-' The sign's misdial check (R23-SGL-MISDIAL): from the duty line's slope, the supply that would give it --
+PRI misdialSign(eSign) | fV, bOk, fA, fB, fRms, nPts, nLo, nHi
+' The sign's misdial check (R23-SGL-MISDIAL): its duty line over the misdial pass's rungs (fitDutyLine() over MIS..MIS,
+' kept in misFit*; PL-219) gives the supply that would produce it --
 ' Vbus = Ke x 60 x DUTY_VOLT_DIV x frame_cnt / (sqrt 3 x ENC_COUNTS_PER_REV x 1000 x (duty per count/s)), mV, Ke being
-' KE_USED_MV_PER_KRPM (the sheet's, or task 3686's fitted one in a SINGLE_QUALIFY build)
+' KE_USED_MV_PER_KRPM (the sheet's, or the fitted one at this pair in a SINGLE_QUALIFY build)
 ' (the phase peak per rad/s is Ke / sqrt 3; the phase voltage is Vbus x duty / (DUTY_VOLT_DIV x frame_cnt)) -- against
-' TOLD_MV, per mille. Measured only with MISDIAL_MIN_POINTS clean rungs spanning MISDIAL_MIN_SPAN_PM of the fastest.
+' TOLD_MV, per mille. Measured only when the pair read back is the one set (MISDIAL_FWD_DEG / MISDIAL_REV_DEG) and with
+' MISDIAL_MIN_POINTS clean rungs spanning MISDIAL_MIN_SPAN_PM of the fastest.
 '
 ' @param eSign - SIGN_*
 
 ' Local Variables:
 ' @local fV - the predicted supply, mV (float)
+' @local bOk - T/F where T means the misdial rungs gave a rising line
+' @local fA - its intercept (unused)
+' @local fB - its slope, duty per (counts/s x10)
+' @local fRms - its rms residual (unused)
+' @local nPts - rungs on the line
+' @local nLo - the slowest one's speed, counts/s x10
+' @local nHi - the fastest's
 
     bSfMisMeas[eSign] := FALSE
     fitVpredMv[eSign] := 0
-    if fitOk[eSign] and (fitPts[eSign] >= MISDIAL_MIN_POINTS) and ((fitHiCps[eSign] - fitLoCps[eSign]) * PM >= MISDIAL_MIN_SPAN_PM * fitHiCps[eSign])
-        fV := float(KE_USED_MV_PER_KRPM) *. 60.0 *. float(DUTY_VOLT_DIV * frameCnt) /. (F_SQRT3 *. float(ENC_COUNTS_PER_REV) *. 1000.0 *. (fitB[eSign] *. float(X10)))
+    bOk, fA, fB, fRms, nPts, nLo, nHi := fitDutyLine(eSign, ENTRY_MIS, ENTRY_MIS)
+    misFitOk[eSign] := bOk
+    misFitB[eSign] := fB
+    misFitPts[eSign] := nPts
+    misFitLoCps[eSign] := nLo
+    misFitHiCps[eSign] := nHi
+    if misFitOk[eSign] and (misFwd == MISDIAL_FWD_DEG) and (misRev == MISDIAL_REV_DEG) and (misFitPts[eSign] >= MISDIAL_MIN_POINTS) and ((misFitHiCps[eSign] - misFitLoCps[eSign]) * PM >= MISDIAL_MIN_SPAN_PM * misFitHiCps[eSign])
+        fV := float(KE_USED_MV_PER_KRPM) *. 60.0 *. float(DUTY_VOLT_DIV * frameCnt) /. (F_SQRT3 *. float(ENC_COUNTS_PER_REV) *. 1000.0 *. (misFitB[eSign] *. float(X10)))
         if fV >. 999999.0
             fV := 999999.0
         fitVpredMv[eSign] := round(fV)
@@ -5414,10 +5513,10 @@ PRI emitLadderRung(eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown)
 
     benchLog.begin(@"B1-RUNG")
     benchLog.tokenField(@"sign", (eSign == SIGN_NEG) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
-    benchLog.tokenField(@"entry", (eEntry == ENTRY_REST) ? @sEntryRest : @sEntryStep, TOKMAX_ENTRY)
+    benchLog.tokenField(@"entry", entryToken(eEntry), TOKMAX_ENTRY)
     benchLog.numField(@"rung", rungIdx, LIM_TINY)
-    benchLog.numField(@"pct", ladRungPct[rungIdx], LIM_TINY)
-    benchLog.numField(@"incr", rgIncr[slotIdx], LIM_BIG)
+    benchLog.naNumField(@"pct", ladRungPct[rungIdx], LIM_TINY, eEntry <> ENTRY_MIS)     ' a misdial rung is at an rpm, not a % of the ceiling
+    benchLog.numField(@"incr", rgIncr[slotIdx], LIM_INCR)
     benchLog.tokenField(@"outcome", roToken(rgOutcome[slotIdx]), TOKMAX_RO)
     benchLog.naNumField(@"arr_ms", rgArrMs[slotIdx], LIM_SMALL, rgArrMs[slotIdx] >= 0)
     benchLog.numField(@"win_ms", rgWinMs[slotIdx], LIM_SMALL)
@@ -5434,7 +5533,7 @@ PRI emitLadderRung(eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown)
     lineEmit()
     benchLog.begin(@"B1-RUNGD")
     benchLog.tokenField(@"sign", (eSign == SIGN_NEG) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
-    benchLog.tokenField(@"entry", (eEntry == ENTRY_REST) ? @sEntryRest : @sEntryStep, TOKMAX_ENTRY)
+    benchLog.tokenField(@"entry", entryToken(eEntry), TOKMAX_ENTRY)
     benchLog.numField(@"rung", rungIdx, LIM_TINY)
     benchLog.numField(@"duty", rgDuty[slotIdx], LIM_MID)
     benchLog.numField(@"duty_lo", rgDutyLo[slotIdx], LIM_MID)
@@ -5445,7 +5544,7 @@ PRI emitLadderRung(eSign, eEntry, rungIdx, slotIdx, bUsable, bUsableKnown)
     benchLog.numField(@"capped", rgCapped[slotIdx], LIM_MID)
     benchLog.numField(@"folds", rgFolds[slotIdx], LIM_SMALL)
     benchLog.numField(@"resyncs", rgResyncs[slotIdx], LIM_SMALL)
-    benchLog.numField(@"drv_incr", rgDrvIncr[slotIdx], LIM_BIG)
+    benchLog.numField(@"drv_incr", rgDrvIncr[slotIdx], LIM_INCR)
     benchLog.numField(@"dc_ma", rgDcMa[slotIdx], LIM_MID)
     benchLog.numField(@"n", rgN[slotIdx], LIM_SMALL)
     lineEmit()
@@ -5489,7 +5588,7 @@ PRI emitMisdial(eSign, bUsable, bUsableKnown)
     benchLog.naNumField(@"pair_dev_pm", misPairPm, LIM_MID, bMisPairMeas)          ' PL-206: judged (the signs' mean)
     benchLog.naNumField(@"asym_pm", misAsymPm, LIM_MID, bMisPairMeas)              '  and the asymmetry, POS - NEG over 2
     benchLog.naNumField(@"ratio_ppm", fitRatioPpm[eSign], LIM_BIG, bSfMisMeas[eSign])
-    benchLog.naNumField(@"slope_e9", clampedRound(fitB[eSign] *. 1.0e9, LIM_BIG), LIM_BIG, fitOk[eSign])
+    benchLog.naNumField(@"slope_e9", clampedRound(misFitB[eSign] *. 1.0e9, LIM_BIG), LIM_BIG, misFitOk[eSign])
     benchLog.numField(@"tol_pm", MISDIAL_TOL_PM, LIM_SMALL)
     benchLog.numField(@"ke_mv_krpm", KE_USED_MV_PER_KRPM, LIM_SMALL)   ' the Ke predicted from (task 3686: the fitted one when fitted)
     benchLog.boolField(@"ke_fitted", KE_IS_FITTED)
@@ -5498,6 +5597,19 @@ PRI emitMisdial(eSign, bUsable, bUsableKnown)
         benchLog.boolField(@"rows_usable", bUsable)
     else
         benchLog.textField(@"rows_usable", @sNa)
+    lineEmit()
+    ' PL-219 (SRC_REV 20): the misdial pass's pair and its line's points; B1-MISDIAL is at its 280-byte bound, so they
+    '  are their own record. Widest: "B1-MISDIAL2" 11 + sign 9 + fwd 9 + rev 9 + rest_fwd 14 + rest_rev 14 + pts 9 +
+    '  lo_x10 18 + hi_x10 18 = 111 bytes (each field is "," name "," value)
+    benchLog.begin(@"B1-MISDIAL2")
+    benchLog.tokenField(@"sign", (eSign == SIGN_NEG) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
+    benchLog.naNumField(@"fwd", misFwd, LIM_TINY, misFwd >= 0)
+    benchLog.naNumField(@"rev", misRev, LIM_TINY, misRev >= 0)
+    benchLog.naNumField(@"rest_fwd", misRestFwd, LIM_TINY, misRestFwd >= 0)
+    benchLog.naNumField(@"rest_rev", misRestRev, LIM_TINY, misRestRev >= 0)
+    benchLog.numField(@"pts", misFitPts[eSign], LIM_TINY)
+    benchLog.numField(@"lo_x10", misFitLoCps[eSign], LIM_MID)
+    benchLog.numField(@"hi_x10", misFitHiCps[eSign], LIM_MID)
     lineEmit()
 #endif
 
@@ -5523,7 +5635,7 @@ PRI bRunRampLeg() : bCompleted | nPowIdx, bGoOn
     bCompleted := bGoOn
 
 PRI bRampOnce(nPowSign) : bGoOn | nPower, nCmd, nCmdMs, nResync0
-' One ramp from rest to the row's top at {nPowSign} x rowTopPower, by driveAtPower() -- the public path, as a user's --
+' One ramp from rest to the row's top at {nPowSign} x TOP_POWER, by driveAtPower() -- the public path, as a user's --
 ' then its measurement (bRampMeasure()). A refused command (a protective stop latched: cleared) prints B1-RAMP refused; an
 ' increment past the row's top ends the run (bCheckTop()).
 '
@@ -5537,7 +5649,7 @@ PRI bRampOnce(nPowSign) : bGoOn | nPower, nCmd, nCmdMs, nResync0
 ' @local nResync0 - re-synced faults before it
 
     bGoOn := TRUE
-    nPower := rowTopPower * nPowSign
+    nPower := TOP_POWER * nPowSign
     _, _, nResync0 := wheel.testGetFaultResponse()
     sampleBegin()
     nCmdMs := getms()
@@ -5726,8 +5838,8 @@ PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUp
     benchLog.begin(@"B1-RAMP")
     benchLog.tokenField(@"sign", (eSign == SIGN_NEG) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
     benchLog.numField(@"power", nPower, LIM_TINY)
-    benchLog.numField(@"lib_incr", nCmd, LIM_BIG)
-    benchLog.numField(@"top_incr", rowTop, LIM_BIG)
+    benchLog.numField(@"lib_incr", nCmd, LIM_INCR)
+    benchLog.numField(@"top_incr", rowCeil, LIM_INCR)
     benchLog.boolField(@"faulted", bFaulted)
     benchLog.numField(@"resyncs", nResync1 - nResync0, LIM_SMALL)
     benchLog.numField(@"p_band_ms", nUpBandMs, LIM_SMALL)
@@ -5742,7 +5854,7 @@ PRI bRampMeasure(nPower, nCmd, nCmdMs, nResync0) : bGoOn | eSign, nCmdX1000, nUp
     lineEmit()
     benchLog.begin(@"B1-RAMPDN")
     benchLog.tokenField(@"sign", (eSign == SIGN_NEG) ? @sSignNeg : @sSignPos, TOKMAX_SIGN)
-    benchLog.numField(@"start_incr", nV, LIM_BIG)
+    benchLog.numField(@"start_incr", nV, LIM_INCR)
     benchLog.numField(@"start_cps", nStartCps, LIM_MID)
     benchLog.numField(@"p_band_ms", nDnBandMs, LIM_SMALL)
     benchLog.numField(@"p_whole_ms", nDnWholeMs, LIM_SMALL)
@@ -5804,12 +5916,12 @@ PRI bReverseRun() : bGoOn | nPhase, nPower, nCmd, nUpMs, nDnMs, eRo, nMs, nResyn
     nFol0 := 0
     nFol1 := 0
     nFol2 := 0
-    _, nUpMs := scurveMs(rowTop, rampAccelUp, rampJerkUp, 0)
-    _, nDnMs := scurveMs(rowTop, rampAccelDn, rampJerkDn, 0)
+    _, nUpMs := scurveMs(rowCeil, rampAccelUp, rampJerkUp, 0)
+    _, nDnMs := scurveMs(rowCeil, rampAccelDn, rampJerkDn, 0)
     _, _, nResync0 := wheel.testGetFaultResponse()
     sampleBegin()
     repeat nPhase from 0 to 2
-        nPower := (nPhase == 1) ? -rowTopPower : rowTopPower
+        nPower := (nPhase == 1) ? -TOP_POWER : TOP_POWER
         if wheel.driveAtPower(nPower) <> wheel.NO_ERROR
             clearProtect()
             quit
@@ -5854,7 +5966,7 @@ PRI bReverseRun() : bGoOn | nPhase, nPower, nCmd, nUpMs, nDnMs, eRo, nMs, nResyn
         else
             bGoOn, _ := bStopAndRest(FALSE)
     benchLog.begin(@"B1-REVERSE")
-    benchLog.numField(@"power", rowTopPower, LIM_TINY)
+    benchLog.numField(@"power", TOP_POWER, LIM_TINY)
     benchLog.numField(@"ran", nRan, LIM_TINY)
     benchLog.boolField(@"faulted", bFaulted)
     benchLog.numField(@"resyncs", nResync1 - nResync0, LIM_SMALL)
@@ -5937,7 +6049,7 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
 ' @local nHeld1 - ...at rest
 
     bGoOn := TRUE
-    nPower := ((eKind == KIND_TOP) ? rowTopPower : STOPS_CRAWL_POWER) * nPowSign
+    nPower := ((eKind == KIND_TOP) ? TOP_POWER : STOPS_CRAWL_POWER) * nPowSign
     nTicks := (eKind == KIND_TOP) ? stopTopTicks[rotIdx] : stopCrawlTicks[rotIdx]
     nTimeMs := (eKind == KIND_TOP) ? STOPS_TOP_MS : STOPS_CRAWL_MS
     nDeadline := 0
@@ -6007,7 +6119,7 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
     benchLog.tokenField(@"by", bByTime ? @sSfUnitsMs : @sSfUnitsCounts, TOKMAX_UNITS)
     benchLog.numField(@"limit", bByTime ? nTimeMs : nTicks, LIM_MID)
     benchLog.numField(@"power", nPower, LIM_TINY)
-    benchLog.numField(@"lib_incr", nCmd, LIM_BIG)
+    benchLog.numField(@"lib_incr", nCmd, LIM_INCR)
     benchLog.numField(@"err", eErr, LIM_SMALL)
     benchLog.tokenField(@"outcome", roToken(eRo), TOKMAX_RO)
     benchLog.tokenField(@"reason", srToken(eReason), TOKMAX_SR)
@@ -6042,7 +6154,7 @@ PRI bStopRun(nPowSign, eKind, rotIdx, bByTime) : bGoOn | nPower, nTicks, nTimeMs
         lineEmit()
 #endif
 
-CON { --- the offset helpers, shared by L-offscan and L-range (OFS_HELPERS) --- }
+CON { --- the offset helpers, shared by L-offscan, L-range and L-ladder's misdial pass (OFS_HELPERS) --- }
 
 #ifdef OFS_HELPERS
 PRI applyOffset(eSign, nD) : nApplied | nFwd, nRev
@@ -6085,6 +6197,34 @@ PRI ofsReturn(eSign, nFromD) : eRo | nD
             nD := (nD + OFS_STEP_DEG) <# 0
         applyOffset(eSign, nD)
         eRo, _ := waitPhase(UNTIL_ELAPSED, 0, OFS_RETURN_STEP_MS, FALSE)
+
+PRI bRestoreOffsets() : bRestored | nFwd, nRev
+' Put back the shipped pair (testSetFwdRevIndep() writes it whether or not the motor runs), read it back, put back the
+' lead schedule where the leg found it on (DRIVER_REV 57), and emit B1-OFSREST. A pair that does not read back, or a
+' schedule that does not go back on, ends the run (AR_SETTING): every later leg runs on the shipped tables. Moved here
+' from L-offscan for task 3707: L-ladder's misdial pass leaves through it too (it follows ofsShipFwd, ofsShipRev and
+' bShipSched, which the leg read before it set a pair).
+'
+' @returns bRestored - T/F where T means it reads back as shipped
+
+' Local Variables:
+' @local nFwd - the offset read back for negative increments, degrees
+' @local nRev - the offset read back for positive increments, degrees
+
+    wheel.testSetFwdRevIndep(ofsShipFwd, ofsShipRev)
+    nFwd, nRev := wheel.testGetFwdRevIndep()
+    bRestored := (nFwd == ofsShipFwd) and (nRev == ofsShipRev)
+    if bShipSched
+        bRestored := bRestored and (wheel.testSetLeadScheduled(TRUE) == wheel.NO_ERROR)
+    benchLog.begin(@"B1-OFSREST")
+    benchLog.numField(@"fwd", nFwd, LIM_SMALL)
+    benchLog.numField(@"rev", nRev, LIM_SMALL)
+    benchLog.numField(@"ship_fwd", ofsShipFwd, LIM_SMALL)
+    benchLog.numField(@"ship_rev", ofsShipRev, LIM_SMALL)
+    benchLog.boolField(@"restored", bRestored)
+    lineEmit()
+    if bRestored == FALSE
+        setAbort(AR_SETTING, -1)
 #endif
 
 CON { --- L-offscan (the analysis's L3): the offset scan, the lead check, the hall zero at speed --- }
@@ -6129,32 +6269,6 @@ PRI bRunOffScan() : bCompleted | eSign, pctIdx, bGoOn, bRestored
             bGoOn := bSetTestLimit(TEST_PEAK_A)             ' the run's limit again for the legs after it
         ofsFinish()
     bCompleted := bGoOn
-
-PRI bRestoreOffsets() : bRestored | nFwd, nRev
-' Put back the shipped pair (testSetFwdRevIndep() writes it whether or not the motor runs), read it back, put back the
-' lead schedule where the leg found it on (DRIVER_REV 57), and emit B1-OFSREST. A pair that does not read back, or a
-' schedule that does not go back on, ends the run (AR_SETTING): every later leg runs on the shipped tables.
-'
-' @returns bRestored - T/F where T means it reads back as shipped
-
-' Local Variables:
-' @local nFwd - the offset read back for negative increments, degrees
-' @local nRev - the offset read back for positive increments, degrees
-
-    wheel.testSetFwdRevIndep(ofsShipFwd, ofsShipRev)
-    nFwd, nRev := wheel.testGetFwdRevIndep()
-    bRestored := (nFwd == ofsShipFwd) and (nRev == ofsShipRev)
-    if bShipSched
-        bRestored := bRestored and (wheel.testSetLeadScheduled(TRUE) == wheel.NO_ERROR)
-    benchLog.begin(@"B1-OFSREST")
-    benchLog.numField(@"fwd", nFwd, LIM_SMALL)
-    benchLog.numField(@"rev", nRev, LIM_SMALL)
-    benchLog.numField(@"ship_fwd", ofsShipFwd, LIM_SMALL)
-    benchLog.numField(@"ship_rev", ofsShipRev, LIM_SMALL)
-    benchLog.boolField(@"restored", bRestored)
-    lineEmit()
-    if bRestored == FALSE
-        setAbort(AR_SETTING, -1)
 
 PRI bOfsSpeed(eSign, pctIdx) : bGoOn | slotIdx, eSide, nRefMa, nRefDrift, bDcOk, nDcVx10, nDcVse, nDcTx10, nDcPts, nDcRms, bDuOk, nDuVx10, nDuVse, nDuTx10, nDuPts, nDuRms, spIdx
 ' One sign at one speed: both sides (bOfsSide()), the hall zero at speed over every window, then at rest every point's
@@ -6945,7 +7059,7 @@ CON { --- L-range (task 3700): the real highest held speed, with vibration and t
 
   ' STEPHEN 2026-10-07: "the lowest RPM we can command and hold, and the highest... not some artificial limits" (overlay
   '  P10: a motor's range is its measured edges). The lowest is L-mininc's sweep, run to 0.1 ticks/s (SRC_REV 17); this
-  '  leg climbs from the row's top (the library's ceiling, rowTop) in RANGE_STEP_INCR steps, each way, one continuous
+  '  leg climbs from the row's top (the library's ceiling, rowCeil) in RANGE_STEP_INCR steps, each way, one continuous
   '  climb, until a step is not held -- or the duty runs out, the drive faults or re-syncs, a guard ends the run, or
   '  RANGE_INCR_MAX. At each step: the ladder's 5 s window (following, duty, the counters, the DC link, the error); the
   '  hall edges timed over it (the vibration: the shaft's speed by hall sector and by position in the turn, from the
@@ -6975,6 +7089,7 @@ CON { --- L-range (task 3700): the real highest held speed, with vibration and t
     RPM_X10_DIV         = ENC_COUNTS_PER_REV / 60                ' counts/s x10 to rpm x10: 1,440 counts a turn, 60 s a minute
     TOKMAX_RE           = 8                                     ' the longest RE_* token (NOT_HELD, DUTY_OUT)
     TOKMAX_Q            = 4                                     ' DC, DUTY
+    TOKMAX_FC           = 4                                     ' PL-220: NONE, LAG, HALL
     ' why a sign's climb ended
     #0, RE_NONE, RE_NOT_HELD, RE_DUTY, RE_FAULT, RE_RESYNC, RE_BOUND, RE_GUARD, RE_REFUSED, RE_STEPS
 
@@ -6988,6 +7103,8 @@ VAR { L-range }
     LONG    rnSwDcMa[RANGE_SW_SLOTS], rnSwDuty[RANGE_SW_SLOTS], bRnSwOk[RANGE_SW_SLOTS]
     LONG    rnVdcX10[RANGE_SLOTS], bRnVdcOk[RANGE_SLOTS], rnVduX10[RANGE_SLOTS], bRnVduOk[RANGE_SLOTS]
     LONG    rnBaseDeg[RANGE_SLOTS]                          ' DRIVER_REV 57: the sign's offset the step's sweep is about, degrees
+    LONG    rnMissD[RANGE_SLOTS], rnIllD[RANGE_SLOTS]       ' PL-220: the step's hall missed transitions and illegal codes
+    LONG    rnCause[RANGE_SLOTS]                            ' PL-220: wheel.FC_* of a fault or re-sync in the step, else FC_NONE
     LONG    rnEnd[SIGN_COUNT], rnEndIncr[SIGN_COUNT], rnTopHeld[SIGN_COUNT], rnSteps[SIGN_COUNT]
     ' the vibration window's accumulators (vibBegin(), vibTakeEdges(), vibEnd())
     LONG    bSmpVib, bVbHave, vbLastEnc, vbLastLost, vbLost0, vbN
@@ -7037,7 +7154,7 @@ PRI bRangeClimb(eSign) : bGoOn | stepIdx, slotIdx, nIncr, nFrom, eEnd, bHeld
 
     bGoOn := TRUE
     nFrom := 0
-    nIncr := rowTop
+    nIncr := rowCeil
     eEnd := RE_NONE
     sampleBegin()
     repeat stepIdx from 0 to RANGE_MAX_STEPS - 1
@@ -7060,11 +7177,13 @@ PRI bRangeClimb(eSign) : bGoOn | stepIdx, slotIdx, nIncr, nFrom, eEnd, bHeld
         bGoOn, _ := bStopAndRest(TRUE)
     rangeShippedLead(eSign)
 
-PRI bRangeStep(eSign, slotIdx, nIncr, nFrom) : bGoOn, eEnd, bHeld | nCmd, nWholeMs, nResync0, nResync1, eRo, nArrMs
+PRI bRangeStep(eSign, slotIdx, nIncr, nFrom) : bGoOn, eEnd, bHeld | nCmd, nWholeMs, nResync0, nResync1, eRo, nArrMs, nMiss0, nIll0, nMiss1, nIll1
 ' One step: command it from the step below (or rest); arrive; settle; the 5 s window with the hall edges timed
 ' (vibBegin() .. vibEnd()); the current capture folded by hall code (bRangeCurrent()); then, held, the timing sweep
 ' (bRangeSweep()). It ends the climb when not held (RE_NOT_HELD), at the duty's end (RE_DUTY, held), on a fault, a
-' re-sync, a refusal, or a guard.
+' re-sync, a refusal, or a guard. PL-220: the step's hall missed and illegal counts (command to window end) and, on a
+' fault or a re-sync, its kind (getFaultCause(): the rotor lost the field, or a hall read illegal), so a climb's end
+' tells the servo's position fault from hall edges arriving faster than the drive's pass reads them.
 '
 ' @param eSign - SIGN_NEG or SIGN_POS
 ' @param slotIdx - the step's record slot
@@ -7081,11 +7200,18 @@ PRI bRangeStep(eSign, slotIdx, nIncr, nFrom) : bGoOn, eEnd, bHeld | nCmd, nWhole
 ' @local nResync1 - ...after the window
 ' @local eRo - a phase's outcome
 ' @local nArrMs - ms to arrive
+' @local nMiss0 - hall missed transitions before the command
+' @local nIll0 - hall illegal codes before the command
+' @local nMiss1 - ...after the window
+' @local nIll1 - ...after the window
 
     bGoOn := TRUE
     eEnd := RE_NONE
     bHeld := FALSE
     nCmd := (eSign == SIGN_NEG) ? -nIncr : nIncr
+    rnMissD[slotIdx] := rnIllD[slotIdx] := 0
+    rnCause[slotIdx] := wheel.FC_NONE
+    nMiss0, nIll0 := wheel.getHallIntegrityCounts()
     rnIncr[slotIdx] := nCmd
     rnBaseDeg[slotIdx] := (eSign == SIGN_NEG) ? ofsShipFwd : ofsShipRev  ' until a sweep reads it at speed
     rnOutcome[slotIdx] := RO_NOT_RUN
@@ -7109,6 +7235,11 @@ PRI bRangeStep(eSign, slotIdx, nIncr, nFrom) : bGoOn, eEnd, bHeld | nCmd, nWhole
                 vibEnd(slotIdx)
         _, _, nResync1 := wheel.testGetFaultResponse()
         rnResyncs[slotIdx] := nResync1 - nResync0
+        nMiss1, nIll1 := wheel.getHallIntegrityCounts()
+        rnMissD[slotIdx] := nMiss1 - nMiss0
+        rnIllD[slotIdx] := nIll1 - nIll0
+        if (eRo == RO_FAULT) or (rnResyncs[slotIdx] <> 0)   ' read before bFaultRecover(); only a later fault replaces it
+            rnCause[slotIdx] := wheel.getFaultCause()
         if eRo == RO_FAULT
             rnOutcome[slotIdx] := RO_FAULT
             eEnd := RE_FAULT
@@ -7479,7 +7610,8 @@ PRI bRangeCurrent(slotIdx) : bGoOn | bDone, idx, code, nSum[VIB_SECTORS], nCnt[V
             rnCurRipX100[slotIdx] := round((fMax -. fMin) *. 100.0)
 
 PRI emitRangeSign(eSign) | stepIdx, slotIdx
-' At rest after a sign's climb: each step's B1-RANGE (the hold), B1-RANGEV (the vibration and current pulses) and two
+' At rest after a sign's climb: each step's B1-RANGE (the hold), B1-RANGEV (the vibration and current pulses, and PL-220's
+' fault kind and hall counts) and two
 ' B1-RANGET (the timing sweep, the DC link and the duty), then B1-RANGEEND (the highest held and why the climb ended).
 '
 ' @param eSign - SIGN_NEG or SIGN_POS
@@ -7493,7 +7625,7 @@ PRI emitRangeSign(eSign) | stepIdx, slotIdx
         benchLog.begin(@"B1-RANGE")
         benchLog.tokenField(@"sign", signToken(eSign), TOKMAX_SIGN)
         benchLog.numField(@"step", stepIdx, LIM_TINY)
-        benchLog.numField(@"incr", rnIncr[slotIdx], LIM_BIG)
+        benchLog.numField(@"incr", rnIncr[slotIdx], LIM_INCR)
         benchLog.numField(@"rpm_x10", abs(rnCpsX10[slotIdx]) / RPM_X10_DIV, LIM_SMALL)
         benchLog.tokenField(@"outcome", roToken(rnOutcome[slotIdx]), TOKMAX_RO)
         benchLog.numField(@"fol_pm", rnFolPm[slotIdx], LIM_SMALL)
@@ -7512,6 +7644,9 @@ PRI emitRangeSign(eSign) | stepIdx, slotIdx
         benchLog.numField(@"step", stepIdx, LIM_TINY)
         benchLog.numField(@"edges", rnEdges[slotIdx], LIM_MID)
         benchLog.numField(@"lost", rnLost[slotIdx], LIM_MID)
+        benchLog.tokenField(@"fault_kind", fcToken(rnCause[slotIdx]), TOKMAX_FC)   ' PL-220 (B1-RANGE is at its 280-byte bound)
+        benchLog.numField(@"hall_missed", rnMissD[slotIdx], LIM_SMALL)
+        benchLog.numField(@"hall_illegal", rnIllD[slotIdx], LIM_SMALL)
         benchLog.naNumField(@"sec_rip_pm", rnSecRip[slotIdx], LIM_SMALL, rnSecRip[slotIdx] >= 0)
         benchLog.naNumField(@"turn_rip_pm", rnTurnRip[slotIdx], LIM_SMALL, rnTurnRip[slotIdx] >= 0)
         benchLog.naNumField(@"jit_pm", rnJitPm[slotIdx], LIM_SMALL, rnJitPm[slotIdx] >= 0)
@@ -7524,11 +7659,15 @@ PRI emitRangeSign(eSign) | stepIdx, slotIdx
     benchLog.begin(@"B1-RANGEEND")
     benchLog.tokenField(@"sign", signToken(eSign), TOKMAX_SIGN)
     benchLog.tokenField(@"end", reToken(rnEnd[eSign]), TOKMAX_RE)
-    benchLog.numField(@"end_incr", rnEndIncr[eSign], LIM_BIG)
-    benchLog.numField(@"top_held_incr", rnTopHeld[eSign], LIM_BIG)
+    if rnSteps[eSign] > 0                                   ' PL-220: the ending step's fault kind
+        benchLog.tokenField(@"end_kind", fcToken(rnCause[eSign * RANGE_MAX_STEPS + rnSteps[eSign] - 1]), TOKMAX_FC)
+    else
+        benchLog.textField(@"end_kind", @sNa)
+    benchLog.numField(@"end_incr", rnEndIncr[eSign], LIM_INCR)
+    benchLog.numField(@"top_held_incr", rnTopHeld[eSign], LIM_INCR)
     benchLog.numField(@"top_held_rpm_x10", topHeldRpmX10(eSign), LIM_SMALL)
     benchLog.numField(@"steps", rnSteps[eSign], LIM_TINY)
-    benchLog.numField(@"row_top_incr", rowTop, LIM_BIG)
+    benchLog.numField(@"row_top_incr", rowCeil, LIM_INCR)
     lineEmit()
 
 PRI emitRangeSweep(eSign, stepIdx, slotIdx, pQ, pY, bOk, nVertX10) | ptIdx, idx
@@ -7591,6 +7730,18 @@ PRI reToken(eEnd) : pToken
 
     pToken := lookupz(eEnd: @sReNone, @sReNotHeld, @sReDuty, @sReFault, @sReResync, @sReBound, @sReGuard, @sReRefused, @sReSteps)
 
+PRI fcToken(eCause) : pToken
+' The token for a fault's kind (PL-220).
+'
+' @param eCause - wheel.FC_*
+' @returns pToken - its token ("NA" outside the enum)
+
+    case eCause
+        wheel.FC_NONE:  pToken := @sReNone
+        wheel.FC_LAG:   pToken := @sFcLag
+        wheel.FC_HALL:  pToken := @sFcHall
+        other:          pToken := @sNa
+
 DAT { L-range tokens }
                 orgh                                            ' hub data: the capture cog's org 0 above does not reach here
 sReNone         BYTE    "NONE", 0
@@ -7604,6 +7755,8 @@ sReRefused      BYTE    "REFUSED", 0
 sReSteps        BYTE    "STEPS", 0
 sQDc            BYTE    "DC", 0
 sQDuty          BYTE    "DUTY", 0
+sFcLag          BYTE    "LAG", 0
+sFcHall         BYTE    "HALL", 0
 sSwZ            BYTE    "d0", 0
 sSwM5           BYTE    "dm5", 0
 sSwM10          BYTE    "dm10", 0
@@ -7676,7 +7829,7 @@ PRI bPassProbeOnce(eSign) : bGoOn | nIncr, nWholeMs, eRo, eRo2, nArrMs, nResync0
     winLagD := 0
     winResyncD := 0
     winMs := 0
-    nIncr := (rowCeil / 100 * PASSPRB_PCT) <# rowTop
+    nIncr := rowCeil / 100 * PASSPRB_PCT
     if eSign == SIGN_NEG
         nIncr := -nIncr
     nPassHzX1000 := muldiv64(clkfreq, PM, frameCnt * wheel.DRIVE_PASS_FRAMES)
@@ -7745,7 +7898,7 @@ PRI bPassProbeOnce(eSign) : bGoOn | nIncr, nWholeMs, eRo, eRo2, nArrMs, nResync0
         sfPassPpm[eSign] := nPpm
     benchLog.begin(@"B1-PASSPRB")
     benchLog.tokenField(@"sign", signToken(eSign), TOKMAX_SIGN)
-    benchLog.numField(@"incr", nIncr, LIM_BIG)
+    benchLog.numField(@"incr", nIncr, LIM_INCR)
     benchLog.tokenField(@"outcome", roToken(eRo2 <> RO_NOT_RUN ? eRo2 : eRo), TOKMAX_RO)
     benchLog.naNumField(@"arr_ms", nArrMs, LIM_SMALL, nArrMs >= 0)
     benchLog.numField(@"clkfreq", clkfreq, LIM_BIG)
@@ -10107,7 +10260,7 @@ PRI emitHandStep(hl, seqNum, runNum)
     benchLog.numField(@"cont_a", hlContRead[hl], LIM_TINY)
     benchLog.numField(@"lim_err", hlLimErr[hl], LIM_SMALL)
     benchLog.tokenField(@"end", heToken(hlEnd[hl]), TOKMAX_HE)
-    benchLog.numField(@"incr", hlCmdIncr[hl], LIM_BIG)
+    benchLog.numField(@"incr", hlCmdIncr[hl], LIM_INCR)
     benchLog.naNumField(@"arr_ms", hlArrMs[hl], LIM_SMALL, hlArrMs[hl] >= 0)
     benchLog.naNumField(@"contact_ms", hlContactMs[hl], LIM_SMALL, bHlContact[hl])
     benchLog.numField(@"last_tick_ms", hlLastTickMs[hl], LIM_SMALL)
@@ -10713,9 +10866,6 @@ PRI emitMotor()
     lineEmit()
     ' phase 2a's numbers (the rows' table prints in B1-ROW, the drive's in B1-DRIVE)
     benchLog.begin(@"B1-MOTOR2")
-    benchLog.numField(@"cap_incr", PK1_CAP_INCR, LIM_BIG)
-    benchLog.numField(@"cap_from_mv", PK1_CAP_FROM_MV, LIM_MID)
-    benchLog.numField(@"ext_rungs", LADDER_EXT_COUNT, LIM_TINY)
     benchLog.boolField(@"ke_fitted", KE_IS_FITTED)
     benchLog.numField(@"ke_used", KE_USED_MV_PER_KRPM, LIM_SMALL)  ' task 3686: the fitted Ke in a SINGLE_QUALIFY build
     benchLog.numField(@"misdial_tol_pm", MISDIAL_TOL_PM, LIM_SMALL)
@@ -10790,7 +10940,7 @@ PRI emitEnd()
         lineEmit()
     benchLog.begin(@"B1-END")
     benchLog.tokenField(@"abort", abortToken(eAbortReason), TOKMAX_REASON)
-    benchLog.numField(@"detail", abortDetail, LIM_BIG)
+    benchLog.numField(@"detail", abortDetail, LIM_INCR)    ' AR_CAP's detail is an increment
     if eAbortReason == AR_ENC_CHECK
         benchLog.tokenField(@"detail_name", enc.reasonName(abortDetail), TOKMAX_OUTCOME)
     elseif (eAbortReason == AR_BURST) or (eAbortReason == AR_GUARD)
@@ -10965,7 +11115,7 @@ PRI emitDeclaredSignoffs() | setIdx, eSign, eIdx, hl, eDir, nPowIdx
         emitSignoff(@sSfCellFollow, signToken(eSign), @sSfCritFolDev, sfFolN[eSign] > 0, sfFolWorst[eSign], ...
                     FOLLOW_LO_PM, FOLLOW_TOL_PM, @sSfUnitsPm, sfFolN[eSign])
     emitSignoff(@sSfCellMisdial, @sSignPair, @sSfCritVpred, bMisPairMeas, misPairPm, ...      ' PL-206: the signs' mean
-                -MISDIAL_TOL_PM, MISDIAL_TOL_PM, @sSfUnitsPm, fitPts[SIGN_NEG] + fitPts[SIGN_POS])
+                -MISDIAL_TOL_PM, MISDIAL_TOL_PM, @sSfUnitsPm, misFitPts[SIGN_NEG] + misFitPts[SIGN_POS])
 #endif
     if PART_LADDER_BUILT or PART_RAMP_BUILT
         repeat eSign from SIGN_NEG to SIGN_POS

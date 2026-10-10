@@ -267,10 +267,15 @@ two already there; the file's header describes every field.
 | ticks per revolution | your count from step 3 | 90 / 24 |
 | rated current, mA | the data sheet's; with none, half the current you would abort a run at | 5,000 (no rating on record) / 1,840 |
 | no-load current, mA | the data sheet's, or what the unloaded motor draws near its top speed | 500 / 400 |
-| scan current limit, whole A | the least whole amp at or above the rated current; with no rating, above what the motor draws at its offset edges | 4 / 2 |
-| ladder current limit, whole A | the scan's, or more if the top speeds need it | 4 / 3 |
+| scan current limit, whole A | the least whole amp at or above the rated current; with no rating, above what the motor draws at its offset edges | 4 / 40 |
+| ladder current limit, whole A | the scan's, or more if the top speeds need it | 4 / 40 |
 | slow and fast scan speeds, rpm | a slow, steady speed, then twice it | 33, 65 / 560, 1,120 |
-| ladder from, step, to, rpm | from below the slowest top speed you expect, in steps, to past the fastest (at most 40 rungs) | 30, 15, 435 / 280, 140, 2,800 |
+| ladder from, step, to, rpm | from below the slowest top speed you expect, in steps, to past the fastest (at most 40 rungs) | 30, 15, 435 / 280, 280, 6,720 |
+
+The DocoEng record runs both limits at the library's own 40 A. On a Rev A board a 2–3 A limit folds back on the
+current sense's noise at this motor's crawl speeds, and its scan hunted. The tool's own absolute abort, twice the
+rated current, is the protection. Its ladder runs to 6,720 rpm so that the climb reaches the duty reserve at every
+supply voltage.
 
 The scan starts from the pair that `offsetsForMotor()` returns for your motor, so give your motor a case
 there first (5b shows where). Any pair on which the motor turns at the slow scan speed will do. Both of our

@@ -1,10 +1,18 @@
 # pasm_equiv — prove a candidate driver image equivalent to the baseline
 
 `tools/pasm_equiv/run.sh` compiles the PASM motor driver twice, the baseline (`git show
-mem-reduce-start:src/isp_bldc_motor.spin2`, with the OBJ files it names) and the candidate (the work tree's
+HEAD:src/isp_bldc_motor.spin2`, with the OBJ files it names) and the candidate (the work tree's
 `src/`). It runs both images on the same stimulus in an instruction-level P2 cog emulator and compares them at
 every PWM frame. It is the §4.2 harness of `DOCs/plans/PASM-MEMORY-REDUCTION-PLAN.md`: every work package there
 must pass it before its commit.
+
+**The baseline is the last commit** (`--baseline-ref HEAD`, the default since 2026-10-10), so an uncommitted change
+is proved against the driver it changes. Until then the default was the ref `mem-reduce-start`, from before the
+6.1.0 hold-speed fix, so every later change was compared against an image that differed from it by design. To
+compare against a release, name it: `--baseline-ref v6.1.0`. A change that alters behaviour on purpose diverges from
+any baseline before it; prove the rest unchanged with the timing-matched baseline method (the old logic, padded to
+the new instruction count, in a `--baseline-dir` copy), as DRIVER_REV 59 did. The paragraphs below that name
+`mem-reduce-start` describe that image.
 
 ```bash
 tools/pasm_equiv/run.sh                          # the 55 named edge scenarios + 50 random seeds
@@ -13,7 +21,7 @@ tools/pasm_equiv/run.sh --scenario rand-1234     # replay one scenario (a diverg
 tools/pasm_equiv/run.sh --scenario named         # the edge suite only
 tools/pasm_equiv/run.sh --list                   # the named scenarios
 tools/pasm_equiv/run.sh --candidate-dir /path/to/other/src   # any source tree as the candidate
-tools/pasm_equiv/run.sh --baseline-ref HEAD --clock 270      # DRIVER_REV 50 against the last commit, every scenario at 270 MHz
+tools/pasm_equiv/run.sh --baseline-ref v6.1.0 --clock 270    # against the 6.1.0 release, every scenario at 270 MHz
 tools/pasm_equiv/run.sh --clock 199.5 --no-named --seeds 6   # a non-integer clock (MHz, fractional allowed)
 ```
 

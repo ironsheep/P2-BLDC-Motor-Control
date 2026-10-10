@@ -838,6 +838,12 @@
 ''               passes. BM-AGUIDE gains stray_mV; bias_still now means still in hall code AND voltage. The next hand run certifies it.
 ''               09 Oct 2026 -- SRC_REV=86 (no format change): DRIVER_REV 58 (PL-218) renames the launch run's third long
 ''               targetAngle to stopHold; BM-ABIL names it so.
+''               10 Oct 2026 -- SRC_REV=87 (no format change): task 3707. PL-139: a fault trial's coast REST window opens
+''               where rest is confirmed (REST_CONFIRM_MS after the last tick) and the capture runs FR_REST_WIN_MS past it,
+''               so R19-DUAL-RESTFLAT-X no longer judges a rotor still rocking in its sector (FR_REST_CONFIRM_SAMPLES).
+''               PL-197: the walk grace's comment sums DRIVER_REV 60's 40 ms answer bound. PL-63: the stored-trace rest finders
+''               read a one-sample hall flicker (pos unchanged, hwPos one tick off and back) as rest, as waitRest()'s 5 ms
+''               poll already did (bSmpStill()); Visit 2's traces 25 and 28 confirmed rest live and read rest_k NA offline.
 ''
 '' =================================================================================================
 
@@ -955,7 +961,7 @@
 
 CON { build identity }
 
-    SRC_REV     = 86                              ' hand-bumped whenever this file changes
+    SRC_REV     = 87                              ' hand-bumped whenever this file changes
     FMT_VERSION = 55                                   ' BM- record-format version
     SF_VERSION  = 1                                         ' sign-off format (VISIT-SIGNOFF-DESIGN.md sec B.1)
 
@@ -2522,10 +2528,10 @@ CON { watchdog cog }
 '  leg whenever the first was posted -- a timed-out first leg included (walkLeg(): "a drive clears a faulted wheel
 '  first") -- so its worst case is two legs at their bound, over WD_STALL_MS alone. Cog 0 grants WD_WALK_GRACE_MS for
 '  exactly that one call, as for a start. From the library's constants, per leg at its worst:
-'   - the leg's post, answered at its bound                         REQ_ACK_TIMEOUT_MS + 2 x REQ_POLL_MS      22
+'   - the leg's post, answered at its bound                         REQ_ACK_TIMEOUT_MS + 2 x REQ_POLL_MS      42
 '   - the wait, WALK_START_MS inside it, then its last poll          WALK_LEG_TIMEOUT_MS + REQ_POLL_MS      2_001
-'   - the guard's release and the stop, each at its bound            2 x (REQ_ACK_TIMEOUT_MS + 2 x REQ_POLL_MS)  44
-'  = 2_067 ms a leg, 4_134 ms a walk. Healthy walks MEASURED 1_275 ms (Visit 10 pass 4); the false FAIL took 1_621.
+'   - the guard's release and the stop, each at its bound            2 x (REQ_ACK_TIMEOUT_MS + 2 x REQ_POLL_MS)  84
+'  = 2_127 ms a leg, 4_254 ms a walk (DRIVER_REV 60's REQ_ACK_TIMEOUT_MS of 40; 2_067 and 4_134 at its 20). Healthy walks MEASURED 1_275 ms (Visit 10 pass 4); the false FAIL took 1_621.
     WD_WALK_POST_MS     = wheelL.REQ_ACK_TIMEOUT_MS + (2 * wheelL.REQ_POLL_MS)         ' one steering request at its bound
     WD_WALK_LEG_MS      = WD_WALK_POST_MS + wheelL.WALK_LEG_TIMEOUT_MS + wheelL.REQ_POLL_MS + (2 * WD_WALK_POST_MS)
     WD_WALK_GRACE_MS    = wheelL.WALK_LEGS * WD_WALK_LEG_MS
@@ -11329,6 +11335,13 @@ CON { --- FAULTRESP: the fault study's X-cells, faults forced at speed (task 361
     FR_SETTLE_SAMPLES     = 2                               ' the moving window starts this many samples after the fault
     FR_REST_WIN_MS        = 500                             ' X-3's negative control: the phases floated at rest, before spin-up
     FR_REST_MIN_SAMPLES   = 50                              ' a rest window shorter than this (100 ms) judges nothing
+    ' THE COAST'S REST WINDOW (PL-139, SRC_REV 87): rest is CONFIRMED only REST_CONFIRM_MS after the last hall tick, so the
+    '  window that judges "nothing turning" opens there, not at the tick: until SRC_REV 86 it was the confirmation interval
+    '  itself, in which a rotor that has just stopped crossing hall edges still rocks inside its sector (51 and 52 mV, one
+    '  window on each board, no tick). After the confirmation the capture runs on FR_REST_WIN_MS, the same length as the
+    '  control before spin-up, so the two instances judge the same thing. Derived from the rest definition and the
+    '  pre-spin-up window, not from those readings; FR_FLAT_MV is unchanged. Fault trials capture at decimation 1
+    FR_REST_CONFIRM_SAMPLES = (REST_CONFIRM_MS * INST_RATE_HZ) / 1_000
     ' FLAT. MEASURED 2026-09-22 (the ALIGN tier's bias reads, debug_260922-122515.log and -122644.log): a floated phase
     '  at rest strays at most 18 mV from its mean (hyst 9-22 mV is that stray + ALIGN_HYST_MARGIN_MV), so its
     '  peak-to-peak at rest is at most 36 mV. A coast from speed swings hundreds (Visit 6's coast moved the phase SUM
@@ -11980,6 +11993,8 @@ PRI frCapture(side, slotIdx, motorIncre) | safeEvent, bReached, bRest, captureLe
                     cpEnd := TEND_TIMEOUT
                     if bRest
                         cpEnd := TEND_REST
+                        if safeEvent == SAFE_NONE                   ' PL-139: the REST window, after rest is confirmed
+                            waitBeat(FR_REST_WIN_MS <# ((traceCaptureMs(1) - (getms() - frMarkMs)) #> 0), CP_LOOP_REST)
                     if safeEvent <> SAFE_NONE
                         cpEnd := safeEnd(safeEvent)
             elseif frOutcome == FRO_ABORT_I
@@ -12532,7 +12547,7 @@ PRI frStats(slotIdx) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, iSum, dut
             frT2 := abs(smpPos(frRestJ, slotIdx) - smpPos(midJ, slotIdx))
             frPhaseWindow(FRW_MOVE, slotIdx, frRefJ + FR_SETTLE_SAMPLES, frRestJ - 1)
             restWinJ := drEndJ + 1                                          ' PL-124: none settled leaves REST unmeasured
-            repeat sampleIdx from frRestJ to drEndJ
+            repeat sampleIdx from frRestJ + FR_REST_CONFIRM_SAMPLES to drEndJ  ' PL-139: from rest's confirmation
                 beat(CP_LOOP_DRAIN)
                 if bSmpUp(sampleIdx, slotIdx)
                     eState := smpState(sampleIdx, slotIdx)
@@ -13030,7 +13045,7 @@ PRI frPlatStats(fSlot, oSlot) | sampleIdx, preStartJ, preEndJ, preTicks, preMs, 
             beat(CP_LOOP_DRAIN)
             if bSmpUp(sampleIdx, oSlot) and (smpState(sampleIdx, oSlot) == DCS_SPIN_DN)
                 bFrPlatSpinDn := TRUE
-            if (smpPos(sampleIdx, oSlot) == smpPos(sampleIdx - 1, oSlot)) and (smpHw(sampleIdx, oSlot) == smpHw(sampleIdx - 1, oSlot))
+            if bSmpStill(sampleIdx, oSlot, frFltJ, drEndJ)                     ' PL-63: a one-sample hall flicker is rest
                 stillCount += 1
                 if (stillCount >= restSamples) and (bFrPlatRestFound == FALSE)
                     frPlatRestJ := runStartJ
@@ -25285,9 +25300,38 @@ PRI traceWatchPoll() | safeEvent
         if (safeEvent == SAFE_ABS_ABORT) or (safeEvent == SAFE_INST_STALL) or (trWatchEvent == SAFE_NONE)
             trWatchEvent := safeEvent
 
+PRI bSmpStill(sampleIdx, slotIdx, firstJ, lastJ) : bStill | hwPrev, hwNow
+' Whether a stored sample continues a still run: pos as the sample before, and hwPos as the sample before -- or, where
+' a sample is shorter than the live poll (SAMPLE_MS), hwPos one sample off and back (PL-63, SRC_REV 87). A rotor resting
+' on a hall edge can flicker the reading for one 2 ms sample; waitRest() polls every 5 ms and does not see it, so it
+' confirmed rest the stored trace then could not (Visit 2 traces 25 and 28: hw -29 -> -28 -> -29 at k 213-214, pos -29
+' throughout, rest_k NA). One sample off and back is that flicker, and both rules now read it as rest; a hall reading
+' that moves and STAYS is motion, in both.
+'
+' @param sampleIdx - logical index, after firstJ
+' @param slotIdx - motor slot
+' @param firstJ - the run's first logical index
+' @param lastJ - the capture's last logical index
+' @returns bStill - T/F where T means the sample continues a still run
+'
+' @local hwPrev - hwPos of the sample before
+' @local hwNow - hwPos of this sample
+
+    bStill := FALSE
+    if smpPos(sampleIdx, slotIdx) == smpPos(sampleIdx - 1, slotIdx)
+        hwPrev := smpHw(sampleIdx - 1, slotIdx)
+        hwNow := smpHw(sampleIdx, slotIdx)
+        if hwNow == hwPrev
+            bStill := TRUE
+        elseif ((instDecimate * MS_PER_SEC) / INST_RATE_HZ) < SAMPLE_MS
+            if (sampleIdx < lastJ) and (smpHw(sampleIdx + 1, slotIdx) == hwPrev)          ' this sample is the flicker
+                bStill := TRUE
+            elseif (sampleIdx - 2 >= firstJ) and (smpHw(sampleIdx - 2, slotIdx) == hwNow)  ' the one before was
+                bStill := TRUE
+
 PRI traceFindRest() | restSamples, stillCount, runStartJ, sampleIdx
-' Find rest after the mark: pos and hwPos of the primary motor unchanged for REST_CONFIRM_MS. Sets
-' drRestK (k where the still run began) and bDrRestFound.
+' Find rest after the mark: pos and hwPos of the primary motor unchanged for REST_CONFIRM_MS (a one-sample hall flicker
+' excepted, bSmpStill()). Sets drRestK (k where the still run began) and bDrRestFound.
 '
 ' @local restSamples - stored samples spanning REST_CONFIRM_MS at this capture's decimation
 ' @local stillCount - consecutive unchanged samples so far
@@ -25302,7 +25346,7 @@ PRI traceFindRest() | restSamples, stillCount, runStartJ, sampleIdx
         runStartJ := drMarkJ
         repeat sampleIdx from drMarkJ + 1 to drEndJ
             beat(CP_LOOP_DRAIN)
-            if (smpPos(sampleIdx, drPri) == smpPos(sampleIdx - 1, drPri)) and (smpHw(sampleIdx, drPri) == smpHw(sampleIdx - 1, drPri))
+            if bSmpStill(sampleIdx, drPri, drMarkJ, drEndJ)
                 stillCount += 1
                 if stillCount >= restSamples
                     drRestK := runStartJ - drStartJ

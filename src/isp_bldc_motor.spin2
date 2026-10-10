@@ -4968,8 +4968,8 @@ PRI requestRamps() : eError | startMs
 PRI reqAckTimeoutMs() : nMs
 ' Return the bound on a front cog's answer, ms: REQ_ACK_TIMEOUT_MS times the most slots a pass has stood for (DRIVER_REV 51).
 '
-' The answer bound is counted in front passes (bFrontServiceRequests(): 18), which REQ_ACK_TIMEOUT_MS covers at one
-' slot a pass. A pass that stands for n slots is n ms long, so n x 18 + the 1 ms poll <= n x 20 for every n >= 1. At a
+' The answer bound is counted in front passes (bFrontServiceRequests(): 36), which REQ_ACK_TIMEOUT_MS covers at one
+' slot a pass. A pass that stands for n slots is n ms long, so n x 36 + the 1 ms poll <= n x 40 for every n >= 1. At a
 ' clock where no pass is late n is 1, and the bound is REQ_ACK_TIMEOUT_MS exactly as before. Caller side; no front work.
 '
 ' @returns nMs - the wait's bound, ms
@@ -5867,8 +5867,9 @@ CON ' -- TASK: the front cog --
     DRIVE_PASS_US          = (DRIVE_PASS_FRAMES * US_PER_SEC + PWM_RATE_IN_HZ - 1) / PWM_RATE_IN_HZ
     FRONT_SYNC_WAIT_PASSES = 4          ' bound on an in-flight request's wait for its driver (fault left, sync taken, e-stop
                                         '  left), in drive passes; polled once a front pass, never waited in one (PL-161)
-    REQ_ACK_TIMEOUT_MS     = 20         ' bound on a posted request's answer; the front cog's worst case is 19 ms (the
-                                        '  derivation is at bFrontServiceRequests()). DRIVER_REV 51: it is 20 slots' worth,
+    REQ_ACK_TIMEOUT_MS     = 40         ' bound on a posted request's answer; the front cog's worst case is 37 ms (the
+                                        '  derivation is at bFrontServiceRequests(); 20 until DRIVER_REV 60, PL-197, which
+                                        '  counted a two-stage request's second bound). DRIVER_REV 51: it is 40 slots' worth,
                                         '  so a caller waits it times the most slots a pass has stood for (reqAckTimeoutMs())
     REQ_POLL_MS            = 1          ' caller-side poll period while waiting for an answer
     FRONT_START_TIMEOUT_MS = 100        ' bound on the front cog's first pass after cogspin()
@@ -6214,15 +6215,17 @@ PRI bFrontServiceRequests() : bExit | openMask, eClass, slotIdx, slotBit, bTaken
 ' 3 passes after.
 '
 ' THE ACKNOWLEDGEMENT BOUND (DERIVED, as DOCs/plans/FRONT-COG-IMPLEMENTATION-PLAN.md 3.6 derives it): a single motor
-' leaves at most 6 application cogs (8 less the driver and this cog), so at most 5 requests are ahead of any one. Each
-' holds the slot order for at most 3 passes (one stage, its bound gone: the bound is 2.09 ms and passes are at least
-' 0.9 ms apart), so one posted behind them is taken by the 15th pass after it and answered by the 18th: 18 ms at the
-' nominal 1 ms pass, and seen within the caller's 1 ms poll (19 ms), under REQ_ACK_TIMEOUT_MS (20).
+' leaves at most 6 application cogs (8 less the driver and this cog), so at most 5 requests are ahead of any one. One
+' stage holds the slot order for at most 3 passes (its bound gone: the bound is 2.09 ms and passes are at least 0.9 ms
+' apart). A request needing two stages (a synchronized drive of a FAULTED motor: the fault clear, PST_FAULT_LEFT,
+' then the take, PST_SYNC_TAKEN, whose bound starts afresh) holds it for at most 6: the clear's driver acting on its
+' last pass, the take's never. So, every request at two stages, one posted behind five is taken by the 31st pass after
+' it and answered by the 36th: 36 ms at the nominal 1 ms pass, and seen within the caller's 1 ms poll (37 ms), under
+' REQ_ACK_TIMEOUT_MS (40). PL-197 (DRIVER_REV 60): until then the bound counted one stage a request ahead (18 passes,
+' 19 ms) against a timeout of 20, which a two-stage request of its own already passed (21 passes).
 ' DRIVER_REV 51: every pass starts on a slot boundary, so passes are at least one slot (1 ms) apart and the 3 above
-' holds at any clock; a pass that stands for n slots is n ms long, and the caller's bound is 20 x the most n seen
-' (reqAckTimeoutMs()): 18 n + 1 <= 20 n.
-' A request needing two stages (a synchronized drive of a FAULTED motor) adds 3 passes when both bounds go, as the
-' two in-pass waits it replaces added 2 x 2.09 ms; with a live driver it is answered on the second pass.
+' holds at any clock; a pass that stands for n slots is n ms long, and the caller's bound is 40 x the most n seen
+' (reqAckTimeoutMs()): 36 n + 1 <= 40 n. With a live driver a two-stage request is answered on the second pass.
 '
 ' @returns bExit - T/F where T means an EXIT was taken: every open slot has been answered and the loop must park
 
@@ -7202,7 +7205,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 59      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 60      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7556,6 +7559,12 @@ CON { driver internal Constants }
                                             '     below 201e6 is as at 58. Memory reduction (proven identical by
                                             '     tools/pasm_equiv): registers sharing longs, holdRelease and senseFilter
                                             '     inline (and estopBridge); cog 464 -> 475 of 496, LUT run image 499 -> 502. No ABI change
+                                            ' 60: task 3707, PL-197: REQ_ACK_TIMEOUT_MS 20 -> 40. The acknowledgement
+                                            '     bound now counts every request at two stages (a drive of a FAULTED
+                                            '     motor: the fault clear, then the synchronized take, each its own
+                                            '     3-pass bound): 36 passes and the poll, 37 ms for one motor, 31 for the
+                                            '     platform. Only a front cog that does not answer is seen later. Spin2
+                                            '     only; no PASM or ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring

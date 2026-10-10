@@ -120,6 +120,9 @@ echo "-- DUPLICATE: substantial prose maintained in 2+ documents --"
 TMP=$(mktemp "${TMPDIR:-/tmp}/docaudit.XXXXXX")
 while IFS= read -r doc; do
     [ -z "$doc" ] && continue
+    # A run sheet is one visit's page and stands alone at the bench, so the lines every sheet opens with are a
+    # template, not one paragraph kept in two places; run sheets stay in the ORPHAN and COUNT checks (task 3707)
+    case "$doc" in DOCs/runsheets/*) continue ;; esac
     # substantial = a prose line of 60+ chars, not a heading/table/list/code
     grep -nE '^[A-Za-z(].{59,}' "$doc" 2>/dev/null \
       | grep -v '^[0-9]*:|' \

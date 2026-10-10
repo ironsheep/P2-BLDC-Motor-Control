@@ -18,6 +18,11 @@
 ''               07 Oct 2026 -- PL-209 (TOOL_REV 4): a scan side also ends FIT_HALF_DEG past its lowest clean point
 ''               (MA-SIDE end,BRACKETED): at 40 A every Doco side walked on into the torque wall and over-current. A
 ''               new end token; no field changes.
+''               10 Oct 2026 -- task 3707 (TOOL_REV 5, FMT_VERSION 2): PK-1 retired. The 419e6 field-step margin went with
+''               the driver's frame-at-a-time field (DRIVER_REV 54) and its last trace with DRIVER_REV 59, whose Doco
+''               ceilings reach 980.5e6; the bound is now the command range, CMD_INCR_MAX (2^30 - 1). The DocoEng record's
+''               ladder climbs to 6_720 rpm in 280 rpm rungs, so the climb meets the reserve at every supply. MA-PLAN's
+''               cap_incr is bound_incr; every increment prints unclamped (LIM_INCR).
 ''
 '' =================================================================================================
 
@@ -81,14 +86,13 @@
            torque and slows (the 6.5in's torque wall: it droops rather than faults)
     HUNT   the drive held the field back (a held pass) while the rotor lagged: the DocoEng motor is predicted to hunt
            before it slows, 20-30 degrees ahead of its minimum (from our desk model; not yet measured)
-    FAULT  the driver faulted (the DocoEng motor is predicted to fault, not slip, above an increment of 419e6)
+    FAULT  the driver faulted
     CAPPED the duty hit its ceiling (the ladder only: the knee, past the reserve)
   WALL and FAULT end a side at once; DROOP and HUNT after two points in a row (a single rough point does not). Until a
   side has seen a clean point, a DROOP or HUNT point drawing less current than the one before does not count: the walk
   is still coming down toward a minimum it has not reached, which it must be allowed to do when the driver's starting
-  pair sits in the hunting region. A ladder rung that DROOPs, HUNTs, CAPs or FAULTs ends the climb at once. No rung, and no scan speed, passes an increment
-  of PK1_CAP_INCR: above it one drive pass moves the field further than the driver's lag margin allows, so a
-  disturbance faults instead of slipping.
+  pair sits in the hunting region. A ladder rung that DROOPs, HUNTs, CAPs or FAULTs ends the climb at once. No rung, and
+  no scan speed, passes the driver's command range, CMD_INCR_MAX.
 
   THE CHECKS -- each prints its verdict; none drives anything.
     RECORD    PRECONDITION nothing started. BOUND a record whose key is MOTOR_TYPE, whose format is RECORD_FORMAT, and
@@ -110,7 +114,7 @@
               the wrong minimum, can.
     CEILING   per increment sign. PRECONDITION at least two clean rungs and a rising duty line. BOUND the climb ends on
               the reserve -- a clean rung at DUTY_RESERVE_PM of the duty ceiling, the duty line's crossing then at or
-              below the fastest clean rung (bracketed) -- or on an edge or the field-step margin with a clean rung below
+              below the fastest clean rung (bracketed) -- or on an edge or the command range with a clean rung below
               it; NOT FOUND when the rungs ran out first (ladder_to too low), the climb never drove, or no rung was
               clean. The ceiling is the reserve crossing, or the fastest clean rung below whatever came first. CORRECT
               CASE the 6.5in at 18.5 V: 165e6, where duty runs at 92-93 % of its ceiling. Unfixed value: the reserve,
@@ -126,7 +130,7 @@
       rest; a fault that will not clear ends the run.
   Before anything moves: start() with its start checks refusing (a disconnected lead, a hall fault, no board); the
   record's test current limit set and read back (testSetCurrentLimits()); the current sense's rest zero inside the
-  driver's band for the board it detected; every scan speed and rung under PK1_CAP_INCR. At rest the shaft coasts. The
+  driver's band for the board it detected; every scan speed and rung inside CMD_INCR_MAX. At rest the shaft coasts. The
   motor is stopped on every way out. PANIC: disconnect the supply.
 
   WHAT IT PRINTS (record format FMT_VERSION). One line per record, tag first, then name,value pairs; every record
@@ -158,8 +162,8 @@ CON { timing }
 
 CON { tool identity }
 
-    TOOL_REV        = 4                                     ' this source's revision (4: a side ends BRACKETED, PL-209; 3:the DocoEng record at 40 A, PL-207; 2: counted loops are REPEAT n WITH idx, task 3695)
-    FMT_VERSION     = 1                                     ' the MA- record format
+    TOOL_REV        = 5                                     ' this source's revision (5: PK-1 retired, task 3707; 4:a side ends BRACKETED, PL-209; 3:the DocoEng record at 40 A, PL-207; 2: counted loops are REPEAT n WITH idx, task 3695)
+    FMT_VERSION     = 2                                     ' the MA- record format (2: MA-PLAN cap_incr is bound_incr)
     RECORD_FORMAT   = 1                                     ' the motor record's layout (CON { the motor record })
 
 OBJ { the motor, its configuration, the record builder }
@@ -241,9 +245,10 @@ CON { the procedure -- the same for every motor }
     EDGE_RUN            = 2                                 ' DROOP or HUNT points in a row that end a side
     FOLLOW_TOL_PM       = 30                                ' a clean point or rung follows within 3 %
 
-  ' The ceiling: the 6.5in's duty reserve, 92.5 % of the duty ceiling; and the field-step margin no command passes
+  ' The ceiling: the 6.5in's duty reserve, 92.5 % of the duty ceiling; and the command range no command passes (the
+  '  driver's |incr| < 2^30, setTargetAccel()). Task 3707: it was PK-1's 419e6 field-step margin, gone since DRIVER_REV 54
     DUTY_RESERVE_PM     = 925
-    PK1_CAP_INCR        = 419_000_000
+    CMD_INCR_MAX        = 1_073_741_823
     RUNGS_MAX           = 40
 
   ' The guards
@@ -297,6 +302,7 @@ CON { enums }
     LIM_SMALL           = benchLog.LIM_SMALL
     LIM_MID             = benchLog.LIM_MID
     LIM_BIG             = benchLog.LIM_BIG
+    LIM_INCR            = benchLog.LIM_INCR                 ' every increment, unclamped (task 3707)
     TOKMAX              = 14                                ' the longest token any field prints
 
 DAT { motor records -- format 1: the layout is the CON block above, and the file's header says what each field means }
@@ -322,13 +328,15 @@ motorRecords    LONG    KEY_6_5_INCH, RECORD_FORMAT, RS_MEASURED
   '   they were 2 and 3, the harness's test limits before that change; at 2-3 A on Rev A this motor's crawl-speed phase
   '   current reaches the limit, so 5 degrees off the start a point hunted and the next drooped and no fit resolved
   '   (D2, 2026-10-06: debug_261006-140837 and -161820).
-  '  slow_rpm 560 / fast_rpm 1_120: 25 % and 50 % of the 12 V ceiling (335e6), the offset-scan leg's two lower speeds.
-  '   Set by the offset-scan leg: its minimum must resolve at both.
-  '  ladder 280 .. 2_800 rpm in 140 rpm rungs: 2_800 rpm (419e6) is the field-step margin, which this motor reaches below
-  '   its reserve from 12 V up (the model puts 12 V's top, 2_238 rpm, at 71-76 % duty). Set by the ladder leg's duty line.
+  '  slow_rpm 560 / fast_rpm 1_120: 25 % and 50 % of the 2023 table's 12 V ceiling (335e6), the offset-scan leg's two
+  '   lower speeds. Set by the offset-scan leg: its minimum must resolve at both.
+  '  ladder 280 .. 6_720 rpm in 280 rpm rungs (24): past the sheet's 6,800 rpm no-load less a rung, so the climb meets
+  '   the reserve at every supply (DRIVER_REV 59's ceilings, on that reserve, run 2,018 rpm at 7.4 V to 6,551 at 24 V).
+  '   Task 3707: it was 280 .. 2_800 in 140 rpm rungs, stopping at PK-1's 419e6, so from 14.8 V up the climb ran out
+  '   of rungs below the reserve and read NOT FOUND. Set by the ladder leg's duty line.
                 LONG    KEY_DOCO_4KRPM, RECORD_FORMAT, RS_PROVISIONAL
                 LONG    24, 1_840, 400, 40, 40
-                LONG    560, 1_120, 280, 140, 2_800
+                LONG    560, 1_120, 280, 280, 6_720
   ' the end of the table: a new motor's record goes above this line
                 LONG    END_OF_RECORDS, 0, 0
                 LONG    0, 0, 0, 0, 0
@@ -542,7 +550,7 @@ PRI bPlanRun() : bPlanned | nScanS, nLadderS
     nRungs := 0
     if rec[REC_LADDER_STEP_RPM] > 0
         nRungs := (rec[REC_LADDER_TO_RPM] - rec[REC_LADDER_FROM_RPM]) / rec[REC_LADDER_STEP_RPM] + 1
-    if (rec[REC_SLOW_RPM] < 1) or (rec[REC_FAST_RPM] <= rec[REC_SLOW_RPM]) or (incrForRpm(rec[REC_FAST_RPM]) > PK1_CAP_INCR)
+    if (rec[REC_SLOW_RPM] < 1) or (rec[REC_FAST_RPM] <= rec[REC_SLOW_RPM]) or (incrForRpm(rec[REC_FAST_RPM]) > CMD_INCR_MAX)
         refuse(AR_RECORD_PLAN, rec[REC_FAST_RPM])
     elseif (nRungs < 2) or (nRungs > RUNGS_MAX) or (rec[REC_LADDER_FROM_RPM] < 1)
         refuse(AR_RECORD_PLAN, nRungs)
@@ -575,7 +583,7 @@ PRI bPlanRun() : bPlanned | nScanS, nLadderS
     benchLog.numField(@"rungs", nRungs, LIM_TINY)
     benchLog.numField(@"step_deg", OFS_STEP_DEG, LIM_TINY)
     benchLog.numField(@"max_deg", OFS_SIDE_STEPS * OFS_STEP_DEG, LIM_TINY)
-    benchLog.numField(@"cap_incr", PK1_CAP_INCR, LIM_BIG)
+    benchLog.numField(@"bound_incr", CMD_INCR_MAX, LIM_INCR)
     benchLog.boolField(@"ok", bPlanned)
     lineEmit()
 
@@ -1212,7 +1220,7 @@ PRI bClimb(eSign) : bGoOn | rungIdx, nIncr, eRo, ePo, bEnded, bResting
             nIncr := -nIncr
         rgIncr[rungIdx] := nIncr
         if bGoOn and (bEnded == FALSE)
-            if abs(nIncr) > PK1_CAP_INCR
+            if abs(nIncr) > CMD_INCR_MAX
                 rgOutcome[rungIdx] := PO_BOUND
                 ceilEnd[eSign] := PO_BOUND
                 bEnded := TRUE
@@ -1333,8 +1341,8 @@ PRI ceilingFor(eSign) | rungIdx, nPts, nTop, fSx, fSy, fMx, fMy, fSxx, fSxy, fX,
             fA := fMy -. fB *. fMx
             if fB >. 0.0
                 fRes := (float(dutyMax) *. float(DUTY_RESERVE_PM) /. float(PM) -. fA) /. fB
-                if fRes >. float(PK1_CAP_INCR)
-                    fRes := float(PK1_CAP_INCR)
+                if fRes >. float(CMD_INCR_MAX)
+                    fRes := float(CMD_INCR_MAX)
                 if fRes <. 0.0
                     fRes := 0.0
                 resIncr[eSign] := round(fRes)
@@ -1808,7 +1816,7 @@ PRI emitRung(eSign, rungIdx)
     benchLog.begin(@"MA-RUNG")
     benchLog.tokenField(@"sign", signToken(eSign), TOKMAX)
     benchLog.numField(@"rpm_x10", rpmX10ForIncr(rgIncr[rungIdx]), LIM_MID)
-    benchLog.numField(@"incr", rgIncr[rungIdx], LIM_BIG)
+    benchLog.numField(@"incr", rgIncr[rungIdx], LIM_INCR)
     benchLog.tokenField(@"outcome", outcomeToken(rgOutcome[rungIdx]), TOKMAX)
     benchLog.numField(@"duty", rgDuty[rungIdx], LIM_MID)
     benchLog.numField(@"duty_pm", divRound(rgDuty[rungIdx] * PM, dutyMax #> 1), LIM_MID)
@@ -1829,10 +1837,10 @@ PRI emitCeiling(eSign)
     benchLog.tokenField(@"end", outcomeToken(ceilEnd[eSign]), TOKMAX)
     benchLog.boolField(@"found", bCeilFound[eSign])
     benchLog.numField(@"clean", cleanRungs[eSign], LIM_TINY)
-    benchLog.naNumField(@"reserve_incr", resIncr[eSign], LIM_BIG, resIncr[eSign] > 0)
+    benchLog.naNumField(@"reserve_incr", resIncr[eSign], LIM_INCR, resIncr[eSign] > 0)
     benchLog.boolField(@"bracketed", bResBracketed[eSign])
-    benchLog.numField(@"top_clean_incr", topCleanIncr[eSign], LIM_BIG)
-    benchLog.naNumField(@"ceil_incr", ceilIncr[eSign], LIM_BIG, ceilIncr[eSign] > 0)
+    benchLog.numField(@"top_clean_incr", topCleanIncr[eSign], LIM_INCR)
+    benchLog.naNumField(@"ceil_incr", ceilIncr[eSign], LIM_INCR, ceilIncr[eSign] > 0)
     benchLog.naNumField(@"ceil_rpm_x10", rpmX10ForIncr(ceilIncr[eSign]), LIM_MID, ceilIncr[eSign] > 0)
     benchLog.numField(@"reserve_pm", DUTY_RESERVE_PM, LIM_SMALL)
     benchLog.numField(@"duty_max", dutyMax, LIM_MID)
@@ -1865,7 +1873,7 @@ PRI emitResult() | nCeil, bCeil, bZ
     benchLog.naNumField(@"fast_rev_deg", degreesOf(fitAbsX10[SPEED_FAST * SIGNS + SIGN_POS]), LIM_SMALL, bScanRan and bPairOk[SPEED_FAST])
     benchLog.tokenField(@"ceil_lead", leadToken(bStartBySpeed), TOKMAX)
     benchLog.boolField(@"ceil_found", bCeil)
-    benchLog.naNumField(@"ceil_incr", nCeil, LIM_BIG, bLadderRan and (nCeil > 0))
+    benchLog.naNumField(@"ceil_incr", nCeil, LIM_INCR, bLadderRan and (nCeil > 0))
     benchLog.naNumField(@"ceil_rpm_x10", rpmX10ForIncr(nCeil), LIM_MID, bLadderRan and (nCeil > 0))
     lineEmit()
 

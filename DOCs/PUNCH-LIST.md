@@ -21,85 +21,61 @@ release burn-down that headed this list until then is in git history (`git show 
 6.1.0 closeout swept twenty entries (PL-167's fix and everything certified with it) to
 [`plans/archive/PUNCH-LIST-ARCHIVE-2026-10-03.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-03.md).
 
-### The register after 6.1.0 — 2026-10-03
+### The register after the v6.2.0 burn-down — 2026-10-10
 
-Every open entry sits in exactly one group below; its own heading carries the detail. Each group was checked against
-the tree and the three 6.1.0 visits' logs on 2026-10-03, at the HOLD-SPEED sprint closeout. v6.1.0 is tagged
-(`54f7c43`); the next plan is the DocoEng motor's qualification.
+STEPHEN 2026-10-08: *"Everything we find, we fix"*; *"clean up everything we can, test harness and all"*; then one
+certification closeout, a Doco (Rev A) bench run and a Rev B boards run, *"not to discover any more findings"*. «#3707»
+walked every open entry against the tree and the logs. **Before: 75 open. After: 39 open, 36 closed.** Every open entry
+sits in exactly one group below, and none is open for desk work: each waits for a closeout row or is held by
+Stephen's ruling. The closed ones carry a dated *Status (2026-10-10, burn-down)* line saying why, and are swept to the
+archive at the sprint's closeout.
 
-**Harness, corrected at the 6.1.0 closeout; runs on the next floor visit** (`test_bench_dual` SRC_REV 82)
+**Closed by the burn-down (36):**
+- **Fixed at the desk in «#3707»:** PL-63 (a one-sample hall flicker read as rest), PL-139 (the coast's rest window
+  opens at rest's confirmation), PL-178 (`pasm_equiv`'s baseline is the last commit), PL-197 (the answer bound counts
+  two-stage requests: DRIVER_REV 60, 40 ms), PL-202 (T0-27 judges the filtered fold), PL-220 (the range record carries
+  the fault's kind and the hall counts). Also PL-64's stale panel prompts, regenerated.
+- **Fixed earlier and verified, or fixed in the tree for a binary no plan runs:** PL-20, PL-21, PL-27, PL-44, PL-53,
+  PL-64, PL-65, PL-71, PL-103, PL-109, PL-134, PL-135, PL-198, PL-203, PL-204, PL-205, PL-206, PL-207, PL-208, PL-209,
+  PL-213, PL-214, PL-217.
+- **Moot, merged or subsumed:** PL-46 and PL-98 (the scan serves no release feature), PL-119 (no cell uses the
+  offset-shift provocation), PL-200 (not reproduced; its path corrected at DRIVER_REV 58), PL-201 (merged into PL-170),
+  PL-211 (subsumed by PL-219), PL-215 (a board's resolution, worked around).
 
-| Entry | What it is | What closes it |
-| --- | --- | --- |
-| PL-182 | The slow spin leg's full trace stopped at the usual cap, so LIMGIVE's held passes are unplaced | `floor-auto` emits every sample of the slow leg |
-| PL-192 | LDHUNT counted a single held limiter engagement as hunting; also watches SPINSTOP (one stop a tick past tolerance) | `floor-grab` reads 0 on a single engagement; SPINSTOP over the next `floor-auto` |
+**Certified by the Doco (Rev A) closeout (7):** PL-170 and PL-210 (the hand-load rows, with a grip), PL-199 (a
+`clk-300` / `clk-350` rest-zero probe, then the desk), PL-212 and PL-216 (the range and L-mininc rows at all six
+supplies), PL-218 (the stop rows at 7.4 and 11.1 V), PL-219 (the misdial pass in the qualify rows).
 
-**Watches from the 6.1.0 visits** — each needs no load of its own: PL-181 (the boost fires in calm running under load;
-SPINERR's band), PL-184 (the schedule's current at the quarter by direction; information), PL-190 (SRVKEEP's fixed
-reference reads a day's spread as a regression), PL-191 (a speed raised while a wheel is still slowing dips first; the
-ramp generator's, with PL-160).
+**Certified by the Rev B closeout (7):** PL-23 (`t0 clk-floor`), PL-111, PL-148, PL-154 and PL-157 (the serial pairs,
+STEPHEN 2026-10-03 *"a lightweight certify of serial drive"*), PL-164 (the clock-floor rows), PL-176 (`adopt-wheel`).
 
-**Tooling:** PL-178 (`tools/pasm_equiv` compares against a baseline from before the hold-speed fix).
+**Watches the closeouts carry at no load of their own (4):** PL-43 and PL-126 (no log stops mid-run), PL-120 (no start
+check refuses the right board), PL-136 (certifies itself on a wheel's first PREFLT failure).
 
-**Fixed in the tree; waits for its binary's next run** (no planned run loads these binaries, so nothing is owed)
+**The 6.1.0 floor watches (6), whose row is Stephen's call:** PL-181, PL-182, PL-184, PL-190, PL-191, PL-192. Each is
+read only by the floor tiers (`floor-auto`, `floor-grab`), which the Rev B sheet does not carry.
 
-| Entry | Binary | What the tree holds |
-| --- | --- | --- |
-| PL-23 | `t0`, `spin` | Booleans print as TRUE/FALSE; the next `t0` log shows `rev_b` as a word |
-| PL-20, PL-21 | `char` | The overflow-proof running mean and the quiescent hold on a started driver (header, `:231`, `:268`) |
-| PL-44 | `detect` | Its last trapped capture removed (`:1266`); the `t0` and `char` halves certified at Visit 2 |
-| PL-53 | `char`, `detect` | Every record built through `isp_bench_log`; identical by construction |
-| PL-64, PL-65 | `dual-ui`, `dual-floor` | The rebuilt walkthrough and the corrected plan labels (SRC_REV 12); neither tier has run since. The `dual-floor` panel bitmap still reads the grab's old 4 A limit (now 2 A): regenerate it with `tools/gen_dual_assets.py` where its font exists, before that tier next runs |
-| PL-134 | `t0-stopmode` | The rate estimate counts only while holding (SRC_REV 17); no `t0-stopmode` run since 2026-09-24 |
+**Hardware, needing an act at the bench (1):** PL-60 (a DMM reading across each board's supply terminals), decided with
+the Rev B sheet («#3708»).
 
-**Dormant: the commutation scan** — PL-46, PL-98. 6.0.0 commutates from the motor's measured hall position and a lead
-that follows speed (CHANGELOG v6.0.0), the scan last ran on 2026-09-21, and no plan uses it. They wake if a
-characterisation plan takes up the scan.
-
-**Deferred by Stephen's rulings**
-- **Serial** (*"serial testing not in this initial release"*, 2026-09-27): PL-111's serial half, PL-148, PL-154, PL-157.
-  All three builds are in the tree (`protclear`/`getprot`, the idle poll, the digits check, the 6.0 getters); what each
-  waits for is a host-driven hardware run.
-- **DocoEng** — no longer deferred: the v6.2.0 sprint (the DocoEng qualification) takes PL-27 and PL-71 in «#3684»,
-  from D1b's measurements (2026-10-05).
-- **After v6.0.0:** PL-102 (a "following" getter), PL-164 (clock range), PL-165 (the DEBUG footprint measure), PL-166
-  (the inertia term).
-- **Moved here from the task board at 6.1.0 start (2026-10-01)**, so the board carries only the sprint's work:
-  PL-174 (vibration study), PL-175 (N-motor shape), PL-176 (motor-adoption
-  tool), PL-177 (back-EMF delta release).
-
-**Ships as a Known Issue:** PL-118 (phase-short braking is not current-limited; ruling 1 A); PL-193 (the pack voltage
-is not used by the drive), PL-194 (regenerative current is not shown), PL-195 (the hold's defaults sized unloaded),
-PL-196 (`calibrate()` does nothing) — the v6.1.0 entry's other Known Issues are PL-164 (clock), the DocoEng group and
-the serial group below.
-
-**Watch** — each run carries what would make it actionable, at no extra load: PL-43 and PL-126 (silent stops, one
-instance each since the supply repair), PL-120 (the right board's high side; no refusal in the 69 Rev B program loads
-logged since 2026-09-27, 35 of them naming the right wheel, after the 2026-09-26 header reseat), PL-136 (the PREFLT diagnostics, which certify themselves on a wheel's first failure), PL-139
-(the at-rest band, crossed once on each board).
-
-**Ancillary, recorded and not chased:** PL-60, PL-63, PL-103, PL-105, PL-108, PL-109, PL-110, PL-119, PL-135, PL-170,
-PL-219 and PL-220 (harness only: no 6.2.0 feature waits on them).
-
-**Found during v6.2.0** (2026-10-03 onward; each heading carries its evidence): PL-197 (a two-stage request's ack
-bound, desk), PL-198 (`moveShaftToAngle()` does nothing), PL-199 (350 MHz sense noise), PL-200 (a timed crawl stop
-rested late once); PL-201 merged into PL-170 (listed under Ancillary above: Rev A's fold at a test-use limit fires on
-noise — measured again on the Doco, and now needed by D2's hand-load limit cell); PL-202 (T0-27's one-frame premise,
-superseded on Rev A by DRIVER_REV 55's filtered fold); from D2's first rows (2026-10-06): PL-203 (POS stops by rotation
-rest early at the top), PL-204 / PL-205 / PL-206 (harness: the scan's walk, a hunting point fitted, MISDIAL per sign),
-PL-207 (the adoption tool's stale 2 A record), PL-208 (the 7.4 V slowest speed swapped direction); from D2's second
-pass and D3 (2026-10-07/08): PL-209 (the adoption tool walked into the torque wall), PL-210 (the hand load needs a
-grip), PL-211 (MISDIAL at 14.8 / 22.2 V), PL-212 (the Doco's excess duty above ~2,500 rpm), PL-213 / PL-214 (harness:
-the charge guard's overflow, the ripple bins), PL-215 (Rev A's current too coarse for a timing minimum), PL-216 (the
-Doco's limits inside its measured range), PL-217 (the second unit's sectors); from D4 (2026-10-08): PL-218 (timed
-stops end late on DRIVER_REV 57), PL-219 (MISDIAL disarmed by the lead table), PL-220 (the range record lacks the
-fault's kind).
+**Held by Stephen's rulings (14):**
+- **Ships as a Known Issue:** PL-118 (phase-short braking is not current-limited; ruling 1 A); PL-193 (the pack voltage
+  is not used by the drive), PL-194 (regenerative current is not shown), PL-195 (the hold's defaults sized unloaded),
+  PL-196 (`calibrate()` does nothing). Which ship in v6.2.0's Known Issues is his («#3690»).
+- **After v6.0.0:** PL-102 (a "following" getter), PL-165 (the DEBUG footprint measure), PL-166 (the inertia term).
+- **Not taken up, or measure only:** PL-105 (the lag hold past the torque peak), PL-108 (field-weakened slip, outside
+  the published range: DRIVER_REV 59's ceilings stay on the back-EMF line), PL-110 (crawl duty on `duty_min`).
+- **Deferred, starting when he calls them:** PL-174 (vibration study), PL-175 (N-motor shape), PL-177 (back-EMF delta
+  release).
 
 **Standing rulings carried from 6.0.0:** the fault-return run faults its wheel with the guarded `testForceFault()`, not
 the wrong-offset write (STEPHEN 2026-09-28, *"fp1: A"*); a test built on a wrong premise is corrected before it runs
 again (STEPHEN 2026-10-01).
 
 ### PL-20 -- `BC-SENSE` `i_mV_avg` overflows a long at the pre-S-3 scale
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree.** `test_bench_char.spin2` keeps the
+> overflow-proof running mean (`:233`, `:1571`); no release plan runs `char`, so no run is owed.
 
 > **Status (2026-10-01):** FIXED IN TREE, not yet run. `test_bench_char.spin2` keeps a running mean without storing
 > the sum (`CON { overflow-proof running mean (PL-20) }`, :231; :1568). The `char` binary has not run since, and no
@@ -120,6 +96,9 @@ carry the sum in two longs, or accumulate per-second means. The analyser («#350
 treat `avg` outside `[min, max]` as an instrument fault, never as a reading.
 
 ### PL-21 -- the quiescent-zero hold reads a stopped instance's frozen telemetry
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree.** The hold runs on a started driver
+> (`test_bench_char.spin2` `:270`, `:1084`, `:1701`); no release plan runs `char`, so no run is owed.
 
 > **Status (2026-10-01):** FIXED IN TREE, not yet run. Hold 0 now runs on the LEFT driver started at zero command
 > (`HOLD_ZERO_SIDE`, `test_bench_char.spin2:268`), and telemetry is read only from a running cog (:1698). Its next
@@ -142,6 +121,9 @@ quiescent hold with a driver started at zero command, so the bridge is idle and 
 or report the sense fields as `NOMEAS` when no cog is running.
 
 ### PL-23 -- bench binaries print booleans as numbers
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT** -- its `t0 clk-floor` row: the T0-20 line
+> prints `rev_b,TRUE`, a word.
 
 > **Status (2026-10-01): FIXED IN THE TREE** («#3647»); the run-time half is the next `t0` log printing `rev_b` as a
 > word (formatting only, no dedicated cell). Fixed: `test_bench_spin`'s SP-READY and SP-PHASE fault fields;
@@ -174,6 +156,10 @@ The rule now travels with every dispatch (sprint established decisions, item 13)
 
 ### PL-27 -- the Doco motor's offset and speed-ceiling tables were characterised while board detection was broken
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed.** The Rev A Doco tables were re-measured on a detected board
+> (D1b..D4) and rewritten: the lead table (DRIVER_REV 57), the ceilings and floors (DRIVER_REV 59, PL-216). The Doco
+> certification's range rows certify them, under PL-216.
+
 > **Status (2026-10-05): OPEN, being fixed in v6.2.0 «#3684» (the Doco tables).** D1b measured the Rev A columns on
 > DRIVER_REV 53 (`DOCs/analyses/bench/2026-10-05/D1B-EVALUATION.md` §2.2-2.3, D1B-2 / D1B-3): the half-speed current
 > minimum sits at NEG −59.7° / POS +54.1° against the shipped −53° / +53°; the 11.1 V ceiling (545e6) is 116 % of the
@@ -197,6 +183,9 @@ board read as Rev A after any stop and restart (MEASURED 2026-09-12). Two conseq
    bench work; the Doco bench is deferred past the next release (decision 2026-09-11).
 
 ### PL-43 -- scan run 6 went silent under a load step, and the watchdog did not speak
+
+> **Status (2026-10-10, burn-down «#3707»): A WATCH ON BOTH CLOSEOUTS** -- no log stops mid-run; a stall prints its
+> watchdog line. One instance since the supply repair; `test_bench_scan` itself runs in no plan.
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench silence; rig supply)
 
@@ -267,6 +256,9 @@ The repair's certification stands for the runs it covered; this occurrence is no
   physical battery disconnect stays the only panic procedure.
 
 ### PL-44 -- every value captured through an abort trap in the bench binaries reads 0
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree.** The `t0` and `char` halves were certified at
+> Visit 2; `detect`'s last trapped capture is removed (`:1266`) and no release plan runs `detect`.
 
 > **Status (2026-10-01):** FIXED IN TREE; one half not yet run. The `t0` and `char` captures were certified at Visit 2.
 > The detection binary's last trapped capture is gone: its phase-2 start is a plain call (`test_bench_detect.spin2:1266`,
@@ -403,6 +395,10 @@ DETECT-A-EVALUATION carry corrections dated 2026-09-14.
 
 ### PL-46 -- scan v4 cannot demonstrate a half-speed minimum, and its half-speed cell passes anyway
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, moot.** 6.0 commutates from the measured hall position and a lead
+> table against speed, and the motor-adoption tool (`util_adopt_motor`) is the offset scan a user runs; `test_bench_scan`
+> serves no release feature and no plan runs it.
+
 > **Status (2026-10-01):** DORMANT. Its "IN THIS RELEASE" line below is aged: 6.0.0 shipped commutating from the
 > motor's measured hall position and a lead that follows speed (CHANGELOG v6.0.0), not from a scanned offset pair.
 > The scan last ran on 2026-09-21 (`2026-09-22/debug_260921-200935.log`), and no plan uses it. It wakes if a
@@ -478,6 +474,9 @@ now tells the truth.
 
 ### PL-53 -- the scan, char and detection binaries still carry their own copies of the record builder
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree.** `scan`, `char` and `detect` all build their
+> records through `isp_bench_log`, identical by construction; every one compiles in the gate.
+
 > **Status (2026-10-01):** FIXED IN TREE; `scan` has run on it (2026-09-21), `char` and `detect` have not. Their
 > next runs are the check, and no plan runs them. The "IN THIS RELEASE" line below is aged.
 >
@@ -520,6 +519,10 @@ cogs). `isp_bench_log` gains `unclampedNumField()`, `hexField()` and `bareField(
 
 ### PL-60 -- the left board's `ph_x10` reading sags with load and the right board's does not
 
+> **Status (2026-10-10, burn-down «#3707»): HARDWARE ONLY, AND IT NEEDS AN ACT.** Its close is one DMM reading across
+> each board's supply terminals at a high rung; whether the Rev B closeout carries that reading is decided with its sheet
+> («#3708»).
+
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (board telemetry reading; DMM check)
 
 **Found 2026-09-15 in Visit 2** (`VISIT-2-RESULTS.md` §9.4).
@@ -545,6 +548,13 @@ reading offset.
 
 ### PL-63 -- the right motor's quarter-speed NEG float stop never confirmed rest, in either rep
 
+> **Status (2026-10-10, burn-down «#3707»): FIXED at the desk, the stillness rule.** The reading was right: in traces 25
+> and 28 `pos` held at -29 while `hw` went -29 -> -28 -> -29 for ONE 2 ms sample (k 213-214, and 208-209), a rotor resting
+> on a hall edge. `waitRest()` polls every 5 ms, did not see it and confirmed rest; the stored-trace finder saw it,
+> restarted its 300 ms, and ran out of capture (rest_k NA). `test_bench_dual` SRC_REV 87: both stored-trace rest finders
+> read a one-sample hall flicker as rest (`bSmpStill()`), as the live wait already did; a hall reading that moves and
+> stays is motion in both.
+
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench stop-rest reading)
 
 **Found 2026-09-15 in Visit 2.** Minor.
@@ -559,6 +569,11 @@ confirmed rest.
 or both), then decide whether the stillness rule or the reading is at fault.
 
 ### PL-64 -- the attended-test UI is out of step with what each test needs, and `dual-ui` failed itself
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree.** The walkthrough was rebuilt (SRC_REV 12); the
+> panel's prompt bitmap is regenerated from `tools/gen_dual_assets.py` (three prompts' text had moved on, the grab's
+> 2 A among them; the other seven bitmaps and the CON / DAT blocks were already byte-identical to the generator's).
+> No release plan runs `dual-ui` or `dual-floor`.
 
 > **Status (2026-10-01):** FIXED IN TREE, never run. `dual-ui` has not run since the rebuild (no log since 2026-09-17
 > carries UICHECK), and the floor runs that followed use countdown boards instead of the attended panels. The
@@ -605,6 +620,9 @@ which now exists: the spin-in-place floor run STEPHEN approved on 2026-09-17 nee
 
 ### PL-65 -- `BM-PLAN` names the wrong findings for the UICHECK and FLOOR parts
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree** (the corrected labels, SRC_REV 12). No release
+> plan runs either part.
+
 > **Status (2026-10-01):** FIXED IN TREE, never run: neither UICHECK (`dual-ui`) nor FLOOR (`dual-floor`) has run since
 > SRC_REV 12, and no plan runs them.
 >
@@ -624,6 +642,10 @@ by one; corrected in the SRC_REV 12 rebuild (`analyses/ATTENDED-UI-AUDIT-2026-09
 next attended log's `BM-PLAN`.
 
 ### PL-71 -- the DocoEng motor's minimum forward increment is `0 - VALUE_NOT_SET`, which is 1
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed.** Both signs have measured minimums (DRIVER_REV 56: 4.00
+> ticks/s at 7.4 V; DRIVER_REV 59: 0.10 from 11.1 V up), forward a negative increment. The Doco certification's
+> L-mininc rows certify them, under PL-216.
 
 > **Status (2026-10-05): OPEN, being fixed in v6.2.0 «#3684».** D1b measured the slowest steady speed on DRIVER_REV 53
 > (`DOCs/analyses/bench/2026-10-05/D1B-EVALUATION.md` §2.4, D1B-6): forward (the NEG increment, `power_sign,1`) turns
@@ -667,6 +689,9 @@ An archive file is never re-edited. If an archived item must be reopened, it com
 ## Open (continued)
 
 ### PL-98 -- two scan sign-off cells cannot fail on the path they exist to police
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, moot,** with the scan (PL-46): no release feature or plan runs
+> `test_bench_scan`.
 
 > **Status (2026-10-01):** DORMANT with the scan (see PL-46): no plan runs `test_bench_scan`.
 >
@@ -759,6 +784,9 @@ threshold in normal use, or a user report of the platform running short of its c
 
 ### PL-103 -- the ALIGN band is sized from motion when the bias read lands on a coasting wheel
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree** (`test_bench_dual` SRC_REV 85, the bias read
+> taken hall-still). No release plan runs the ALIGN part.
+
 > **Status (2026-10-04):** FIXED IN THE TREE; certified by the next hand run. `test_bench_dual.spin2` SRC_REV 85
 > (task «#3694»): a bias read is still only when no phase strays more than `ALIGN_BIAS_STRAY_MAX_MV` (8 mV), and the
 > band is sized from the leg's quietest hall-still read when none passes (`alignApplyBias()`); `BM-AGUIDE` gains
@@ -842,6 +870,11 @@ none inside the published range; unknown outside it.
 
 ### PL-109 -- the ramp criteria cannot rank ramp rates: A-2's denominator moves, and the speed-down "peak" is the cruise
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed and moot.** The ramp decision was made in 6.0 (DRIVER_REV 38's
+> jerk-limited generator at built-in rates). A-2 was re-cut as this entry asked: its reference is steady running
+> (`test_bench_dual` SRC_REV 60), judged as the arrival's excess over the steady mean (SRC_REV 78, PL-183). LIMRAMP now
+> only traces; no cell ranks ramp rates or takes a speed-down "peak".
+
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (ramp-rate criteria study)
 
 **Found 2026-09-23, Visit 9** (§3, F-5, F-6).
@@ -877,6 +910,10 @@ not a battery one.
 ---
 
 ### PL-111 -- a serial host cannot clear a protective stop
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT** -- its serial pairs (`serial_certify.py`,
+> STEPHEN 2026-10-03: *"we'll likely do a lightweight certify of serial drive too"*): `getprot` reads `0 0` with no stop
+> latched, and `protclear` is harmless.
 
 > **Status (2026-10-01):** the serial half is BUILT IN TREE (`protclear`, `getprot`, and the Python client) and
 > deferred with serial (PL-148); its "Run-time proof owed" waits for that run.
@@ -934,6 +971,9 @@ deferred external sensor («#3506»).
 
 ### PL-119 -- the offset-shift fault provocation plugs the motor more often than it faults it
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED.** The fault cells provoke with the guarded `testForceFault()`
+> (STEPHEN 2026-09-28, *"fp1: A"*); the offset-shift provocation is used by none.
+
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench fault provocation)
 
 **Found 2026-09-23** while building Visit 10's fault cells («#3613»).
@@ -951,6 +991,9 @@ own fault test, on demand, with no plugging. Parts B and C still use the old pro
 Moving them over is a change to certified tiers and is not made here.
 
 ### PL-120 -- the right board's bridge puts no voltage on any phase
+
+> **Status (2026-10-10, burn-down «#3707»): A WATCH ON THE REV B CLOSEOUT** -- no start check refuses the right board
+> across the session's loads.
 
 > **Status (2026-10-01):** WATCH. No refusal of the right board in the 69 Rev B program loads logged since 2026-09-27
 > (35 of them name the right wheel), after Stephen's 2026-09-26 reseat of the board on its headers. The cause is not
@@ -1146,6 +1189,8 @@ every lifetime of every tier. One clean pass after a reseat is one observation, 
 
 ### PL-126 -- the P2's output stopped mid-record 2 s into right trial 19, and the wire then carried lone zero bytes
 
+> **Status (2026-10-10, burn-down «#3707»): A WATCH ON BOTH CLOSEOUTS** -- every log runs to its end record.
+
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench watch, one instance)
 
 **Found 2026-09-24** in the first `dual-fault` try of pass 3 (evaluation §3). This ran the pass 2 binary.
@@ -1160,6 +1205,9 @@ observation, makes it actionable. Owner: each visit's log analysis (now «#3634�
 
 ### PL-134 -- HOLD-RISE's rate estimate kept counting after the hold slipped
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree** (`test_bench_t0` SRC_REV 17). No release plan
+> runs `t0-stopmode`.
+
 > **Status (2026-10-01):** FIXED IN TREE, not yet run: no `t0-stopmode` run since the 2026-09-24 log that found it, and
 > no plan runs one.
 >
@@ -1172,6 +1220,10 @@ The cell's FAIL for that run was right (the hold gave way before its ceiling). T
 **FIXED** (`test_bench_t0` SRC_REV 17): a pair counts only while `getHoldStatus()` reads HS_HOLDING at both ends.
 
 ### PL-135 -- a card that asks for a deliberate act does not get it: the interaction's negatives are still unmeasured
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed in the tree.** The fix below is built (`test_bench_t0`
+> SRC_REV 17, the panel tests in `t0sTestTab`: the grey box logs `hit,MISS`, row 4 draws REDO ROW only, row 6 ABORT then
+> REDO ROW). No release plan runs the attended `t0stop` tier.
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench interaction negatives)
 
@@ -1187,6 +1239,9 @@ control that performs it.
 Later runs of those rows are unchanged.
 
 ### PL-136 -- PL-120's diagnostics are reachable only from a fault trial, so a wheel dead at PREFLT is never diagnosed
+
+> **Status (2026-10-10, burn-down «#3707»): A WATCH ON THE REV B CLOSEOUT** -- built; it certifies itself on a wheel's
+> first PREFLT failure (`BM-PFRETRY`), and is owed nothing while no wheel fails.
 
 > **Status (2026-10-01, closeout):** BUILT 2026-09-25 (`test_bench_dual` SRC_REV 46) and never provoked: no wheel has
 > failed PREFLT since, and no log on record carries `BM-PFRETRY`. ANCILLARY (bench diagnostics): it certifies itself the
@@ -1246,6 +1301,12 @@ A wheel either stage recovers is un-retired and runs its trials. Rides on the ne
 
 ### PL-139 -- RESTFLAT's 50 mV at-rest band was set on the left board, and the right's coast rest read 51
 
+> **Status (2026-10-10, burn-down «#3707»): FIXED at the desk, by its first stated fix.** The coast's REST window was the
+> rest-confirmation interval itself, where a rotor that has just stopped crossing hall edges still rocks in its sector.
+> `test_bench_dual` SRC_REV 87: the window opens where rest is confirmed (`REST_CONFIRM_MS` after the last tick,
+> `FR_REST_CONFIRM_SAMPLES`) and the capture runs `FR_REST_WIN_MS` past it, the length of the control before spin-up.
+> `FR_FLAT_MV` is unchanged; nothing was sized from these readings. Runs in `dual-fault`, which no release plan runs.
+
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench cell band, watch)
 
 **Found 2026-09-26** at Visit 10 pass 5 ([evaluation](analyses/bench/2026-09-25/VISIT-10-PASS5-EVALUATION.md) §2).
@@ -1272,6 +1333,10 @@ rotor rocking inside one hall sector — never from these readings.
 
 ### PL-148 -- the serial control path has never run on hardware
 
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT.** The serial deferral below was superseded
+> by STEPHEN 2026-10-03 (*"we'll likely do a lightweight certify of serial drive too"*, DOCO-AND-CLOCK plan): the
+> closeout's serial pairs run `serial_certify.py`'s cells at 270 MHz and the clock floor, plain and debug builds.
+
 > **Status (2026-10-01):** DEFERRED to the serial release (STEPHEN 2026-09-27: *"serial testing not in this initial
 > release"*). The "release work" disposition below is aged. Every serial build it would exercise is in the tree
 > (PL-111, PL-154, PL-157); this entry is the host-driven hardware run they all wait for.
@@ -1291,6 +1356,9 @@ wheels up. It must exercise a refused command (error reply), `settimeout` with a
 Stephen's host.
 
 ### PL-154 -- the serial path: hold cannot be set from the host example, every command can wait 1 s, and non-numbers become numbers
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT** -- the serial pairs' NUMPARSE and LATENCY
+> cells (PL-148).
 
 > **Status (2026-10-01):** BUILT IN TREE; the hardware run is deferred with serial (PL-148). The idle loop now waits
 > `IDLE_POLL_MS`, not 1 s (`isp_steering_serial.spin2:296`), and a non-numeric parameter is refused
@@ -1317,6 +1385,8 @@ digits or a leading minus, else ERROR; the doc says all of this. Certified by `p
 
 ### PL-157 -- the serial protocol and the Python host example have not kept up with the 6.0 getters
 
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT** -- the serial pairs' GETTERS cell (PL-148).
+
 > **Status (2026-10-01):** BUILT IN TREE; the hardware run is deferred with serial (PL-148). The getters the list
 > below names are in the command table (`getpackvolt`, `getcurrent`, `getfaultcause`, `getholdstatus`,
 > `gethallcounts`, `getstopreason`, `getevent`, `geterror`, `gethealth`, `getfaultresp`, `getholdlimits`, …;
@@ -1334,6 +1404,11 @@ DRIVE-OBJECTS-SERIAL.md row and a Python wrapper. Measured speed is **not** in 6
 measured speed right now"*); `getPower()` reports what was commanded.
 
 ### PL-164 -- the driver's supported clock range is one point, 270 MHz; users choose their own clock
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT** -- the clock-floor rows (`dual-clock
+> clk-floor`, `t0 clk-floor` at 130 MHz): the front cog's late count 0 and worst pass under 900 us with two wheels;
+> the clock work itself is the DOCO-AND-CLOCK plan's (STEPHEN 2026-10-03: *"this driver is just supposed to work a
+> users selected clock range"*).
 
 > **Status (2026-09-27):** AFTER v6.0.0 — STEPHEN: *"user gets to chose clock freq to run their system. we need to be as
 > capable as possible at a wide clock range... seems we need a post v6 study wherein we identify our limits/senitivities
@@ -1374,6 +1449,10 @@ current, so nothing faults, but the robot accelerates more slowly than the rate 
 the driver caps each rate at what the current limit can deliver, validated on the floor at known masses.
 
 ### PL-170 -- on Rev A the fold-back's noise margin is sized for ±3 mV, and the board reads 7
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- the hand-load rows with a grip (PL-210):
+> at a 2 and a 4 A limit the gripped shaft stops (`R23-SGL-BLKSTOP` measured and PASS) and no fold fires while it turns
+> free. D2's 24 V noise capture and `R23-SGL-LIMHOLD` PASS at 4 and 2 A showed only "no fault".
 
 > **Status (2026-10-05, later): FIX BUILT, DRIVER_REV 55 («#3699»), awaiting D2.** Rev A's fold-back now compares a
 > filtered DC-link reading (16-frame time constant) against a 3 mV floor, with a one-frame hard trip 14 mV over the
@@ -1444,6 +1523,10 @@ the configuration names. Certification needs the DocoEng motors on the bench.
 
 ### PL-176 -- generalise the offset sweep into a real motor-adoption tool
 
+> **Status (2026-10-10, burn-down «#3707»): BUILT** (`util_adopt_motor` TOOL_REV 5; STEPHEN 2026-10-03 *"let's do B
+> please"*); **CERTIFIED BY THE REV B CLOSEOUT** (`adopt-wheel`: `MA-END stopped,NONE`, Z and the ceiling found). Whether
+> the Doco closeout also carries a `doco-adopt-<voltage>` row is decided with its sheet («#3708»).
+
 > **Status (2026-10-01):** DEFERRED; moved here from task «#3592» at 6.1.0 start. Goes with the DocoEng effort (PL-175,
 > PL-27, PL-71). STEPHEN 2026-09-21, setting the phasing: *"we could just build this as our standard instrument today and
 > use it for this phase for the 6.5, and use it for the doco when we get there. After having experience with it, we can
@@ -1472,6 +1555,11 @@ While driving, the drive senses back-EMF 0 % of the time today. **6.1.0 note:** 
 works on where the held field sits at the limit; if it lands, it changes this entry's measure of benefit for C-D.
 
 ### PL-178 -- `tools/pasm_equiv` compares against a baseline from before the hold-speed fix
+
+> **Status (2026-10-10, burn-down «#3707»): FIXED.** The default baseline is the last commit (`--baseline-ref HEAD`), so
+> an uncommitted change is proved against the driver it changes; `--baseline-ref v6.1.0` names a release
+> (`tools/pasm_equiv/README.md`). MEASURED: `tools/pasm_equiv/run.sh --seeds 4 --no-named` on DRIVER_REV 60's tree,
+> VERDICT EQUIVALENT.
 
 > **Status (2026-10-02):** OPEN, tooling; found by «#3655» phase 1. Its other half is fixed: `compile_driver()` built the
 > driver with no `-D`, which the user config has refused since 2026-09-28, so the tool could not build the tree at all; it
@@ -1601,6 +1689,12 @@ generalised, PL-176, is the natural one) or is retired in a major release.
 
 ### PL-197 -- a two-stage request's acknowledgement bound reads 21 passes against a 20 ms timeout
 
+> **Status (2026-10-10, burn-down «#3707»): FIXED at DRIVER_REV 60 (Spin2 only), by raising the timeout.** Re-derived:
+> a two-stage request (the fault clear, then the synchronized take, each its own 3-pass bound) holds the slot order for
+> at most 6 passes, so with every request ahead at two stages one motor's worst answer is the 36th pass, seen by the
+> 37th ms; the platform's the 30th. `REQ_ACK_TIMEOUT_MS` 20 -> 40 covers both at any clock (36 n + 1 <= 40 n). Only a
+> front cog that does not answer is reported later; the theory of operations states 40 ms.
+
 > **Status (2026-10-03): OPEN, a finding (DERIVED from the source comment, not reproduced).** Filed during task 3671
 > (front-cog clock independence), which did not change it.
 
@@ -1613,6 +1707,10 @@ in it, and either show it cannot reach 21 or raise the timeout (or the derivatio
 needed to decide it.
 
 ### PL-199 -- at 350 MHz the Rev A current sense at rest is ten times noisier
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT, then the desk.** A `single-passprobe` row at
+> `clk-300` (and `clk-350`) records `B1-ZERO spread_mv` before it drives, which places where the noise starts; the desk
+> root cause follows from that (the sense's sampling against the running clock).
 
 > **Status (2026-10-05): OPEN, a finding (MEASURED once).** D1b's pass probe at `clk-350`
 > (`DOCs/analyses/bench/2026-10-05/debug_261004-184638.log`).
@@ -1642,6 +1740,10 @@ Doco's hall zero is referenced to the offset scan's current minimum instead (tas
 
 ### PL-200 -- a timed crawl stop on the Doco rested 120 ms after its field stopped
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, not reproduced and the path corrected.** D4's eight crawl stops rested
+> -55 .. +15 ms from their limits (`R23-SGL-STOPTIME`), and a timed stop's path was corrected at DRIVER_REV 58 (PL-218),
+> whose certification rows judge timed stops again.
+
 > **Status (2026-10-05): OPEN, a finding (MEASURED once).** D1b third pass, 18.5 V
 > (`DOCs/analyses/bench/2026-10-05/debug_261005-132917.log`, `B1-STOP,sign,NEG,kind,CRAWL,by,MS`; evaluation D1B-12).
 
@@ -1653,11 +1755,19 @@ crawl's field stops (the hold the stop applies at power 5, against the cell's ri
 
 ### PL-201 -- on a Rev A board a low current limit folds back on sense noise and the motor stops following
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, merged into PL-170** (2026-10-05); it is tracked there.
+
 > **MERGED into PL-170 (2026-10-05)** — the same defect, measured on the 6.5″ on 2026-09-30. Filed the same day with two
 > errors corrected there: it is not user-affecting (no public method sets a limit; users run at 40/27 A), and the
 > 6.5″ did not escape it (it folded on noise in 0.06-4.3 % of frames on Rev A at 2 A). The number is not reused.
 
 ### PL-202 -- T0-27 judges Rev A's fold-back on one frame's reading, which DRIVER_REV 55 no longer folds on
+
+> **Status (2026-10-10, burn-down «#3707»): FIXED at the desk** (`test_bench_t0` SRC_REV 36). T0-27 judges the fold the
+> driver runs, from `testGetFoldFloorMv()`: R22-T0-REVA-FOLD's threshold is that floor (3 mV filtered on Rev A) and its
+> one-frame noise premise is judged only on a one-frame fold; R22-T0-REVA-FOLDPOS takes 0 as a reference, needs at
+> least one fold, and on a filtered fold is MEASURED only when the speed-up's mean net reading is over its threshold.
+> Tier `t0-reva` is in no release plan (the 6.5in is certified on Rev B).
 
 > **Status (2026-10-05): OPEN, a harness defect (DESK, by construction).** Found while building «#3699».
 
@@ -1672,6 +1782,9 @@ noise that folds nothing, so the cell would FAIL a correct driver. The parameter
 floor tier for the 6.5″ (`DOCO-AND-CLOCK-SPRINT-PLAN.md` "Not in this plan"), so nothing runs it this cycle.
 
 ### PL-203 -- a POS stop by rotation from the Doco's top speed rests up to 12 hall ticks early
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, verified** (D4, below); DRIVER_REV 58 left stops by rotation as D4
+> measured them (`tools/pasm_equiv --stop-hold`), and the certification's stop rows judge them again.
 
 > **Status (2026-10-08, D4): VERIFIED (MEASURED, D4 rows 1–3 and 6).** All 16 R23-SGL-STOPROT cells PASS at 7.4,
 > 11.1, 14.8 and 24 V. The POS top stops rest +58 / +46 (7.4 V) and +61 / +80 counts (11.1 V), against D3's −355 /
@@ -1719,6 +1832,9 @@ voltages.
 
 ### PL-204 -- the timing scan's walk past its span walks into the torque wall (harness)
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed** (`test_bench_single` SRC_REV 16, `OFS_WALK_FALL_MA`, the
+> walk at `:6343-6351`).
+
 > **Status (2026-10-06, later): FIXED in SRC_REV 16, awaiting the rerun of `single-measure-v11p1`.** The walk goes on
 > only while each point is at least `OFS_WALK_FALL_MA` (50 mA) BELOW the one before; PL-205 (a held pass makes a point
 > unclean), PL-206 (MISDIAL judges the signs' mean), PL-207 (the tool's Doco record at 40 A, TOOL_REV 3) and PL-208 (the
@@ -1736,6 +1852,9 @@ resolved inside the span; rerun `single-measure-v11p1`.
 
 ### PL-205 -- the timing scan fits a point where the drive hunted (harness)
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed** (`test_bench_single` SRC_REV 16: a point with a held pass
+> is not clean).
+
 > **Status (2026-10-06): OPEN, a harness defect (MEASURED, D2 row 1).**
 
 At 11.1 V 25 % NEG the −15° point held the field 54 passes with `err_pk` 104 and mean error 32 (the drive hunting), yet
@@ -1743,6 +1862,9 @@ At 11.1 V 25 % NEG the −15° point held the field 54 passes with `err_pk` 104 
 12.2° spread. **To close:** a point with held passes is not clean (as the adoption tool already rules: HUNT).
 
 ### PL-206 -- R23-SGL-MISDIAL judges each sign alone, so the direction asymmetry fails it (harness)
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed** (`test_bench_single` SRC_REV 16: the cell judges the two
+> signs' mean and prints the asymmetry); the check's premise is PL-219's.
 
 > **Status (2026-10-06): OPEN, a cell defect (MEASURED, D2 rows 1 and 3).**
 
@@ -1753,6 +1875,9 @@ the two signs; print the half-difference as the asymmetry, not judged here.
 
 ### PL-207 -- the adoption tool's Doco record scans at 2 A, a limit the harness left at D1b (tool)
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, fixed** (`util_adopt_motor` TOOL_REV 3: 40 / 40 A; D3 ran it).
+> `ADDING_MOTOR.md`'s record table now shows the same.
+
 > **Status (2026-10-06): OPEN, a stale record value (MEASURED, D2 rows 1 and 3).**
 
 `util_adopt_motor.spin2`'s DocoEng record carries scan 2 A / ladder 3 A, the harness's test limits until SRC_REV 14 moved
@@ -1762,6 +1887,9 @@ and the 280 rpm rung droops (488 ‰), so no fit resolves and no ceiling is foun
 library's limits, its abort at 3.68 A as the harness's; rerun `doco-adopt-v11p1` and `-v7p4`.
 
 ### PL-209 -- the adoption tool walks into the Doco's torque wall at 40 A and ends on an over-current (tool)
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, verified** (D3 row 2, below). TOOL_REV 5 (this task) also lifts the
+> Doco record's ladder to 6,720 rpm, so its climb meets the reserve at every supply now that PK-1's cap is retired.
 
 > **Status (2026-10-08): VERIFIED at 11.1 V (D3 row 2).** `MA-END stopped,NONE`. Every side ended BRACKETED or at
 > WALL within 15–30° of the start, and no point went deep into the wall. 1,120 rpm resolved both ways (306° / 63°,
@@ -1782,6 +1910,9 @@ clean point (the fit uses only ±20° of it), so a falling side walks on and a b
 rerun `doco-adopt-<v>`.
 
 ### PL-212 -- above ~2,500 rpm the Doco still needs 55-67 % more duty than its back-EMF, and 14.8 V's top has no reserve
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- its range rows at all six supplies: the
+> duty on the back-EMF line at each step, held passes 0, no second state, no fault below the ceiling.
 
 > **Status (2026-10-10): FIXED at DRIVER_REV 59 (desk-proven; the certification visit certifies).** Root cause
 > (MODEL, `DOCs/analyses/PL-212-ROOT-CAUSE-2026-10-09.md` §2, §7.2): above `ωe·L/R` ≈ 1 the load angle oscillates on
@@ -1857,6 +1988,9 @@ excess; then a desk root cause, and the change priced to Stephen. Until then the
 
 ### PL-210 -- the Doco hand load needs something to grip: a bare shaft cannot be held at 2-4 A
 
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- the hand-load rows (`single-handload-
+> v11p1`, `-v24p0`) with a grip on the shaft, set up by Stephen: at 2 and 4 A the shaft stops, `R23-SGL-BLKSTOP` measured.
+
 > **Status (2026-10-07): OPEN, a test set-up gap (MEASURED, D2 row 2).** The set-up is Stephen's (overlay P1).
 
 At 4 A and 2 A the limit acted with no fault (R23-SGL-LIMHOLD PASS), but the shaft never stopped (standing ≤ 5 ms,
@@ -1865,6 +1999,8 @@ creeping 48–104 thousand counts under the grip), so R23-SGL-BLKSTOP is NOMEAS 
 and 8 again with a grip of about that radius on the shaft.
 
 ### PL-211 -- R23-SGL-MISDIAL fails at 14.8 and 22.2 V and passes at the rows between
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, subsumed by PL-219.**
 
 > **Status (2026-10-08, D4): SUBSUMED by PL-219.** On the lead table the cell reads +96 / +204 / +250 ‰ at 7.4 / 14.8
 > / 24 V, because its premise (fixed timing) no longer holds; D2's figures cannot be re-judged until it is fixed.
@@ -1877,6 +2013,10 @@ spread all fit. **To close:** the supply's setting at those rows (Stephen); then
 re-derived from its measured spread.
 
 ### PL-208 -- the Doco's slowest steady speed at 7.4 V swapped direction between D1b and D2
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED.** DRIVER_REV 56 ships 4.00 ticks/s each way at 7.4 V, and D3 held
+> 3.00 steady both ways under it (below), so the shipped floor has a rung of margin in each direction. The Doco
+> certification's L-mininc rows judge it again.
 
 > **D3 (2026-10-08):** 7.4 V steady at 3.00 ticks/s both ways, 2.00 not (sub-window 471 / 483 ‰). The edge moves
 > between 2 and 4 from visit to visit, so the shipped 4.00 each way (DRIVER_REV 56) stands. Every slow rung runs at the
@@ -1891,6 +2031,8 @@ NEG FAILed. Each rung is one 2 s sample at the duty floor; the edge is not repea
 repeated measurement shows a lower one steady every time.
 
 ### PL-213 -- the harness's run charge guard overflows 32 bits, ending long runs early (harness)
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, verified** (D4, below).
 
 > **Status (2026-10-08, D4): VERIFIED.** The 22.2 and 24 V ranges ran to their ends at 857,598 and 949,350 mA·s.
 >
@@ -1907,6 +2049,8 @@ next verification visit.
 
 ### PL-214 -- the range test's once-per-turn ripple bins by encoder position, so a bin can be empty (harness)
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, verified** (D4, below).
+
 > **Status (2026-10-08, D4): VERIFIED.** `turn_rip_pm` reads at every step both ways at all six supplies.
 >
 > **Status (2026-10-08, later): FIXED in SRC_REV 18.** The turn bin is the start edge's index in the turn: its encoder
@@ -1920,6 +2064,9 @@ apart, so some bins catch two intervals and some none. `binRipplePm()` reads NA 
 five steps. **To close:** bin by the edge's index within the turn, so each bin takes exactly one interval a turn.
 
 ### PL-215 -- on Rev A the DC current is too coarse to locate the Doco's timing minimum below ~1 A (instrument)
+
+> **Status (2026-10-10, burn-down «#3707»): CLOSED.** A board's resolution, not a defect: the lead model reads each
+> sweep's duty bowl instead (below), and the lead table rests on it (DRIVER_REV 57).
 
 > **Status (2026-10-08, later): WORKED AROUND at the desk.** The lead model reads each sweep's duty bowl, which Rev A
 > resolves to 0.1–0.3 %: its bottom fixes the headroom curve and, through the model, the zero the efficiency curve
@@ -1935,6 +2082,10 @@ offsets, and it shapes how the Doco's speed-dependent lead can be measured (PL-2
 this board can resolve, decided with PL-212's desk work.
 
 ### PL-216 -- the Doco's shipped speed limits sit well inside its measured range
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- the range and L-mininc rows: each row's
+> ceiling held (following about 1,000 per mille, no fault) and the floors held (0.10 ticks/s from 11.1 V up, 4.00 at
+> 7.4 V).
 
 > **Status (2026-10-10): FIXED at DRIVER_REV 59 (the certification visit's range rows certify).** Stephen,
 > 2026-10-10: the Doco serves gantries, so its limits are accurate speed and accurate distance (overlay P14).
@@ -1978,6 +2129,9 @@ re-tabled from the speed range at every voltage once PL-212's fix is in.
 
 ### PL-217 -- the second Doco's hall sectors differ from the first's by up to 2.8°, past the agreed 2° bar
 
+> **Status (2026-10-10, burn-down «#3707»): CLOSED, in service** (below): the two units' mean sector widths ship in
+> `hltbAngl4k` / `hltbAngl4k2` (DRIVER_REV 57), and unit 2's ripple read 0-12 per mille at every D4 step.
+
 > **Status (2026-10-08, D4): IN SERVICE.** Hall-sector speed ripple 0–12 ‰ at every step on unit 2, so the table does
 > not shake the shaft; the 7.4 V crawl now holds 0.20 / 0.30 ticks/s, but the unit changed with the table, so the gain
 > is not attributable to it alone. Nothing open beyond the record.
@@ -1999,6 +2153,10 @@ draws 2–3× unit 1's current at the same speeds (more drag). **To close:** Ste
 offsets question.
 
 ### PL-218 -- since DRIVER_REV 57 a timed stop ends late by the passes held in its slowdown
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- the stop rows at 7.4 and 11.1 V:
+> `R23-SGL-STOPTIME` within its band at the top (D4 read +95 and +115 ms on DRIVER_REV 57) and `R23-SGL-STOPROT` inside
+> its.
 
 > **Status (2026-10-09): FIXED at DRIVER_REV 58 (task 3705; Stephen 2026-10-08, option a), to be certified by the
 > certification visit's STOPTIME and STOPROT rows at 7.4 and 11.1 V.** The held-pass wait acts only while the launch
@@ -2022,6 +2180,15 @@ A stop by rotation promises distance and a stop by time promises time; the fix k
 
 ### PL-219 -- R23-SGL-MISDIAL's premise (fixed timing) fails on the lead table, so the check reads +96..+250 ‰ (harness)
 
+> **Status (2026-10-10, burn-down «#3707»): FIXED at the desk (`test_bench_single` SRC_REV 20, fmt 16); CERTIFIED BY THE
+> DOCO CLOSEOUT's qualify rows.** The check fits a dedicated pass, not the ladder: one climb a sign through 650, 900,
+> 1,150 and 1,400 rpm (the same at every row) at ONE pair, 304 / 48 (the lead table's flat-region pair), the schedule put
+> back after; `KE_FITTED_MV_PER_KRPM` 3,630 carries the pair's own factor (the timing scans' points at 304 / 48 read -28
+> / -29 per mille on the sheet's Ke on both units). Re-fit from the logs: correct supplies -22 .. +14, an adjacent
+> misdial 62-83 out (+-30). About 62 s a qualify row. One exception: D4's 24 V row (unit 2) re-fits to +40, either a
+> supply ~4 % over its dial or a unit-2 effect at 24 V, which the logs cannot separate (put to Stephen 2026-10-10).
+> B1-MISDIAL2 is new (the pair and the fit's span; B1-MISDIAL is at its 280-byte bound).
+
 > **Status (2026-10-08): OPEN, a harness defect (MEASURED, D4 rows 1, 3 and 6).** Mine. Subsumes PL-211.
 
 The cell predicts the supply from the clean rungs' duty-per-speed slope, assuming duty follows back-EMF at a fixed
@@ -2032,6 +2199,11 @@ disarmed check: it would not catch a misdialled supply. **To close:** the predic
 rung into account (or judges only rungs at one lead); the next qualification runs it.
 
 ### PL-220 -- the range test's record does not say which fault ended a climb, or count hall misses (harness)
+
+> **Status (2026-10-10, burn-down «#3707»): FIXED at the desk** (`test_bench_single` SRC_REV 20). Each range step
+> records the hall missed transitions and illegal codes over it and, on a fault or a re-sync, its kind
+> (`getFaultCause()`: LAG or HALL), in B1-RANGEV (B1-RANGE is at its 280-byte bound); B1-RANGEEND carries the ending
+> step's kind. The Doco certification's range rows run it.
 
 > **Status (2026-10-08): OPEN, a harness gap (MEASURED, D4 row 6).** Mine.
 

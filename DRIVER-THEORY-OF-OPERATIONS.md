@@ -24,7 +24,7 @@ changed value on its next pass.
 What a public method does depends on its kind:
 
 - **Command methods** validate their arguments on the caller's cog, post a request to the
-  **front cog**, and wait — bounded, 20 ms — for its answer. They return that answer as a
+  **front cog**, and wait — bounded, 40 ms — for its answer. They return that answer as a
   status (`NO_ERROR` or an `ERR_*` code) and record it for `getError()`.
 - **Status methods** read the shared values directly and return at once.
 
@@ -584,7 +584,7 @@ late is not re-anchored: the next one starts on the first slot boundary at least
 stands for every slot since, so the slots it skipped are counted as time and not lost. A slow
 clock therefore lengthens a pass, not the times: blocked-motor time, the current average, the
 hold's rise and limit, and the periodic jobs (the rpm window, the ramp applies) all hold at
-every clock. A caller's 20 ms bound on an answer is scaled by the most slots a pass has stood for.
+every clock. A caller's 40 ms bound on an answer is scaled by the most slots a pass has stood for.
 
 ```
 0. confirm a stop written in an earlier pass, or write it again
@@ -661,7 +661,7 @@ down, slowly coming back up — so the platform keeps its path and loses speed (
 | Behavior | Why |
 |---|---|
 | `start()` blocks for about a second | It samples the current sense at rest so `getCurrent()` reads zero at rest. |
-| A command method can take up to 20 ms | It waits, bounded, for the front cog's answer. `ERR_NO_RESPONSE` means the answer did not come in time and the outcome is unknown. |
+| A command method can take up to 40 ms | It waits, bounded, for the front cog's answer. A healthy answer comes within a few milliseconds; the bound is what a request queued behind every other cog's, each clearing a fault first, can take. `ERR_NO_RESPONSE` means the answer did not come in time and the outcome is unknown. |
 | Setting a time and a distance limit together honours only the time | The distance limit waits until no time limit is armed (§5). |
 | `setMaxSpeed()` never refuses | It caps what you command. A motor that cannot reach its command runs slower instead of faulting. |
 | Reverse power on a `MOTR_DOCO_4KRPM` uses *negative* increments as "forward" | The DocoEng motor's increment convention is inverted relative to the 6.5″ motor. |

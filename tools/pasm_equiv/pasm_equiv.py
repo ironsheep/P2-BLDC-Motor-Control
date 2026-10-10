@@ -102,7 +102,9 @@ def main(argv=None):
     ap.add_argument('--long-frames', type=int, default=20_000,
                     help='frames for every %dth random seed (default 20000; 0 disables)' % LONG_EVERY)
     ap.add_argument('--jobs', type=int, default=max(1, (os.cpu_count() or 2) - 2))
-    ap.add_argument('--baseline-ref', default='mem-reduce-start', help='git ref of the baseline (default mem-reduce-start)')
+    ap.add_argument('--baseline-ref', default='HEAD',
+                    help='git ref of the baseline (default HEAD: the last commit, so an uncommitted change is proved '
+                         'against the driver it changes; PL-178, it was mem-reduce-start)')
     ap.add_argument('--baseline-dir', default=None, help='take the baseline from this src directory instead of git')
     ap.add_argument('--candidate-dir', default=None, help='the candidate src directory (default: the work tree src/)')
     ap.add_argument('--candidate-ref', default=None, help='take the candidate from this git ref instead')

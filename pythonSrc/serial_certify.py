@@ -202,7 +202,7 @@ CMD_LINE_MAX = 128                  # MAX_SINGLE_STRING_LEN, isp_queue_serial.sp
 # Test constants
 # -----------------------------------------------------------------------------
 REPLY_TIMEOUT_S = 3.0       # generous: the P2 answers within ms (1 ms idle poll, PL-154), plus the front cog's bounded
-                            #  answer: a request waits at most REQ_ACK_TIMEOUT_MS (20) times the slots a late front pass
+                            #  answer: a request waits at most REQ_ACK_TIMEOUT_MS (40, DRIVER_REV 60) times the slots a late front pass
                             #  has stood for (reqAckTimeoutMs(), isp_bldc_motor.spin2:4903-4911, :5723; DRIVER_REV 51).
                             #  At the lowest clock a pass can stand for a few slots: still under 3 s
 CHECKWIRING_REPLY_S = 2 * WALK_LEG_TIMEOUT_MS / 1000.0 + 2.0   # checkwiring replies only after both legs: about 1.3 s

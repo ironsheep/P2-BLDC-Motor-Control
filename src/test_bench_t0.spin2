@@ -342,6 +342,12 @@
 ''               sense_zero is no longer its last long: T0-27 reads it at motor.DRVR_PARAMS_SENSE_ZERO_IDX. No record
 ''               changes. T0-27's one-frame premise no longer describes Rev A's fold, which reads a filtered DC link
 ''               (PL-202): the cell is redesigned before tier t0-reva runs again.
+''               10 Oct 2026 -- SRC_REV 36: task 3707, PL-202. T0-27 judges the fold the driver runs: the floor and filter
+''               from motor.testGetFoldFloorMv() (Rev A since DRIVER_REV 55: 3 mV on a DC link filtered over 2^4 frames).
+''               R22-T0-REVA-FOLD's effective threshold is that floor, and its noise premise (one frame over the floor) is
+''               judged only on a one-frame fold. R22-T0-REVA-FOLDPOS takes 0 as a reference (the unloaded legs of a filtered
+''               fold fold nothing), needs at least one fold, and on a filtered fold is MEASURED only when the speed-up's
+''               mean net reading is over its threshold. T0-27,legsense and kicksense gain shift; T0-27,begin fold_filt_mv.
 ''
 '' =================================================================================================
 
@@ -463,7 +469,7 @@ CON { bench target }
 
 CON { build identity }
 
-    SRC_REV = 35                                    ' hand-bumped whenever this file changes; printed in the banner
+    SRC_REV = 36                                    ' hand-bumped whenever this file changes; printed in the banner
 
 CON { timing }
 
@@ -1283,7 +1289,7 @@ sCritPlanM      BYTE    "MIDRAMP_STOP_RESTS_AT_LIMIT", 0
 sTaskPl161      BYTE    "PL-161", 0
 sTaskPl163      BYTE    "PL-163", 0
 sCellFrameSlack BYTE    "R22-T0-FRAMESLACK", 0                  ' T0-25: no PWM frame ran past its ADC sample while the driver planned stops
-sCellRevaFold   BYTE    "R22-T0-REVA-FOLD", 0                   ' T0-27: Rev A at a 2 A limit, each driven unloaded wheel at the duty floor, whose effective threshold is FOLD_MIN_MV (a fold needs 5 mV net), folds no frame
+sCellRevaFold   BYTE    "R22-T0-REVA-FOLD", 0                   ' T0-27: Rev A at a 2 A limit, each driven unloaded wheel at the duty floor, whose effective threshold is the fold's floor (testGetFoldFloorMv()), folds no frame
 sCellRevaFoldPos BYTE   "R22-T0-REVA-FOLDPOS", 0                ' ...and the RIGHT wheel held by hand, over m = 0.2, folds on 5 mV or more
 sCritFrameSlack BYTE    "LEAST_LOOP_OVER_FRAME_WORK", 0
 sCritRevaFold   BYTE    "NO_FOLD_UNDER_5MV_NET", 0              ' SRC_REV 29: was NO_FOLD_2A_AT_DUTY_FLOOR; the threshold the leg judges is FOLD_MIN_MV
@@ -5581,16 +5587,18 @@ PRI testT0_27() | groupIdx, eBase, pWheel, pDriven, eBoard, nRevA, legIdx, eOut,
 ' each group's legs, a hard speed-up (t0vKickLeg()). The section's CON states the legs, the control, the platform and
 ' the negative.
 '   R22-T0-REVA-FOLD    - on each group that auto-detects REV_A, at testSetCurrentLimits(2, 2), two legs at the
-'                          driver's (raised) duty floor, whose effective threshold is FOLD_MIN_MV (4 mV), so a fold
-'                          needs a 5 mV net reading: foldback_frames rises by 0 over each measured leg's window, the
-'                          bridge driven throughout. FAIL on any leg's failure (a fold on 4 mV or less is the
-'                          defect); else NOMEAS with crit PREMISE_NOISE when any measured leg read net_max_mv >= 5
-'                          unloaded; else PASS. NEGATIVE: the pre-DRIVER_REV 38 compare folds every driven frame
-'                          (T0_27_FRAMES_WIN a window). NOMEAS with no Rev A board ready, and for a leg not at the floor.
+'                          driver's (raised) duty floor, whose effective threshold is the fold's floor
+'                          (testGetFoldFloorMv(): DRIVER_REV 55's 3 mV on the filtered DC link): foldback_frames
+'                          rises by 0 over each measured leg's window, the bridge driven throughout. FAIL on any leg's
+'                          failure; else, on a one-frame fold only, NOMEAS with crit PREMISE_NOISE when any measured
+'                          leg read net_max_mv over the floor unloaded; else PASS. NEGATIVE: the pre-DRIVER_REV 38
+'                          compare folds every driven frame (T0_27_FRAMES_WIN a window). NOMEAS with no Rev A board
+'                          ready, and for a leg not at the floor.
 '   R22-T0-REVA-FOLDPOS - the positive control (t0vKickLeg()), per Rev A group, at the same limit: a hard speed-up
-'                          from rest loads the DC link with its acceleration current, and the fold must act at twice
-'                          or more the group's own unloaded (noise) fold rate. NOMEAS when the speed-up did not load
-'                          the link (mean net reading under T0_27_KICK_MEAN_MV) or no reference was measured.
+'                          from rest loads the DC link with its acceleration current, and the fold must act -- at least
+'                          once, and at twice or more the group's own unloaded fold rate (0 on a filtered fold). NOMEAS
+'                          when the speed-up did not load the link (mean net reading under T0_27_KICK_MEAN_MV, or on a
+'                          filtered fold not over its threshold) or no leg gave a reference.
 ' Prints T0-27,begin, the lead-in line, per group T0-27,board and three T0-27,probe (and, for a group that did not come
 ' up as REV_A, the finding line), per leg T0-27,legsense and T0-27,leg, per group T0-27,kicksense and T0-27,kick, and
 ' T0-27,end.
@@ -5614,7 +5622,7 @@ PRI testT0_27() | groupIdx, eBase, pWheel, pDriven, eBoard, nRevA, legIdx, eOut,
 
     emitCellDecl(@sCellRevaFold, @sTaskPl163)
     emitCellDecl(@sCellRevaFoldPos, @sTaskPl163)
-    debug("T0-27,begin,limit_a,", udec_(T0_27_LIMIT_A), ",power_hi,", udec_(T0_27_POWER_HI), ",power_lo,", udec_(T0_27_POWER_LO), ",power_kick,", udec_(T0_27_POWER_KICK), ",spin_ms,", udec_(T0_27_SPIN_MS), ",win_ms,", udec_(T0_27_WIN_MS), ",kick_win_ms,", udec_(T0_27_KICK_WIN_MS), ",kick_mean_mv,", udec_(T0_27_KICK_MEAN_MV), ",pos_rate_x100,", udec_(T0_27_POS_RATE_X100), ",frames_win,", udec_(T0_27_FRAMES_WIN), ",fold_min_mv,", udec_(motor.FOLD_MIN_MV), ",net_fold_mv,", udec_(T0_27_NET_FOLD_MV))
+    debug("T0-27,begin,limit_a,", udec_(T0_27_LIMIT_A), ",power_hi,", udec_(T0_27_POWER_HI), ",power_lo,", udec_(T0_27_POWER_LO), ",power_kick,", udec_(T0_27_POWER_KICK), ",spin_ms,", udec_(T0_27_SPIN_MS), ",win_ms,", udec_(T0_27_WIN_MS), ",kick_win_ms,", udec_(T0_27_KICK_WIN_MS), ",kick_mean_mv,", udec_(T0_27_KICK_MEAN_MV), ",pos_rate_x100,", udec_(T0_27_POS_RATE_X100), ",frames_win,", udec_(T0_27_FRAMES_WIN), ",fold_min_mv,", udec_(motor.FOLD_MIN_MV), ",net_fold_mv,", udec_(T0_27_NET_FOLD_MV), ",fold_filt_mv,", udec_(motor.FOLD_MIN_FILT_MV))
     debug("* test_bench_t0 -- T0-27 LEAD-IN: nothing moves for 10 s. Then each wheel, LEFT then RIGHT, turns slowly twice and then speeds up hard once. HANDS OFF: nothing to do")
     waitms(T0_27_LEAD_IN_MS)
     nRevA := 0
@@ -5632,11 +5640,11 @@ PRI testT0_27() | groupIdx, eBase, pWheel, pDriven, eBoard, nRevA, legIdx, eOut,
         if eBoard == motor.REV_A
             nRevA += 1
             pDriven := pWheel                                                   ' "BOTH" after the loop when both read REV_A
-            nRefFold := 0
+            nRefFold := -1                                                      ' SRC_REV 36: no measured leg, no reference
             repeat legIdx from 0 to 1
                 eOut, nLegFold := t0vLeg(pWheel, (legIdx == 0) ? T0_27_POWER_HI : T0_27_POWER_LO)
-                nRefFold #>= nLegFold
                 if eOut <> T0V_OUT_NOMEAS
+                    nRefFold #>= nLegFold
                     nMeas += 1
                 if eOut == T0V_OUT_FAIL
                     nFail += 1
@@ -5704,7 +5712,7 @@ PRI t0vStart(eBase, pWheel) : eBoard | startResult, bReady, eStartErr, nChecked,
     if not bReady
         eBoard := motor.REV_Unknown
 
-PRI t0vLeg(pWheel, nPower) : eOut, nFoldWin | nFoldMin, pStatus, pParams, bLimOk, nLimitK, frameCnt, dutyFloorEst, dutyFloorDrv, nZero, eErr, fold0, fold1, fold2, dutyPk, senseMax, senseSum, nSamples, bDriven, nThresh, netMax
+PRI t0vLeg(pWheel, nPower) : eOut, nFoldWin | nFoldMin, nShift, pStatus, pParams, bLimOk, nLimitK, frameCnt, dutyFloorEst, dutyFloorDrv, nZero, eErr, fold0, fold1, fold2, dutyPk, senseMax, senseSum, nSamples, bDriven, nThresh, netMax
 ' One T0-27 leg (the section's CON): the limits lowered to T0_27_LIMIT_A, the drive at nPower, T0_27_SPIN_MS, then the
 ' T0_27_WIN_MS window read from the driver's status run as fast as the loop runs (t0vWindow()) -- foldback_frames
 ' before and after it, the largest duty, the raw DC-link reading and the state -- then the stop, and rest. Prints
@@ -5714,16 +5722,19 @@ PRI t0vLeg(pWheel, nPower) : eOut, nFoldWin | nFoldMin, pStatus, pParams, bLimOk
 ' @param nPower - driveAtPower()'s power
 ' @returns nFoldWin - foldback_frames' rise over the window: the positive control's unloaded reference (SRC_REV 30)
 ' @returns eOut - T0V_OUT_NOMEAS unless the limits took, the drive was taken and the window's largest duty stayed at or
-'                  under the driver's duty floor; then T0V_OUT_NOISE when net_max_mv reached the running fold floor + 1 (the
-'                  noise premise falsified), else T0V_OUT_PASS when foldback_frames did not rise, the bridge stayed
-'                  driven and the effective threshold read the running fold floor, else T0V_OUT_FAIL
+'                  under the driver's duty floor; then, on a one-frame fold (shift 0), T0V_OUT_NOISE when net_max_mv
+'                  reached the fold floor + 1 (the noise premise falsified); else T0V_OUT_PASS when foldback_frames did
+'                  not rise, the bridge stayed driven and the effective threshold read the fold floor, else T0V_OUT_FAIL
 '
-' PRECONDITION: this group's driver is started, so motor.testGetFoldMinMv() is the floor init() derived for the running clock.
-' BOUND: t_eff_mv == that floor (not the constant FOLD_MIN_MV, which is the floor only at 254.1 MHz and above).
-' CORRECT CASE: fold_min_mv 4, t_eff_mv 4 at 270 MHz; 6 and 6 at 200 MHz. THE UNFIXED VALUE: `nThresh == motor.FOLD_MIN_MV`
-'  compared 6 with 4 at 200 MHz and read FAIL on a correct driver.
+' PRECONDITION: this group's driver is started, so motor.testGetFoldFloorMv() is the floor and filter the fold reads.
+' BOUND: t_eff_mv == that floor. SRC_REV 36 (PL-202, DRIVER_REV 55): on Rev A the fold compares a FILTERED DC link (a
+'  2^shift-frame time constant) against FOLD_MIN_FILT_MV, so the floor is that (3 mV), and one frame's net reading over
+'  it is ordinary noise that folds nothing: the noise premise is tested only on a one-frame fold (shift 0); with a
+'  filter net_max_mv is printed, not judged. CORRECT CASE: Rev A at 270 MHz, fold_min_mv 3, shift 4, t_eff_mv 3, no
+'  fold. THE UNFIXED VALUE (SRC_REV 35): testGetFoldMinMv()'s 4 mV and the one-frame premise -- t_eff_mv 3 read FAIL
+'  and a 5 mV frame read NOISE on a correct REV 55 driver.
 '
-' @local nFoldMin - the fold floor in force at this clock, mV (motor.testGetFoldMinMv())
+' @local nFoldMin - the fold floor in force, mV (motor.testGetFoldFloorMv())
 ' @local pStatus - @drive_u, the driver's status run (testGetAbiAddrs())
 ' @local pParams - @offset_fwd, its parameter run
 ' @local bLimOk - the limits took and read back T0_27_LIMIT_A
@@ -5743,9 +5754,10 @@ PRI t0vLeg(pWheel, nPower) : eOut, nFoldWin | nFoldMin, pStatus, pParams, bLimOk
 ' @local bDriven - every sample read a driven, running state
 ' @local nThresh - the effective threshold at the window's largest duty, floored as SCA floors it, mV (t_eff_mv)
 ' @local netMax - senseMax less nZero, the window's largest net reading, mV
+' @local nShift - the fold's filter shift, 0 for one frame's reading (motor.testGetFoldFloorMv())
 
     _, pStatus, pParams := motor.testGetAbiAddrs()
-    nFoldMin := motor.testGetFoldMinMv()
+    nFoldMin, nShift := motor.testGetFoldFloorMv()
     bLimOk, nLimitK := t0vSetLimits()
     _, _, _, _, _, frameCnt := motor.testGetDriveConstants()
     dutyFloorEst := muldiv64(frameCnt, 4 * motor.DUTY_FLOOR_PCT, 100)
@@ -5764,16 +5776,16 @@ PRI t0vLeg(pWheel, nPower) : eOut, nFoldWin | nFoldMin, pStatus, pParams, bLimOk
     nFoldWin := fold2 - fold1
     eOut := T0V_OUT_NOMEAS
     if bLimOk and (eErr == motor.NO_ERROR) and (dutyPk <= dutyFloorDrv)
-        if netMax >= nFoldMin + 1
+        if (nShift == 0) and (netMax >= nFoldMin + 1)
             eOut := T0V_OUT_NOISE
         elseif ((fold2 - fold1) <= T0_27_FOLD_HI) and bDriven and (nThresh == nFoldMin)
             eOut := T0V_OUT_PASS
         else
             eOut := T0V_OUT_FAIL
-    debug("T0-27,legsense,wheel,", zstr_(pWheel), ",power,", udec_(nPower), ",fold_min_mv,", udec_(nFoldMin), ",sense_max_mv,", sdec_(senseMax), ",sense_mean_mv,", sdec_(senseSum / (nSamples #> 1)), ",zero_mv,", sdec_(nZero), ",net_max_mv,", sdec_(netMax), ",samples,", udec_(nSamples))
+    debug("T0-27,legsense,wheel,", zstr_(pWheel), ",power,", udec_(nPower), ",fold_min_mv,", udec_(nFoldMin), ",shift,", udec_(nShift), ",sense_max_mv,", sdec_(senseMax), ",sense_mean_mv,", sdec_(senseSum / (nSamples #> 1)), ",zero_mv,", sdec_(nZero), ",net_max_mv,", sdec_(netMax), ",samples,", udec_(nSamples))
     debug("T0-27,leg,wheel,", zstr_(pWheel), ",power,", udec_(nPower), ",err,", sdec_(eErr), ",lim_ok,", zstr_(t0vTF(bLimOk)), ",limit_k,", udec_(nLimitK), ",duty_floor_est,", udec_(dutyFloorEst), ",duty_floor_drv,", udec_(dutyFloorDrv), ",duty_pk,", udec_(dutyPk), ",t_eff_mv,", udec_(nThresh), ",fold_ramp,", udec_(fold1 - fold0), ",fold_win,", udec_(fold2 - fold1), ",frames_win,", udec_(T0_27_FRAMES_WIN), ",driven,", zstr_(t0vTF(bDriven)), ",net_max_mv,", sdec_(netMax), ",outcome,", zstr_(t0vOutName(eOut)))
 
-PRI t0vKickLeg(pWheel, nRefFold) : bMeasured, bOk | nFoldMin, pStatus, pParams, bLimOk, nLimitK, dutyFloorDrv, nZero, eErr, accelWas, fold0, fold1, dutyPk, senseMax, senseSum, nSamples, drivenMs, nThreshPk, netMax, netMean, eStateEnd, eReason, rateX100, refX100
+PRI t0vKickLeg(pWheel, nRefFold) : bMeasured, bOk | nFoldMin, nShift, pStatus, pParams, bLimOk, nLimitK, dutyFloorDrv, nZero, eErr, accelWas, fold0, fold1, dutyPk, senseMax, senseSum, nSamples, drivenMs, nThreshPk, netMax, netMean, eStateEnd, eReason, rateX100, refX100
 ' The positive control, R22-T0-REVA-FOLDPOS (the section's CON), HANDS-OFF (SRC_REV 30): from rest, at the 2 A limit,
 ' the speed-up rate raised to the driver's highest (ACCEL_MAX_MM_S2) and the wheel commanded to T0_27_POWER_KICK. The
 ' acceleration's current loads the DC link, so the fold must act; the window runs from the command until the bridge
@@ -5781,18 +5793,24 @@ PRI t0vKickLeg(pWheel, nRefFold) : bMeasured, bOk | nFoldMin, pStatus, pParams, 
 ' Prints T0-27,kicksense and T0-27,kick.
 '
 ' @param pWheel - the group's name, for the record
-' @param nRefFold - the larger unloaded fold count of this group's two legs, over T0_27_WIN_MS: the noise reference
+' @param nRefFold - the larger unloaded fold count of this group's measured legs, over T0_27_WIN_MS: the noise
+'                   reference; -1 when no leg was measured (SRC_REV 36: 0 is a reference, a filtered fold's expected one)
 ' @returns bMeasured - T/F where T means the limits took, the rate and the drive were taken, a reference was measured,
-'                       and the speed-up loaded the link (mean net reading T0_27_KICK_MEAN_MV or more while driven)
-' @returns bOk - T/F where T means the fold's rate while driven was at least T0_27_POS_RATE_X100 / 100 times the reference
-'                 rate, on net readings reaching the running fold floor + 1
+'                       and the speed-up loaded the link (mean net reading T0_27_KICK_MEAN_MV or more while driven; on a
+'                       filtered fold, also above the effective threshold at the window's largest duty)
+' @returns bOk - T/F where T means the fold acted while driven -- at least once -- at a rate of at least
+'                 T0_27_POS_RATE_X100 / 100 times the reference rate, on net readings reaching the fold floor + 1
 '
-' PRECONDITION: this group's driver is started, so motor.testGetFoldMinMv() is the floor init() derived for the running clock.
-' BOUND: the largest net reading is at least that floor + 1 (the least a fold acts on).
-' CORRECT CASE: 5 at 270 MHz (fold_min_mv 4), 7 at 200 MHz (6). THE UNFIXED VALUE: the constant 5 -- at 200 MHz a net 5 or 6
-'  mV reading is under the floor, so a rate of "folds on noise" was read as folds on a measurement.
+' PRECONDITION: this group's driver is started, so motor.testGetFoldFloorMv() is the floor and filter the fold reads.
+' BOUND: the largest net reading is at least that floor + 1 (the least a fold acts on), and at least one fold.
+' CORRECT CASE: Rev A at 270 MHz (DRIVER_REV 55, fold_min_mv 3, shift 4): the unloaded legs fold nothing (reference 0),
+'  and the speed-up, its mean net reading over the threshold, folds. THE UNFIXED VALUE (SRC_REV 35, PL-202): a reference
+'  of 0 read NOMEAS (the legs folded on noise until REV 55, so 0 was taken as no reference), and "at least 2 x 0" passed
+'  a kick that never folded. A filtered fold acts on the mean, so the kick is MEASURED only when its mean net reading is
+'  over the threshold: under it, no fold is owed.
 '
-' @local nFoldMin - the fold floor in force at this clock, mV (motor.testGetFoldMinMv())
+' @local nFoldMin - the fold floor in force, mV (motor.testGetFoldFloorMv())
+' @local nShift - the fold's filter shift, 0 for one frame's reading
 ' @local pStatus - @drive_u, the driver's status run (testGetAbiAddrs())
 ' @local pParams - @offset_fwd, its parameter run
 ' @local bLimOk - the limits took and read back T0_27_LIMIT_A
@@ -5817,7 +5835,7 @@ PRI t0vKickLeg(pWheel, nRefFold) : bMeasured, bOk | nFoldMin, pStatus, pParams, 
 ' @local refX100 - the reference's folds per second, x100
 
     _, pStatus, pParams := motor.testGetAbiAddrs()
-    nFoldMin := motor.testGetFoldMinMv()
+    nFoldMin, nShift := motor.testGetFoldFloorMv()
     bLimOk, nLimitK := t0vSetLimits()
     dutyFloorDrv := long[pParams][T0R_PR_DUTY_FLOOR]
     nZero := long[pParams][motor.DRVR_PARAMS_SENSE_ZERO_IDX]
@@ -5836,11 +5854,13 @@ PRI t0vKickLeg(pWheel, nRefFold) : bMeasured, bOk | nFoldMin, pStatus, pParams, 
     nThreshPk := ((dutyPk #> dutyFloorDrv) * nLimitK) / T0_27_K_ONE
     netMax := senseMax - nZero
     netMean := (senseSum / (nSamples #> 1)) - nZero
-    refX100 := (nRefFold * T0_27_X100 * T0R_MS_PER_S) / T0_27_WIN_MS
+    refX100 := ((nRefFold #> 0) * T0_27_X100 * T0R_MS_PER_S) / T0_27_WIN_MS
     rateX100 := ((fold1 - fold0) * T0_27_X100 * T0R_MS_PER_S) / (drivenMs #> 1)
-    bMeasured := bLimOk and (eErr == motor.NO_ERROR) and (refX100 > 0) and (netMean >= T0_27_KICK_MEAN_MV)
-    bOk := (rateX100 >= (refX100 * T0_27_POS_RATE_X100) / T0_27_X100) and (netMax >= nFoldMin + 1)
-    debug("T0-27,kicksense,wheel,", zstr_(pWheel), ",fold_min_mv,", udec_(nFoldMin), ",sense_max_mv,", sdec_(senseMax), ",zero_mv,", sdec_(nZero), ",net_max_mv,", sdec_(netMax), ",net_mean_mv,", sdec_(netMean), ",samples,", udec_(nSamples), ",driven_ms,", udec_(drivenMs), ",state_end,", udec_(eStateEnd), ",stop_reason,", sdec_(eReason))
+    bMeasured := bLimOk and (eErr == motor.NO_ERROR) and (nRefFold >= 0) and (netMean >= T0_27_KICK_MEAN_MV)
+    if nShift > 0                                                               ' a filtered fold acts on the mean
+        bMeasured &= (netMean > nThreshPk)
+    bOk := (fold1 - fold0 > 0) and (rateX100 >= (refX100 * T0_27_POS_RATE_X100) / T0_27_X100) and (netMax >= nFoldMin + 1)
+    debug("T0-27,kicksense,wheel,", zstr_(pWheel), ",fold_min_mv,", udec_(nFoldMin), ",shift,", udec_(nShift), ",sense_max_mv,", sdec_(senseMax), ",zero_mv,", sdec_(nZero), ",net_max_mv,", sdec_(netMax), ",net_mean_mv,", sdec_(netMean), ",samples,", udec_(nSamples), ",driven_ms,", udec_(drivenMs), ",state_end,", udec_(eStateEnd), ",stop_reason,", sdec_(eReason))
     debug("T0-27,kick,wheel,", zstr_(pWheel), ",power,", udec_(T0_27_POWER_KICK), ",accel,", udec_(motor.ACCEL_MAX_MM_S2), ",err,", sdec_(eErr), ",lim_ok,", zstr_(t0vTF(bLimOk)), ",limit_k,", udec_(nLimitK), ",duty_floor_drv,", udec_(dutyFloorDrv), ",duty_pk,", udec_(dutyPk), ",t_eff_pk_mv,", udec_(nThreshPk), ",fold_win,", udec_(fold1 - fold0), ",rate_x100,", udec_(rateX100), ",ref_x100,", udec_(refX100), ",measured,", zstr_(t0vTF(bMeasured)), ",ok,", zstr_(t0vTF(bOk)))
 
 PRI t0vKickWindow(pStatus, winMs) : dutyPk, senseMax, senseSum, nSamples, drivenMs | startMs, nowMs, lastMs, eState, bDrivenNow, bSeenDriven
