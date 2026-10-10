@@ -44,7 +44,8 @@ archive at the sprint's closeout.
 
 **Certified by the Doco (Rev A) closeout (7):** PL-170 and PL-210 (the hand-load rows, with a grip), PL-199 (a
 `clk-300` / `clk-350` rest-zero probe, then the desk), PL-212 and PL-216 (the range and L-mininc rows at all six
-supplies), PL-218 (the stop rows at 7.4 and 11.1 V), PL-219 (the misdial pass in the qualify rows).
+supplies), PL-218 (the stop rows at 7.4 and 11.1 V), PL-219 (the misdial pass in the qualify rows; a desk root cause of
+unit 2's +40 per mille at 24 V comes first, the supply ruled out by Stephen 2026-10-10).
 
 **Certified by the Rev B closeout (7):** PL-23 (`t0 clk-floor`), PL-111, PL-148, PL-154 and PL-157 (the serial pairs,
 STEPHEN 2026-10-03 *"a lightweight certify of serial drive"*), PL-164 (the clock-floor rows), PL-176 (`adopt-wheel`).
@@ -52,8 +53,10 @@ STEPHEN 2026-10-03 *"a lightweight certify of serial drive"*), PL-164 (the clock
 **Watches the closeouts carry at no load of their own (4):** PL-43 and PL-126 (no log stops mid-run), PL-120 (no start
 check refuses the right board), PL-136 (certifies itself on a wheel's first PREFLT failure).
 
-**The 6.1.0 floor watches (6), whose row is Stephen's call:** PL-181, PL-182, PL-184, PL-190, PL-191, PL-192. Each is
-read only by the floor tiers (`floor-auto`, `floor-grab`), which the Rev B sheet does not carry.
+**The 6.1.0 floor watches, certified by the Rev B closeout's floor row (6):** PL-181, PL-182, PL-184, PL-190, PL-191,
+PL-192. Each is read only by the floor tiers (`floor-auto`, `floor-grab`); STEPHEN 2026-10-10, *"Q1 B"*, *"(only because
+we are doing a revB wheels up so we are already at the platform)"*: the Rev B sheet carries those two tiers, last, after
+the wheels-up rows.
 
 **Hardware, needing an act at the bench (1):** PL-60 (a DMM reading across each board's supply terminals), decided with
 the Rev B sheet («#3708»).
@@ -1576,6 +1579,9 @@ the driver that ships.
 
 ### PL-181 -- under the platform's load the lag peaks reach LAG_SOFT in calm running (design risk R2)
 
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT's floor row** (`floor-auto`, `floor-grab`;
+> STEPHEN 2026-10-10 *"Q1 B"*): read under load as the watch below says.
+
 > **Status (2026-10-02): WATCH, 6.1.0** (evaluation §3.1, F-4 and F-8). No speed is lost; the bound or D-2 is not touched
 > until the model says whether the boost firing in running matters.
 
@@ -1586,6 +1592,9 @@ means read 43-46 at slow against the wheels-up 47-49 band, as on 2026-09-30 (unc
 model's slow / medium legs at the floor's inertia, with and without D-2.
 
 ### PL-182 -- LIMGIVE's sampler scores a hold during the spin-up as the field giving way
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT's floor row** (STEPHEN 2026-10-10 *"Q1 B"*):
+> `floor-auto` emits every sample of the slow leg (the SRC_REV 82 correction's first run).
 
 > **Status (2026-10-03, closeout): CORRECTED, `test_bench_dual` SRC_REV 82** — `traceWalk()` now caps at
 > `TRACE_EMIT_MAX #> trEmitMax`, so the slow leg's trace emits every sample on the next floor-auto run. The held passes
@@ -1609,6 +1618,9 @@ next visit traces one slow leg so a breakaway hold is told from a hold at speed.
 
 ### PL-184 -- at the quarter, the lead schedule draws more current than the fixed pair turning one way
 
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT's floor row** (STEPHEN 2026-10-10 *"Q1 B"*):
+> the quarter pairs' current in both directions, as information.
+
 > **Status (2026-10-02): OPEN, information, not this fix** (evaluation §3.1, F-7). The timing (PL-105's area), which
 > D-1..D-5 do not touch.
 
@@ -1619,6 +1631,8 @@ pairs, both directions, before any claim about the schedule's saving at the quar
 
 ### PL-190 -- SRVKEEP's fixed reference reads a day's spread as a regression
 
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT's floor row** (STEPHEN 2026-10-10 *"Q1 B"*).
+
 > **Status (2026-10-03): WATCH, harness** (second 6.1.0 visit §2.1, G-5).
 
 **MEASURED 2026-10-02:** three re-visited rung windows read net current 5.6-7.7 % over the 2026-09-27 DRIVER_REV 46
@@ -1628,6 +1642,8 @@ same-session control, or a band derived from repeat runs of one driver.
 
 ### PL-191 -- a speed raised while a wheel is still slowing dips before it climbs
 
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT's floor row** (STEPHEN 2026-10-10 *"Q1 B"*).
+
 > **Status (2026-10-03): WATCH, the ramp generator (PL-160's)**; Known Issues evidence (second 6.1.0 visit §3.4, G-9).
 
 **MEASURED 2026-10-02** (`debug_261002-143653.log` 161.1-161.5 s): the stick went 0 → 5 → 35 → 45 while LEFT was slowing
@@ -1635,6 +1651,9 @@ from 56.6 ×10⁶; the jerk-limited generator unwound the deceleration first, th
 target) for ~300 ms, the wheel stood, and the steering object scaled both wheels (`EV_PATH_LIMIT` 184 ‰). Twice in the drive.
 
 ### PL-192 -- LDHUNT fails a single clean limiter engagement by its own definition
+
+> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT's floor row** (STEPHEN 2026-10-10 *"Q1 B"*):
+> `floor-grab` reads `flips,0` on a single engagement (the SRC_REV 82 correction's first run).
 
 > **Status (2026-10-03, closeout): CORRECTED, `test_bench_dual` SRC_REV 82** — `evDrain()` keeps each wheel's first
 > in-window engage that found the limiter released apart as its onset (`evdPathOn`); `loadEngages()` counts it toward the
@@ -2185,9 +2204,15 @@ A stop by rotation promises distance and a stop by time promises time; the fix k
 > 1,150 and 1,400 rpm (the same at every row) at ONE pair, 304 / 48 (the lead table's flat-region pair), the schedule put
 > back after; `KE_FITTED_MV_PER_KRPM` 3,630 carries the pair's own factor (the timing scans' points at 304 / 48 read -28
 > / -29 per mille on the sheet's Ke on both units). Re-fit from the logs: correct supplies -22 .. +14, an adjacent
-> misdial 62-83 out (+-30). About 62 s a qualify row. One exception: D4's 24 V row (unit 2) re-fits to +40, either a
-> supply ~4 % over its dial or a unit-2 effect at 24 V, which the logs cannot separate (put to Stephen 2026-10-10).
+> misdial 62-83 out (+-30). About 62 s a qualify row. One exception: D4's 24 V row (unit 2) re-fits to +40.
 > B1-MISDIAL2 is new (the pair and the fit's span; B1-MISDIAL is at its 280-byte bound).
+>
+> **2026-10-10, the supply ruled out (STEPHEN: *"i have to carefully set the power supply to be correct. i dial in the
+> values so they are less that .1 off of the target value"*):** 0.1 V is 4 per mille at 24 V, so the +40 is not the
+> supply; unit 2's phase voltage at 24 V sits 3.4-4.1 % under 14.8 V's at the same speeds and lead. **OPEN, a desk
+> root cause owed before the Doco closeout's 24 V qualify row** (in «#3708»'s body): from D4's 24 V logs, what moves
+> unit 2's line at 24 V (the lead model's terms at 24 V, the duty-to-volts scale at that supply, the unit's own Ke);
+> the tolerance widens only if the cause is physics both units share, never to fit the reading.
 
 > **Status (2026-10-08): OPEN, a harness defect (MEASURED, D4 rows 1, 3 and 6).** Mine. Subsumes PL-211.
 
