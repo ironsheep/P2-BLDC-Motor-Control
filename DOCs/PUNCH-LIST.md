@@ -44,8 +44,8 @@ archive at the sprint's closeout.
 
 **Certified by the Doco (Rev A) closeout (7):** PL-170 and PL-210 (the hand-load rows, with a grip), PL-199 (a
 `clk-300` / `clk-350` rest-zero probe, then the desk), PL-212 and PL-216 (the range and L-mininc rows at all six
-supplies), PL-218 (the stop rows at 7.4 and 11.1 V), PL-219 (the misdial pass in the qualify rows; a desk root cause of
-unit 2's +40 per mille at 24 V comes first, the supply ruled out by Stephen 2026-10-10).
+supplies), PL-218 (the stop rows at 7.4 and 11.1 V), PL-219 (the misdial pass in the qualify rows, run on a cold motor:
+unit 2's +40 per mille at 24 V was root-caused at the desk 2026-10-10 to a hot motor, the supply ruled out by Stephen).
 
 **Certified by the Rev B closeout (7):** PL-23 (`t0 clk-floor`), PL-111, PL-148, PL-154 and PL-157 (the serial pairs,
 STEPHEN 2026-10-03 *"a lightweight certify of serial drive"*), PL-164 (the clock-floor rows), PL-176 (`adopt-wheel`).
@@ -53,13 +53,18 @@ STEPHEN 2026-10-03 *"a lightweight certify of serial drive"*), PL-164 (the clock
 **Watches the closeouts carry at no load of their own (4):** PL-43 and PL-126 (no log stops mid-run), PL-120 (no start
 check refuses the right board), PL-136 (certifies itself on a wheel's first PREFLT failure).
 
-**The 6.1.0 floor watches, certified by the Rev B closeout's floor row (6):** PL-181, PL-182, PL-184, PL-190, PL-191,
-PL-192. Each is read only by the floor tiers (`floor-auto`, `floor-grab`); STEPHEN 2026-10-10, *"Q1 B"*, *"(only because
-we are doing a revB wheels up so we are already at the platform)"*: the Rev B sheet carries those two tiers, last, after
-the wheels-up rows.
+**The 6.1.0 floor watches, certified by the Rev B closeout's floor row (4):** PL-181, PL-182, PL-184, PL-192, each read
+by a floor tier (`floor-auto`, `floor-grab`); STEPHEN 2026-10-10, *"Q1 B"*, *"(only because we are doing a revB wheels up
+so we are already at the platform)"*: the Rev B sheet carries those two tiers, last, after the wheels-up rows.
+**Corrected 2026-10-10 («#3708», building the sheet):** this group listed six, and said each was read only by the floor
+tiers; two were not. **PL-190** (SRVKEEP) is a part-A ladder cell, read wheels-up by the Rev B sheet's row 1 (`dual-a`).
+**PL-191** was seen in an RC drive (`floor-rc`), which neither floor tier is. The ramp generator's path for a raised
+speed is unchanged since (no commit since DRIVER_REV 48 touches it), so a run would re-measure it; it is Known Issue
+evidence for Stephen's ruling in «#3690», not a closeout load. Stephen's floor-row ruling stands on its other four.
 
-**Hardware, needing an act at the bench (1):** PL-60 (a DMM reading across each board's supply terminals), decided with
-the Rev B sheet («#3708»).
+**Hardware, needing an act at the bench (1):** PL-60 (a DMM reading across each board's supply terminals). **Not on the
+Rev B sheet** («#3708»): it is ancillary under STEPHEN 2026-09-26 (*only work that makes a 6.0 feature operational is
+chased*), and it is a meter transcription, which a run sheet does not ask for again (overlay P1). It stays open.
 
 **Held by Stephen's rulings (14):**
 - **Ships as a Known Issue:** PL-118 (phase-short braking is not current-limited; ruling 1 A); PL-193 (the pack voltage
@@ -1528,7 +1533,9 @@ the configuration names. Certification needs the DocoEng motors on the bench.
 
 > **Status (2026-10-10, burn-down «#3707»): BUILT** (`util_adopt_motor` TOOL_REV 5; STEPHEN 2026-10-03 *"let's do B
 > please"*); **CERTIFIED BY THE REV B CLOSEOUT** (`adopt-wheel`: `MA-END stopped,NONE`, Z and the ceiling found). Whether
-> the Doco closeout also carries a `doco-adopt-<voltage>` row is decided with its sheet («#3708»).
+> the Doco closeout also carries a `doco-adopt-<voltage>` row is decided with its sheet («#3708»). **Decided 2026-10-10:
+> it does, `doco-adopt-v24p0` in the D5 sheet's row 3** — TOOL_REV 5's climb to 6,720 rpm is new since the tool last ran
+> on the Doco (TOOL_REV 4), and only the 24 V row reaches it.
 
 > **Status (2026-10-01):** DEFERRED; moved here from task «#3592» at 6.1.0 start. Goes with the DocoEng effort (PL-175,
 > PL-27, PL-71). STEPHEN 2026-09-21, setting the phasing: *"we could just build this as our standard instrument today and
@@ -1631,6 +1638,9 @@ pairs, both directions, before any claim about the schedule's saving at the quar
 
 ### PL-190 -- SRVKEEP's fixed reference reads a day's spread as a regression
 
+> **Status (2026-10-10, «#3708»): READ BY THE REV B CLOSEOUT's row 1** (`dual-a`, wheels up; SRVKEEP is a part-A ladder
+> cell, not a floor one as the burn-down line below said). The sheet names its known limit beside the cell.
+
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT's floor row** (STEPHEN 2026-10-10 *"Q1 B"*).
 
 > **Status (2026-10-03): WATCH, harness** (second 6.1.0 visit §2.1, G-5).
@@ -1642,7 +1652,12 @@ same-session control, or a band derived from repeat runs of one driver.
 
 ### PL-191 -- a speed raised while a wheel is still slowing dips before it climbs
 
-> **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT's floor row** (STEPHEN 2026-10-10 *"Q1 B"*).
+> **Status (2026-10-10, «#3708»): NOT A CLOSEOUT LOAD; KNOWN ISSUE EVIDENCE FOR «#3690».** It was seen in an RC drive
+> (`floor-rc`), and neither floor tier raises a speed while a wheel is slowing, so the floor row cannot read it. No commit
+> since DRIVER_REV 48 touches the ramp generator's path for it, so a run would re-measure an unchanged behaviour (overlay
+> P10). Whether it ships as a Known Issue is Stephen's (P5).
+
+> **Status (2026-10-10, burn-down «#3707»), superseded above: CERTIFIED BY THE REV B CLOSEOUT's floor row** (STEPHEN 2026-10-10 *"Q1 B"*).
 
 > **Status (2026-10-03): WATCH, the ramp generator (PL-160's)**; Known Issues evidence (second 6.1.0 visit §3.4, G-9).
 
@@ -2207,6 +2222,27 @@ A stop by rotation promises distance and a stop by time promises time; the fix k
 > misdial 62-83 out (+-30). About 62 s a qualify row. One exception: D4's 24 V row (unit 2) re-fits to +40.
 > B1-MISDIAL2 is new (the pair and the fit's span; B1-MISDIAL is at its 280-byte bound).
 >
+> **2026-10-10 (later, «#3708» at the desk): ROOT CAUSE — the motor was hot (DERIVED from MEASURED rows; the tolerance
+> stays +-30).** D4's 24 V qualify row (`debug_261008-152558`) is the only 24 V row on either unit that ran straight after
+> range climbs: 14.8 V (14:19), 18.5 V (14:48) and 22.2 V (15:07), dc up to 1,988 mA, about 45 minutes at 20-44 W into
+> an unloaded motor. Unit 1's 24 V rows (D1b, D2) and unit 2's 7.4 and 14.8 V rows ran with no range climb before them
+> (no `B1-RANGE` in D1b or D2). What the row shows is a uniform loss of back-EMF per rpm, which is what a hot magnet does:
+> - **The POWER rows at identical commands** (same `lib_incr`, so the same speed and the same scheduled lead) need
+>   duty x supply 3.6-4.5 % lower at 24 V than at 14.8 V (`141030`): POS 25/50/75 -4.0 / -4.4 / -3.6 %, NEG -4.1 / -4.5 /
+>   -4.4 %, over 1,360-4,190 rpm, both directions.
+> - **The ladder rungs** at 700 / 1,400 / 2,100 rpm read -3.4 .. -4.1 %, and the model-corrected Vph / E at <= 1,450 rpm
+>   is 0.989 against 1.026 at 14.8 V and 1.046 at 7.4 V on the same unit. Unit 1 at 24 V reads 1.016 (D1b) and 1.027 (D2).
+> - **Every rival needs the opposite sign or a speed-dependent deficit.** Supply sag under load, the dead gap and a low
+>   supply all make the motor need MORE duty; the deficit is LESS. A lead-model error would differ between rungs whose
+>   leads differ (53.6-64.2 degrees); the deficit does not. The IR term is the same volts at both supplies for the same
+>   speed. A 4 % fall in Ke is what 20-35 K of magnet heating gives (ferrite about -0.2 %/K, NdFeB about -0.12 %/K).
+>
+> **Disposition:** the check's premise is that the motor's Ke is the one `KE_FITTED_MV_PER_KRPM` was fitted at (cold
+> scans). That premise is made to hold by the sheet, not by widening the band: widening to cover +40 would let a 24 -> 22.2 V
+> misdial (-52 .. -80 cold) pass. The Doco closeout sheet runs every qualify row before any range climb or hand-load row,
+> and states why. A hot motor needs less duty, so the driver's duty reserve and ceilings only gain when it is hot: no
+> driver change.
+
 > **2026-10-10, the supply ruled out (STEPHEN: *"i have to carefully set the power supply to be correct. i dial in the
 > values so they are less that .1 off of the target value"*):** 0.1 V is 4 per mille at 24 V, so the +40 is not the
 > supply; unit 2's phase voltage at 24 V sits 3.4-4.1 % under 14.8 V's at the same speeds and lead. **OPEN, a desk
