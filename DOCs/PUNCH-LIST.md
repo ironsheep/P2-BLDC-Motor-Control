@@ -1197,6 +1197,12 @@ every lifetime of every tier. One clean pass after a reseat is one observation, 
 
 ### PL-126 -- the P2's output stopped mid-record 2 s into right trial 19, and the wire then carried lone zero bytes
 
+> **Status (2026-10-12, D6 evaluation): RECURRED ONCE, still a watch.** `debug_261012-133443.log` (24 V ramp, Rev A,
+> the Doco bench, a different rig from 2026-09-24's): 5.4 s into the POS climb the stream turned binary at 13:35:21.2
+> and stopped; the next two downloads found no P2 ("No Propeller v2 device found"); the third ran, and the rerun
+> completed. A reset, a supply loss or a USB drop: not separable. The next sheet asks in advance for the power and USB
+> history around one (dual-agent-handoff overlay O5).
+>
 > **Status (2026-10-10, burn-down «#3707»): A WATCH ON BOTH CLOSEOUTS** -- every log runs to its end record.
 
 > **6.0 status (2026-09-26 audit):** ANCILLARY — not chased for 6.0 (Stephen, 2026-09-26: only work that makes a 6.0 feature operational is chased) (bench watch, one instance)
@@ -1457,6 +1463,10 @@ current, so nothing faults, but the robot accelerates more slowly than the rate 
 the driver caps each rate at what the current limit can deliver, validated on the floor at known masses.
 
 ### PL-170 -- on Rev A the fold-back's noise margin is sized for ±3 mV, and the board reads 7
+> **Status (2026-10-12, D6 evaluation): CLOSED, CERTIFIED** -- every hand-load step latched 999-1,054 ms (band
+> 988-1,168) and held its limit, at 11.1 V (4 A, 2 A, default) and 24 V (4 A, 2 A) (`analyses/bench/2026-10-12/
+> D6-EVALUATION.md`, `debug_261012-132446.log`, `-132655.log`).
+>
 > **Status (2026-10-12, D5 evaluation): HALF CERTIFIED.** 11.1 V: the 4 A and 2 A steps latched at 1,138 and 1,017 ms,
 > the limit held (PASS). 24 V: the 4 A step never latched (PL-223, a driver fix at DRIVER_REV 61) and the 2 A step's
 > reading was a harness reference error (PL-223). Both hand-load rows go on the D6 confirm sheet.
@@ -1533,6 +1543,11 @@ DRIVE-OBJECTS for the third form. **Open for Stephen when scheduled, asked befor
 the configuration names. Certification needs the DocoEng motors on the bench.
 
 ### PL-176 -- generalise the offset sweep into a real motor-adoption tool
+> **Status (2026-10-12, D6 evaluation): CLOSED on the Doco, CERTIFIED** -- `MA-END stopped,NONE`, peak 4,740 mA; the
+> 1,120 rpm scans stop before the slip; fast pair 309 / 49 (shipped 304 / 48); the climb clean to its last rung, 6,720 rpm,
+> each way (`debug_261012-134722.log`). The D6 sheet's `ceil_found,TRUE` band was a sheet error: a climb clean to the
+> ladder's end reads FALSE by construction. The Rev B closeout's `adopt-wheel` row still runs TOOL_REV 6 on the 6.5in.
+>
 > **Status (2026-10-12, D5 evaluation): FIXED at the desk, TOOL_REV 6; the D6 confirm sheet runs `doco-adopt-v24p0`.**
 > D5's 24 V run ended `MA-END stopped,OVER_CURRENT` (8,460 mA): a side's bracket keyed on that side's own lowest clean
 > point, a noisy dip at -15 walked the 1,120 rpm NEG minus side to -30, and the rotor slipped there (every TOOL_REV 3 run
@@ -1750,6 +1765,9 @@ in it, and either show it cannot reach 21 or raise the timeout (or the derivatio
 needed to decide it.
 
 ### PL-199 -- at 350 MHz the Rev A current sense at rest is ten times noisier
+> **Status (2026-10-12, D6 evaluation): CLOSED, CERTIFIED** -- the 350 MHz build refused at start both times,
+> `B1-START,cog,-1,err,-1_024`, nothing driven (`debug_261012-132251.log`, `-132350.log`).
+>
 > **Status (2026-10-12, D5 evaluation): FIXED at the desk, DRIVER_REV 61 -- the supported clock tops at 300 MHz.** D5
 > placed it: `clk-300` rests at spread 3 mV (healthy); `clk-350` refused to start both times on `HLT_SENSE_ZERO`. Root
 > cause (desk): the sense is the pin's sigma-delta ADC, clocked by sysclk with no divider in any smart-pin mode; the
@@ -2041,6 +2059,9 @@ close:** the speed-range test's per-step timing sweep and vibration (task 3700) 
 excess; then a desk root cause, and the change priced to Stephen. Until then the 14.8 V top is above its own rule.
 
 ### PL-210 -- the Doco hand load needs something to grip: a bare shaft cannot be held at 2-4 A
+> **Status (2026-10-12, D6 evaluation): CLOSED, CERTIFIED** with PL-170: the grip stood the shaft at every step, both
+> supplies.
+>
 > **Status (2026-10-12, D5 evaluation):** the grip worked at both supplies (the shaft stood at 11.1 and 24 V); the 24 V
 > verdicts are PL-223's. Rides with PL-170 on the D6 sheet.
 
@@ -2138,6 +2159,9 @@ offsets, and it shapes how the Doco's speed-dependent lead can be measured (PL-2
 this board can resolve, decided with PL-212's desk work.
 
 ### PL-216 -- the Doco's shipped speed limits sit well inside its measured range
+> **Status (2026-10-12, D6 evaluation): CLOSED, CERTIFIED** -- 0.10 ticks/s each way at 11.1 and 24 V, every rung
+> steady (`debug_261012-130448.log`, `-133859.log`): D5's misses were a run's spread on an unchanged crawl path.
+>
 > **Status (2026-10-12, D5 evaluation): TOPS CERTIFIED; FLOORS NOT YET.** The slowest steady speed held 0.10 ticks/s at
 > 22.2, 18.5 and 14.8 V and 0.75 at 7.4 V (band 4.00), but 0.15 at 11.1 V and 2.00 / 1.50 at 24 V (band 0.10; D4 held
 > 0.10 at both). Desk: the crawl path is unchanged since D4 (DRIVER_REV 58-60 act only on a stop by rotation, at
@@ -2217,6 +2241,9 @@ draws 2–3× unit 1's current at the same speeds (more drag). **To close:** Ste
 offsets question.
 
 ### PL-218 -- since DRIVER_REV 57 a timed stop ends late by the passes held in its slowdown
+> **Status (2026-10-12, D6 evaluation): CLOSED, CERTIFIED at 7.4 V too** -- STOPROT 21 / 88 / 40 / 70 counts, STOPTIME
+> 10 / 5 / -10 / 0 ms, peak 1,260 mA (`debug_261012-130107.log`).
+>
 > **Status (2026-10-12, D5 evaluation): CERTIFIED at 11.1, 14.8 and 24 V** -- every timed stop ended within -55..+15 ms,
 > every stop by rotation inside -240..+180 counts. **7.4 V not run:** the qualify row ended at its second top stop by
 > rotation (PL-221); the D6 sheet runs `single-stops-v7p4`.
@@ -2311,6 +2338,9 @@ and hall-illegal deltas and the fault event's kind.
 
 ### PL-221 -- at 7.4 V a top stop by rotation ended on the harness's over-current guard, 5 ticks short
 
+> **Status (2026-10-12, D6 evaluation): CLOSED, NOT RECURRED** -- the twelve stops at 7.4 V ran with peak 1,260 mA and
+> no guard trip (`debug_261012-130107.log`). Its mechanism is unexplained, only absent; B1-GUARD stays in the harness.
+>
 > **Status (2026-10-12): OPEN, a finding (MEASURED once, D5 row 1); no driver change licensed.** Mine.
 
 D5's 7.4 V qualify (`DOCs/analyses/bench/2026-10-11/debug_261011-130120.log:126-127, 153`): the second NEG top stop by
@@ -2331,6 +2361,36 @@ breakaway pulse) goes to Stephen with that evidence.
 
 ### PL-222 -- the 24 V full-speed reversal faulted once on the way down
 
+> **Status (2026-10-12, desk root cause): FIXED at the desk, DRIVER_REV 62; `VISIT-D7-RUNSHEET.md` certifies.** The servo
+> model (`DOCs/plans/servo-model/spin2_model.py`, run as D6's L-ramp: the top, 2 s held, then a reversal or a stop)
+> reproduces the fault: 24 V, LAG, 3.1 s into the slow-down (bench 2.4-2.7 s), and finds it at 18.5 V (0.6 s) and
+> 22.2 V (2.2 s) too, never reversed on the bench; 14.8 V peaks at 121, just clear. **Root cause:** at the tops DRIVER_REV
+> 59 lifted, the load angle oscillates (the 40-70 Hz swing PL-212's H-2 damps); H-2 acts only in SPIN_UP / AT_SPEED, so
+> from a slow-down's first pass the swing is undamped and grows -- rotor speed ±15 %, duty 19,000-23,800 -- until a
+> peak crosses 125. A stop and a reversal slow down identically until the zero crossing, which the fault precedes: the
+> bench's 1-in-7 against 3-in-3 is margin. **Rejected:** the trim on the signed lag (tsign=1 and 2), the boost only
+> while running (boost_run=1): both still fault at 22.2 / 24 V; H-2 in the slow-down as built (d_state=3): clean, but
+> its cuts sum to the mean's drift x 16, 8-9 hall ticks short over a stop from the top, outside STOPROT's band.
+> **Fix (DRIVER_REV 62, PASM, fieldSteps +2 longs):** H-2 acts ramping down too, at its gate (201e6, so the end of a stop
+> and a reversal's crossing are untouched), its mean following 2^DAMP_DN_SHIFT (16) x faster there, so the cuts sum to
+> the drift x 1: at most 0.72 tick from any Rev A top. Model: clean at all seven tops, stop and reversal; across J
+> 2-8e-6, Tc / Bv bracket, and Lh 0.8 / 1.06 / 1.3 mH (the lead fit's 1.06; as built faults 5 of 9 there); lag peak
+> 106-121 (as built at 14.8 V: 121). Lh 0.5 mH at 24 V still faults late (5.2 s), a bracket the lead fit excludes.
+> The 6.5in at its 18.5 V pack (top 165e6) is under the gate: unchanged. Harness SRC_REV 22 prints the last second
+> before any fault in the ramp and stops tiers (B1-FTRACE), so D7 answers either way.
+>
+> **Status (2026-10-12, D6 evaluation): OPEN, REPRODUCED -- the slow-down from the 24 V top faults.** Mine; the next
+> step is Stephen's (trace first, or a Known Issue). Both D6 reversals faulted (`debug_261012-132842.log`, `-133712.log`):
+> `fault_kind,LAG`, phase 1, 2,434 / 2,733 ms after the flip, at 760e6 / 731e6 (about 5,000 rpm). One plain stop from
+> the same top faulted at the same point (`-133712.log` B1-RAMPDN POS, 2.47 s in); stops from it: 1 in 7. Every
+> reversal on record from a lower top passed (21 logs, DRIVER_REV 53-61, including 24 V at its old capped top); all
+> three from the 980.5e6 top DRIVER_REV 59 lifted faulted. Desk: in a slow-down only the PL-55 ceiling and the
+> generator's lag gate (ease at LAG_SOFT, by J a pass, ~0.5 s to zero) hold back a rotor running ahead of the field;
+> at 5,000 rpm the field moves ~45 err units a pass, so 80 + 45 reaches the 125 fault line; the trim works on |err|.
+> Three mechanisms predict this record; the second before the fault (lag, duty, ceiling, increment, speed) would
+> separate them and no record carries it. Harness SRC_REV 22: a stop's fault now counts in SMOOTH and B1-RAMPDN
+> names it (D6's stop fault read SMOOTH PASS). D6-EVALUATION.md has the full reading.
+>
 > **Status (2026-10-12): OPEN, a finding (MEASURED once, D5 row 3); no driver change licensed.** Mine.
 
 D5's 24 V qualify (`debug_261011-133743.log:122`): `B1-REVERSE ... ran,2,faulted,TRUE,resyncs,1 ... fol1_pm,0` -- the
@@ -2346,6 +2406,9 @@ lag, which is what a fix needs.
 
 ### PL-223 -- a wheel stood by hand at 24 V and a 4 A limit was never latched blocked
 
+> **Status (2026-10-12, D6 evaluation): CLOSED, CERTIFIED** -- 24 V: 4 A latched at 999 ms, 2 A at 999 ms; 11.1 V
+> unchanged, 1,006-1,054 ms (`debug_261012-132655.log`, `-132446.log`).
+>
 > **Status (2026-10-12): FIXED at the desk, DRIVER_REV 61 and `test_bench_single` SRC_REV 21; the D6 sheet certifies.**
 
 D5's 24 V hand load (`debug_261011-170058.log`): at 4 A, `end,NO_LATCH` with the shaft stood 1,180 ms (53 counts of

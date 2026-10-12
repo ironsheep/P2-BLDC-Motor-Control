@@ -201,6 +201,7 @@ Q.update(doco=0, ke_set=0.0, dv=0.0, lead=-99.0, ramp_x=1.0,
 #              signed lag instead of |err|; gate_bias=N opens only past N counts of mean error
 #   bfix=7     F-7 (rejected): a mirrored take-back below LAG_DIP (lag_dip, 16) at the boost's gain, never past what it added
 #   tsign=1    (rejected as a fix) the trim on the signed lag instead of |err|
+#   tsign=2    «#3688» PL-222 (D6-EVALUATION.md): the signed lag only while ramping down (SPIN_DN / SLOW_TO_CHG)
 #  and the mode «#3706» adds: pl212 (D4's range leg; see the mode's comment); docostep takes ds_n=N (N load-step phases)
 Q.update(rev58=0, fsteps=0, ff_doco=0, dlead=0, lzero=53.5, lead_add=0.0, bfix=0, repay_k=12, gate_k=10, tsign=0,
          lag_dip=16, recon=1, gate_sign=0, gate_leak=0, gate_bias=0, ds_n=1, ds_settle=1.5, ds_spread=0.05, pl_set=0, pl_tmax=0,
@@ -228,11 +229,14 @@ Q.update(rev58=0, fsteps=0, ff_doco=0, dlead=0, lzero=53.5, lead_add=0.0, bfix=0
 #   d_noq=1    (rejected) damp=3: no quickening while the pass's lag_s >= LAG_SOFT (the cut may only slow the field)
 #   ds_tgt=N   docostep: step at N x 10^6 only (0 = the row's 2023 ceiling and 400e6, as before)
 #   hd_fast=1  (rejected, H-3) holdDecay's set-back taken every held pass at |drv_incr| >= 2^d_gate
-#   d_state=1  (rejected) damp=3's cut in AT_SPEED only; d_state=2 (rejected) only while the generator is not ramping
+#   d_state=1  (rejected) damp=3's cut in AT_SPEED only; d_state=2 (rejected) only while the generator is not ramping;
+#              d_state=3 («#3688» PL-222) in SPIN_DN / SLOW_TO_CHG as well as SPIN_UP / AT_SPEED
 #   d_quiet=N  (rejected) damp=3: no cut for N advancing passes after a held one
 #   d_clamp=N  (probe) damp=3: |dev| clamped to N counts
 Q.update(hcont=0, damp=0, d_kp=0.125, d_avg=6, d_lim=1, d_vmin=0.0, d_k=3, d_a=7, d_gate=26, st_n=1, d_noq=0,
          ds_tgt=0.0, h_gate=28, hd_fast=0, d_state=0, d_clamp=0, d_quiet=0, d_fold=1, d_back=1, d_gnum=3)
+Q.update(dnet_t=0.0,   # «#3688» PL-222: the time (s) from which run() sums damp=3's cuts signed (res['th'][k]['dnet'])
+         d_adn=0)      # «#3688» PL-222: damp=3's mean follows 2^d_adn x faster in SPIN_DN / SLOW_TO_CHG (0 = as built)
 DOCO_LEAD_INCR = (105_000_000, 210_000_000, 420_000_000, 650_000_000)    # docoLeadIncrTbl (:5309)
 DOCO_LEAD_TENTHS = (523, 578, 680, 680)                                   # docoLeadTenthsTbl (:5310)
 DOCO_FF_INCR_AT_NOMINAL = 688_000_000                                     # :5273
@@ -369,6 +373,7 @@ class Wheel:
         # «#3706» phase 1b, H-2: the pass's frame-lag sum and count, the signal's slow mean, the correction (counts), and
         #  the corrections' magnitude summed (angle_ units)
         w.lsum = 0; w.lcnt = 0; w.lavg = None; w.dcorr = 0.0; w.dsum = 0
+        w.dnet = 0                             # «#3688»: damp=3's cuts summed SIGNED (angle_ units), from dnet_t on
         w.eedge = 0; w.davg = 0; w.dpos = 0    # damp=3: edge_err, damp_avg, edge_pos (the start image zeroes the first two)
         w.dquiet = 0                           # d_quiet: advancing passes H-2 still waits after a held pass
         w.prevstp = 0.0                        # hcont=2: the previous pass's frm_step (0: it did not advance)
@@ -622,7 +627,12 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                             #  drv_incr - dev << (24 - d_k). err_'s sign is the angle's, so no sign is taken: lag = s err_,
                             #  and the correction against the motion, s x (s dev), is dev
                             dev = w.eedge - (w.davg >> p['d_a'])
-                            w.davg += dev
+                            if p['d_adn'] and w.drv.state in RAMPING_DOWN:
+                                # «#3688» PL-222: ramping down the mean follows 2^d_adn x faster, so the cuts (summed,
+                                #  2^(d_a - d_k - d_adn) x the mean's drift) leave a stop's travel within about a tick
+                                w.davg += dev << p['d_adn']
+                            else:
+                                w.davg += dev
                             if p['d_noq'] and lag_s >= p['lag_soft']:
                                 # d_noq=1 (candidate): no quickening while the pass's lag is LAG_SOFT or more -- the
                                 #  cut may only slow the field then (dev clamped to the slowing side of 0)
@@ -631,6 +641,10 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                                 d_on = w.drv.state == 'AT_SPEED'           # d_state=1: AT_SPEED only
                             elif p['d_state'] == 2:
                                 d_on = w.drv.state in RUNNING and w.drv.a == 0   # d_state=2: the generator not ramping
+                            elif p['d_state'] == 3:
+                                # «#3688» PL-222: also while ramping down -- the load angle's oscillation the damping
+                                #  exists for does not stop at a slow-down, and undamped it grows to the fault there
+                                d_on = w.drv.state in RUNNING + RAMPING_DOWN
                             else:
                                 d_on = w.drv.state in RUNNING
                             if p['d_quiet'] and w.dquiet > 0:
@@ -644,6 +658,8 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                             if d_on and abs(adv) >= p['d_gnum'] << p['d_gate']:   # d_gnum=N: the gate at N x 2^d_gate
                                 adv -= dev << (24 - p['d_k'])
                                 w.dsum += abs(dev) << (24 - p['d_k'])
+                                if t >= p['dnet_t']:
+                                    w.dnet += dev << (24 - p['d_k'])
                                 if not p['d_back'] and (adv < 0) != (w.drv.v < 0):
                                     adv = 0                  # d_back=0: a sign guard, a cut past the whole advance
                                                              #  holds the field this pass. d_back=1 (THE DESIGN): the
@@ -882,8 +898,10 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
                 continue
             # ---- the trim (DRIVER_REV 46), plus the proposed proportional term
             x = abs(w.e) - p['setpoint']
-            if p['tsign']:
-                # «#3706» candidate: the trim on the SIGNED lag (lag_s's form, negative when the rotor leads the field)
+            if p['tsign'] == 1 or (p['tsign'] == 2 and w.drv.state in RAMPING_DOWN):
+                # «#3706» candidate: the trim on the SIGNED lag (lag_s's form, negative when the rotor leads the field).
+                #  «#3688» PL-222: tsign=2, only in SPIN_DN / SLOW_TO_CHG -- |err| has a mirror rest at err = -SETPOINT
+                #  (the rotor leading), which a slow-down falls into; the signed lag has one rest, +SETPOINT
                 x = (-w.e if w.drv.v < 0 else w.e) - p['setpoint']
             w.acc += x * (w.duty >> p['preshift'])
             if p['bfix'] == 6:
@@ -1005,6 +1023,7 @@ def run(p, target, seconds, pairs, win, sample_ms=2.0, trace=None, t0_override=N
     res['g'] = [dict(gap=max(w.g_gap, (t - w.g_last) if w.g_last is not None else 0.0), fwd=w.g_fwd, back=w.g_back,
                      setbacks=w.setbacks, t_end=t, armed=w.lim_sector is not None, folds=w.folds, e=w.e, last_dir=w.g_dir,
                      ring=list(w.ring)) for w in W]      # «#3668» grab: appended; no earlier reader sees it
+    res['th'] = [dict(thf=w.thf, thr=w.thr, dnet=w.dnet / TWO32 * 256) for w in W]   # «#3688»: counts; appended likewise
     if p['obst']:
         blk['t_end'] = t
         blk['wheels'] = [dict(contact=w.contact_t, last_tick=w.last_tick_t, fwd=w.ticks_fwd, back=w.ticks_back,

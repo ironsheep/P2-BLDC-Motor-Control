@@ -1,7 +1,7 @@
 # 6.5″ session — the certification closeout on Rev B (your only instructions)
 
 **Plan:** task «#3708» (the certification closeout), carrying `DOCs/plans/DOCO-AND-CLOCK-SPRINT-PLAN.md` §10 (the 6.5″
-session), §1.4, §8, §9. **Driver:** DRIVER_REV 60. **Pack:** the `dist/bench-<commit>-platform.zip` the hand-back names for
+session), §1.4, §8, §9. **Driver:** DRIVER_REV 62. **Pack:** the `dist/bench-<commit>-platform.zip` the hand-back names for
 the **Rev B platform**; this sheet travels inside it. **The host script** `serial_certify.py` is in your checkout's
 `pythonSrc/` at the same commit.
 
@@ -57,7 +57,10 @@ the set-up). Rows 1–3 are hands off.
   was read.
 - **Heat** on the motors after row 1: wait before row 3 if they are hot.
 
-**If a run goes silent** (nothing new on the terminal for two minutes): close the terminal and go on to the next row.
+**If a run goes silent** (nothing new on the terminal for two minutes) **or the terminal fills with garbage**: before
+you touch anything, note two things — **is the P2 board's power light on**, and **does the pack or supply read any
+current**? Then close the terminal and rerun that command once. Those two answers are the only observations this sheet
+asks for.
 
 **A stop is yours: disconnect the pack** (on the floor: lift the wheels and disconnect the battery). Send back every log in
 `logs/` and every log the host script wrote.
@@ -68,22 +71,22 @@ the set-up). Rows 1–3 are hands off.
 
 | Test | The first lines must read |
 |---|---|
-| the dual and floor runs (rows 1, 2, 5) | `BM-COMMIT,src_rev,87,commit,<the commit in the pack's name>`, and `BM-BUILD` with `drv_rev,60` |
+| the dual and floor runs (rows 1, 2, 5) | `BM-COMMIT,src_rev,87,commit,<the commit in the pack's name>`, and `BM-BUILD` with `drv_rev,62` |
 | Tier 0 (row 2) | `src_rev 36 -- commit <the commit>` in its banner, and its `T0-1,dead_gap` line ending `clkfreq,130000000` |
-| the adoption tool (row 3) | `MA-BANNER` with `tool_rev,5` |
+| the adoption tool (row 3) | `MA-BANNER` with `tool_rev,6` |
 | the serial runs (row 4) | the script's `SER-CLOCK` line naming the clock you gave it |
 
 ## The session, declared
 
 | | |
 |---|---|
-| **Purpose** | **Re-certification** of the 6.5″ on DRIVER_REV 60: its qualification runs and both release demos. **The clock floor** at 130 MHz: the front cog's late count 0 and worst pass under 900 µs with two wheels, the worst request acknowledgement under its bound, the frame budget and dead gap, the current-sense noise against the fold floor, and Tier 0 printing its board flag as a word (`rev_b,TRUE`). **Serial**: `serial_certify.py`'s cells at 270 and 130 MHz, plain and debug builds (a protective stop read and cleared, numbers parsed, the reply latency, the getters), and the receive loop's worst cost. **The adoption tool** against the 6.5″'s shipped hall zero (−4°) and pair. **On the floor**, as information under load: the lag peaks in calm spins, the slow leg's every sample, the quarter-speed current both ways, and the limiter's single engagement |
+| **Purpose** | **Re-certification** of the 6.5″ on DRIVER_REV 62: its qualification runs and both release demos. **The clock floor** at 130 MHz: the front cog's late count 0 and worst pass under 900 µs with two wheels, the worst request acknowledgement under its bound, the frame budget and dead gap, the current-sense noise against the fold floor, and Tier 0 printing its board flag as a word (`rev_b,TRUE`). **Serial**: `serial_certify.py`'s cells at 270 and 130 MHz, plain and debug builds (a protective stop read and cleared, numbers parsed, the reply latency, the getters), and the receive loop's worst cost. **The adoption tool** against the 6.5″'s shipped hall zero (−4°) and pair. **On the floor**, as information under load: the lag peaks in calm spins, the slow leg's every sample, the quarter-speed current both ways, and the limiter's single engagement |
 | **Hardware risk** | Rows 1–4 wheels up; the library's own current limits; the runs' own stops, as at every earlier platform session. The release demos run each wheel at full power for 15 s. Row 5 on the floor under its built-in rules: an armed distance limit on every drive, the square fence, the 10 A abort; `floor-grab` limits current to 4 A |
 | **Who acts** | You: start each row; in row 4, start the host script after each P2 command and close the terminal after it; in row 5, the floor set-up, standing by, and the hold |
 | **Runs that carry state** | None |
 | **Run length** | About 2 hours of runs; about 2½ hours with the adapter and the floor set-up |
 | **Repeatability** | Every run is repeatable and independent; a row, one pair of row 4, or one floor command can be rerun alone |
-| **Variant matrix** | Rev B boards (P16 right, P32 left), the 6.5″ motors, 18.5 V pack, 270 MHz and 130 MHz, plain and debug serial builds, wheels up and (row 5) on the floor, DRIVER_REV 60 |
+| **Variant matrix** | Rev B boards (P16 right, P32 left), the 6.5″ motors, 18.5 V pack, 270 MHz and 130 MHz, plain and debug serial builds, wheels up and (row 5) on the floor, DRIVER_REV 62 |
 
 ## What this session decides
 
@@ -116,3 +119,7 @@ Every cell prints its own verdict in the log.
   (Stephen 2026-10-10, "Q1 B", "only because we are doing a revB wheels up so we are already at the platform"), last,
   with its change of set-up, and the banners move to the current harness revisions. Row 4 no longer asks you to report the
   port before the session.
+- **2026-10-12** — re-cut for DRIVER_REV 62 («#3688»): the banners read `drv_rev,62` and the adoption tool `tool_rev,6`.
+  The runs are unchanged: DRIVER_REV 61's blocked-stop and clock-ceiling changes are covered by rows 1 and 2 as they
+  stand, and DRIVER_REV 62's slow-down damping does not reach the 6.5″ on its 18.5 V pack (its top, 165 × 10⁶, is under
+  the damping's 201 × 10⁶ gate). A run that goes silent asks in advance for two observations (PL-126). One supply.

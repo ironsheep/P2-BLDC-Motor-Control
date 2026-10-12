@@ -7222,7 +7222,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 61      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 62      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7588,6 +7588,11 @@ CON { driver internal Constants }
                                             '     4 A). PL-199: start() refuses a clock over MAX_CLKFREQ_HZ (300 MHz),
                                             '     ERR_CLOCK_TOO_FAST (-1_024): the Rev A sense at rest is out of band at
                                             '     350. Spin2 only; no PASM or ABI change
+                                            ' 62: task 3688, D6's finding PL-222: fieldSteps' damping (H-2) acts
+                                            '     ramping down too, its mean 2^DAMP_DN_SHIFT x faster there. The
+                                            '     load angle's swing at the lifted Rev A tops grew undamped through a
+                                            '     slow-down to the 125 fault (24 V: reversals 3 of 3, stops 1 of 7).
+                                            '     PASM only, no ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring
@@ -7637,7 +7642,13 @@ CON { driver internal Constants }
                                             '  a 2.4 Hz corner, far under the 40-70 Hz hunt it damps; the field gives
                                             '  2^(7-3) = 16 counts per count of a load's lag rise while the mean follows,
                                             '  what carries a rated step at the Doco's top: at 2^6 it faulted 9 of 96)
-    DAMP_GATE_SHIFT             = 26        ' PL-212: fieldSteps reads |drv_incr| in units of 2^26 (67e6) for its two gates
+    DAMP_DN_SHIFT               = 4         ' PL-222 (DRIVER_REV 62): ramping down (SPIN_DN / SLOW_TO_CHG) the mean follows
+                                            '  2^4 x faster, an EMA over 2^(7-4) = 8 passes (4 ms, still under a third of
+                                            '  the ~30 ms swing it damps there). Why: the cuts sum to 2^(7-3-4) = 1 count
+                                            '  per count the mean drifts, not 16, and a slow-down's lag drifts ~25 counts,
+                                            '  so a stop's field travel moves under a hall tick (the model: at most 0.72
+                                            '  tick from any Rev A top, 9 at 2^0); a stop by rotation keeps its count
+    DAMP_GATE_SHIFT            = 26        ' PL-212: fieldSteps reads |drv_incr| in units of 2^26 (67e6) for its two gates
     DAMP_GATE_UNITS             = 3         ' PL-212 H-2: the damping acts at |drv_incr| >= 3 x 2^26 (201e6), one hall edge
                                             '  per 3.6 passes or more, so the edge read is at most ~1.9 ms old, under a
                                             '  seventh of the fastest hunt's period. Below it no in-range speed hunts in the
@@ -8824,6 +8835,15 @@ fieldSteps                                              ' DRIVER_REV 54 (task 36
                                                         '  the field back toward the rotor, as D-5's set-back does, and like
                                                         '  it (I-7) leaves fwdrev on drv_incr's side (prior_angle, below).
                                                         '  The mean is zero-sum over time, so the speed is the command's.
+                                                        ' DRIVER_REV 62 (PL-222): the damping acts ramping down too (SPIN_DN /
+                                                        '  SLOW_TO_CHG), at the same gate. At the Rev A tops DRIVER_REV 59 lifted
+                                                        '  (756e6 .. 980.5e6) the load angle's swing, undamped from the first
+                                                        '  pass of a slow-down, grew to the 125 fault 0.6-3 s in: D5 / D6's 24 V
+                                                        '  reversal and stop faults, and the model's 18.5 and 22.2 V. Ramping down
+                                                        '  the mean follows 2^DAMP_DN_SHIFT x faster, so the cuts, which sum to
+                                                        '  the mean's drift x 2^(DAMP_AVG_SHIFT - DAMP_GAIN_SHIFT - DAMP_DN_SHIFT),
+                                                        '  leave a stop's field travel within a hall tick of its plan. H-1b's
+                                                        '  release stays SPIN_UP / AT_SPEED only, as built.
                                                         ' PL-212 H-1b: the first advancing pass after one on which the field
                                                         '  stood still (held, at rest, re-seeded: prev_step = 0), at
                                                         '  |drv_incr| >= RELEASE_GATE_UNITS << DAMP_GATE_SHIFT, starts from where
@@ -8835,12 +8855,15 @@ fieldSteps                                              ' DRIVER_REV 54 (task 36
                 mov     tmpY, damp_avg
                 sar     tmpY, #DAMP_AVG_SHIFT           ' the edge err_'s mean (damp_avg is it x 2^DAMP_AVG_SHIFT)
                 subr    tmpY, edge_err                  ' dev = edge_err - mean, -255 .. 255 (SUBR: D = S - D, no flag)
-                add     damp_avg, tmpY                  ' the mean follows: an EMA over 2^DAMP_AVG_SHIFT advancing passes
+                cmp     drv_state_, #DCS_SPIN_DN    wc  ' C: SPIN_UP or AT_SPEED; NC: SPIN_DN or SLOW_TO_CHG (DCS_SPIN_DN is
+                                                        '  4: 2 and 3 are under it, and .justIncr's states are jerkStep's, 2 .. 5)
+                mov     tmpX, tmpY
+    if_nc       shl     tmpX, #DAMP_DN_SHIFT            ' DRIVER_REV 62: ramping down the mean follows 2^DAMP_DN_SHIFT x faster
+                add     damp_avg, tmpX                  ' the mean follows: an EMA over 2^DAMP_AVG_SHIFT advancing passes
+                                                        '  (|dev| << 4 <= 4_080 and damp_avg is under 2^15: no overflow)
+    if_nc       mov     prev_step, #1                   ' ramping down: no H-1b start, as built (MOV writes no flag)
                 abs     tmpX, drv_incr
                 shr     tmpX, #DAMP_GATE_SHIFT          ' |drv_incr| in units of 2^26 (SHR without WZ writes no flag)
-                cmp     drv_state_, #DCS_SPIN_DN    wc  ' C: SPIN_UP or AT_SPEED (DCS_SPIN_DN is 4: 2 and 3 are under it, and
-                                                        '  .justIncr's states are jerkStep's, 2 .. 5)
-    if_nc       mov     tmpX, #0                        ' not running: below both gates
                 cmp     tmpX, #DAMP_GATE_UNITS      wcz ' C: below H-2's gate; Z: exactly at it, so C or Z: below H-1b's
     if_c_or_z   mov     prev_step, #1                   ' no H-1b start, the pass is as built (prev_step is rewritten at the
                                                         '  next pass's start)
@@ -9240,7 +9263,8 @@ held_seen       res 1       ' DRIVER_REV 57 (PL-203): lag_held_ as the last pass
 '  and memory reduction WP7 (C7): jrk_x at pl_t, jrk_lim at pl_u, lag_s at pl_q; calibPeriod at drvrSrtTix
 
 ' $1f8 for reg cogs
-    fit     496  ' 475 USED, 21 FREE, 2026-10-09 at DRIVER_REV 59 (HELD_SEEN at $1DA, so USED $1DB): PL-212's H-2 and H-1b
+    fit     496  ' 477 USED, 19 FREE at DRIVER_REV 62 (PL-222: fieldSteps +2 -- one IF_NC MOV out, a MOV, an IF_NC SHL and an
+                 ' IF_NC MOV in; counted from the edit, the fit passing). 475 USED, 21 FREE, 2026-10-09 at DRIVER_REV 59 (HELD_SEEN at $1DA, so USED $1DB): PL-212's H-2 and H-1b
                  ' (fieldSteps 8 -> 27 longs, .ctlMotor's edge capture +3, drvMotor's prev_step +1, .justIncr's ADD -1:
                  ' +22 on 464), paid for by the memory reduction beside them (each proven identical by tools/pasm_equiv):
                  ' fld_ shares ctrlSrtTix's long (-1), sv_tgt_incr shares sc_v's (-1), curr_stop lives in a dead pin

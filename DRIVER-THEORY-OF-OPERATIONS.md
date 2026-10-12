@@ -321,12 +321,20 @@ commanded speed does nothing to damp it. Undamped, the DocoEng motor hunted from
 2,500 rpm. The servo's fast response turned the hunt into duty no load needed: a second,
 wasteful operating state, and at 24 V a position fault near 4,900 rpm. So from a field speed
 of 201 × 10⁶ a pass (about 1,340 rpm on the DocoEng motor, and just under the 6.5″ motor's
-24 V ceiling), in `DCS_SPIN_UP` and `DCS_AT_SPEED`, each advancing pass compares two lags. One
+24 V ceiling), in every running state, each advancing pass compares two lags. One
 is the rotor's lag at its last hall edge, where its position is exact. The other is that
 lag's 66 ms mean. The pass slows the field by ⅛ count for each count the lag stands above its
 mean, and quickens it likewise below. The term averages to zero, so the speed is the
 command's; it takes out only the oscillation. It stands aside while the current limit is
 holding the field, which then belongs to the limiter.
+
+The damping does not stop when the motor slows. A slow-down from the DocoEng motor's top
+speeds is where the oscillation grows fastest: undamped, it reached the fault test within
+0.6–3 s of a reversal or a stop from 5,000 rpm and above. While `DCS_SPIN_DN` or
+`DCS_SLOW_TO_CHG`, the mean follows sixteen times faster (8 passes, 4 ms). A slow-down's lag
+drifts as the speed falls, and the damping's small corrections would otherwise add up to
+several hall ticks of the field's travel. Following faster keeps that sum under one tick, so a
+stop by rotation still ends on its count.
 
 **The ramp is jerk-limited.** One trajectory generator, `jerkStep` (in
 the LUT), runs every pass the motor is not at rest, whatever the state, and takes every command
@@ -365,7 +373,7 @@ give the budget:
 
 | Memory | Holds | Used |
 |---|---|---|
-| Cog RAM | the frame loop, the drive pass, `fieldSteps` (the field's per-frame steps and its damped advance), the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `loadOverlay`, `planFp`, `relLoad`, the constants and tables, and every register | **475 of 496** |
+| Cog RAM | the frame loop, the drive pass, `fieldSteps` (the field's per-frame steps and its damped advance), the routines both phases share (`wait4adc`, `checkstop`, `initAngleFmHall`, `countIllegal`), `loadOverlay`, `planFp`, `relLoad`, the constants and tables, and every register | **477 of 496** |
 | LUT, start image | `lutCodeStart` $200 … `lutCodeEnd` $298: the start sequence and `driveinit` | 152 (hidden under the run image) |
 | LUT, run image | `runCodeStart` $200 … `runCodeEnd` $3F6: `gettgtincr`, `passEnd`/`feedForward`, `holdDecay`, `holdGate` (with the limit hold's release), `servoBoost`, `jerkStep`, the bridge routines, `faultResponse`, `xStar`, `run`, `planStage` and the planner (`planA` … `rampOut`, `planCorner`) | **502 of 512** |
 | LUT, release image | `relCodeStart` $200 … `relCodeEnd` $222: `driverRelease`, loaded over the run image by `relLoad` only when a release is asked for (it never returns) | 34 |
