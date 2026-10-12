@@ -187,6 +187,7 @@ CON { Public Interface Constants }
     '   ERR_NOT_IMPLEMENTED    - the method is kept so programs compile, but does nothing (calibrate())
     '   ERR_BAD_MOTOR_TABLE    - start: a motor's hall delta table holds a step outside -1..+1; no driver launched
     '   ERR_CLOCK_TOO_SLOW     - start: the system clock is under MIN_CLKFREQ_HZ (130 MHz); nothing claimed, no cog started
+    '   ERR_CLOCK_TOO_FAST     - start: the system clock is over MAX_CLKFREQ_HZ (300 MHz); nothing claimed, no cog started
     '   ERR_PROTECTIVE_STOP   - a protective stop is latched for a cause outside the named ones
     '   ERR_PLATFORM_BLOCKED   - a protective stop is latched: a commanded motor held at its current limit did not move
     NO_ERROR                = 0
@@ -213,6 +214,7 @@ CON { Public Interface Constants }
     ERR_NOT_IMPLEMENTED     = -1_021
     ERR_BAD_MOTOR_TABLE     = -1_022
     ERR_CLOCK_TOO_SLOW      = -1_023
+    ERR_CLOCK_TOO_FAST      = -1_024
     ERR_PROTECTIVE_STOP     = -2_000
     ERR_PLATFORM_BLOCKED    = -2_001
 
@@ -2894,7 +2896,7 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum, bRun
 ' @local dcMa - the DC-link current net of the rest zero, mA, never negative (the reading's floor made good: + 0.5 mV)
 ' @local phaseMa - this pass's phase-current lower bound, mA
 ' @local nowPos - the driver's hall position this pass
-' @local nowLimSum - the driver's duty_capped + foldback_frames this pass (mod 2^32)
+' @local nowLimSum - the driver's duty_capped + foldback_frames + lag_held this pass (mod 2^32)
 ' @local bRun - T/F where T means the driver is in SPIN_UP or AT_SPEED, the states the limit hold acts in
 
     if rSenseForBoard <> VALUE_NOT_SET
@@ -2925,8 +2927,13 @@ PUB bFrontProtect() : bBlocked | dutyEff, dcMa, phaseMa, nowPos, nowLimSum, bRun
     '  limiter does after it). The limiter half counts only in SPIN_UP or AT_SPEED, the states the limit hold acts in:
     '  in SPIN_DN the field is still held at LAG_HOLD (so |err| counts a stall there), and the PL-55 ceiling clamping a
     '  slow-down is not a blocked wheel. A tick, or a pass with neither, restarts the count.
+    ' DRIVER_REV 61 (D5 F5): the lag limiter's own hold is a limiter action too (lag_held). A stood wheel whose fold armed
+    '  the limit hold sits at LAG_LIM with its current just under the fold, so after its last tick no fold may fire and
+    '  |err| (64) never reaches LAG_SOFT: neither half counted, and the drive pushed on with no protective stop (D5, 24 V
+    '  at a 4 A limit: no latch in 1,180 ms, the fold never acting). A held pass needs |err| at LAG_LIM armed or LAG_HOLD
+    '  unarmed; the LAG_HOLD case already counts through LAG_SOFT, and a turning wheel's tick still restarts the count
     nowPos := pos
-    nowLimSum := duty_capped + foldback_frames
+    nowLimSum := duty_capped + foldback_frames + lag_held
     bRun := (drv_state == DCS_SPIN_UP) or (drv_state == DCS_AT_SPEED)
     if (nowPos <> blockedPos) or ((targetIncre & !SYNC_BIT) == 0) or (bRun == FALSE)
         bLimSinceTick := FALSE                                                  ' a tick, no drive, or not running (I-8)
@@ -4344,6 +4351,10 @@ PRI launchDriver(eMotorBasePin, eMotorVoltage, eDetectionMode, bParked) : eError
         '  driven and no cog starts (MIN_CLKFREQ_HZ says why the floor is where it is)
         eError := recordError(ERR_CLOCK_TOO_SLOW)
         debug[user.DBGCH_ERROR]("! ERROR: start refused, the system clock is under the driver's floor ", udec_long(clkfreq), udec_long(MIN_CLKFREQ_HZ))
+    elseif clkfreq > MAX_CLKFREQ_HZ
+        ' PL-199 (DRIVER_REV 61): refused as the floor is, before anything is claimed (MAX_CLKFREQ_HZ says why)
+        eError := recordError(ERR_CLOCK_TOO_FAST)
+        debug[user.DBGCH_ERROR]("! ERROR: start refused, the system clock is over the driver's ceiling ", udec_long(clkfreq), udec_long(MAX_CLKFREQ_HZ))
     else
         eError := setupForStart(eMotorBasePin, eMotorVoltage, eDetectionMode)
     if (eError == NO_ERROR) and (eDetectedBoard == REV_Unknown)
@@ -7176,6 +7187,12 @@ CON { driver internal Constants }
     '  gap 80, the front cog's worst pass 74.4 for responsiveness only). A driver change that grows the worst window
     '  re-derives this
     MIN_CLKFREQ_HZ      = 130_000_000
+    ' PL-199 (DRIVER_REV 61): THE HIGHEST CLOCK start() accepts; over it, ERR_CLOCK_TOO_FAST. The current sense is the pin's
+    '  sigma-delta ADC, clocked by the system clock with no divider in any smart-pin mode. On Rev A it reads its rest zero
+    '  at 3-5 mV spread at 200-300 MHz, but at 350 MHz 35 mV once and out of band (HLT_SENSE_ZERO, start refused) in every
+    '  other run, two sessions (D1b 2026-10-05, D5 2026-10-11). Nothing above 300 MHz has been measured on either board, so
+    '  300 is the highest clock the driver is known to sense current at; a measured clean reading above it moves this
+    MAX_CLKFREQ_HZ      = 300_000_000
     HALL_TICKS_PER_CYCLE = 6        ' hall ticks in one electrical cycle, the driver's 2^32 field angle
     ' DRIVER_REV 50: the duty floor's share of the frame, as a fraction: 100 counts of the 6_136-clock frame (270 MHz) = 1.63 %
     DUTY_MIN_FRAME_NUM   = 100
@@ -7205,7 +7222,7 @@ CON { driver internal Constants }
     ' The driver's identity for bench logs: a harness prints it in its banner, so a log shows WHICH driver
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment. First set 2026-09-22 (task 3594).
-    DRIVER_REV                  = 60      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
+    DRIVER_REV                  = 61      ' 2: R18.4 -- feedforward + trim servo, every command taken, hold decay, dynamic lead
                                             ' 3: the hold decay stops at ramp_min_, so a stall keeps the lag the protective stop needs
                                             ' 4: the lead table filled from Visit 8 (task 3601); the legacy build keeps its fixed pair
                                             ' 5: the feedforward scale is the motor's back-EMF line, not the speed ceiling (task 3603)
@@ -7565,6 +7582,12 @@ CON { driver internal Constants }
                                             '     3-pass bound): 36 passes and the poll, 37 ms for one motor, 31 for the
                                             '     platform. Only a front cog that does not answer is seen later. Spin2
                                             '     only; no PASM or ABI change
+                                            ' 61: task 3688, the Doco closeout D5's findings. F5: bFrontProtect()'s
+                                            '     limiter sum counts lag_held, so a stood wheel held at LAG_LIM with no
+                                            '     fold after its last tick is blocked (it pushed on unlatched at 24 V,
+                                            '     4 A). PL-199: start() refuses a clock over MAX_CLKFREQ_HZ (300 MHz),
+                                            '     ERR_CLOCK_TOO_FAST (-1_024): the Rev A sense at rest is out of band at
+                                            '     350. Spin2 only; no PASM or ABI change
 
     ' The duty ceiling init() derives (LIMITS-RESET-PLAN.md E2; tasks 3604, 3605)
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring

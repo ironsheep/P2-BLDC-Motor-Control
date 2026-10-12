@@ -1457,6 +1457,9 @@ current, so nothing faults, but the robot accelerates more slowly than the rate 
 the driver caps each rate at what the current limit can deliver, validated on the floor at known masses.
 
 ### PL-170 -- on Rev A the fold-back's noise margin is sized for ±3 mV, and the board reads 7
+> **Status (2026-10-12, D5 evaluation): HALF CERTIFIED.** 11.1 V: the 4 A and 2 A steps latched at 1,138 and 1,017 ms,
+> the limit held (PASS). 24 V: the 4 A step never latched (PL-223, a driver fix at DRIVER_REV 61) and the 2 A step's
+> reading was a harness reference error (PL-223). Both hand-load rows go on the D6 confirm sheet.
 
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- the hand-load rows with a grip (PL-210):
 > at a 2 and a 4 A limit the gripped shaft stops (`R23-SGL-BLKSTOP` measured and PASS) and no fold fires while it turns
@@ -1530,6 +1533,12 @@ DRIVE-OBJECTS for the third form. **Open for Stephen when scheduled, asked befor
 the configuration names. Certification needs the DocoEng motors on the bench.
 
 ### PL-176 -- generalise the offset sweep into a real motor-adoption tool
+> **Status (2026-10-12, D5 evaluation): FIXED at the desk, TOOL_REV 6; the D6 confirm sheet runs `doco-adopt-v24p0`.**
+> D5's 24 V run ended `MA-END stopped,OVER_CURRENT` (8,460 mA): a side's bracket keyed on that side's own lowest clean
+> point, a noisy dip at -15 walked the 1,120 rpm NEG minus side to -30, and the rotor slipped there (every TOOL_REV 3 run
+> stopped at the same point). TOOL_REV 6 seeds the bracket from the scan's lowest clean point, either side, as the fit
+> already selects its points (`fitScan()`), so the fit's input is unchanged and the walk stops at -15. Also: a SKIPPED
+> point printed the previous scan's readings (the per-point arrays were not cleared); now zeros.
 
 > **Status (2026-10-10, burn-down «#3707»): BUILT** (`util_adopt_motor` TOOL_REV 5; STEPHEN 2026-10-03 *"let's do B
 > please"*); **CERTIFIED BY THE REV B CLOSEOUT** (`adopt-wheel`: `MA-END stopped,NONE`, Z and the ceiling found). Whether
@@ -1741,6 +1750,14 @@ in it, and either show it cannot reach 21 or raise the timeout (or the derivatio
 needed to decide it.
 
 ### PL-199 -- at 350 MHz the Rev A current sense at rest is ten times noisier
+> **Status (2026-10-12, D5 evaluation): FIXED at the desk, DRIVER_REV 61 -- the supported clock tops at 300 MHz.** D5
+> placed it: `clk-300` rests at spread 3 mV (healthy); `clk-350` refused to start both times on `HLT_SENSE_ZERO`. Root
+> cause (desk): the sense is the pin's sigma-delta ADC, clocked by sysclk with no divider in any smart-pin mode; the
+> driver's own window is fixed in time and finer at a faster clock, so nothing in its arithmetic worsens at 350 -- the
+> converter does, and no P2 document gives its maximum clock. Nothing above 300 MHz was ever measured on either board.
+> `start()` now refuses a clock over `MAX_CLKFREQ_HZ` (300 MHz) with `ERR_CLOCK_TOO_FAST` (-1_024), before anything
+> is claimed, as the floor does. DEVELOP.md and DRIVE-OBJECTS.md say so. The D6 sheet's `clk-350` probe must read the
+> refusal.
 
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT, then the desk.** A `single-passprobe` row at
 > `clk-300` (and `clk-350`) records `B1-ZERO spread_mv` before it drives, which places where the noise starts; the desk
@@ -1944,6 +1961,9 @@ clean point (the fit uses only ±20° of it), so a falling side walks on and a b
 rerun `doco-adopt-<v>`.
 
 ### PL-212 -- above ~2,500 rpm the Doco still needs 55-67 % more duty than its back-EMF, and 14.8 V's top has no reserve
+> **Status (2026-10-12, D5 evaluation): CERTIFIED (the range half).** At all six supplies every range step held: fol
+> 999-1,000, held 0, folds 0, resyncs 0, fault_kind NONE; the shipped tops held with the climb going 4-40 % above them
+> (ends DUTY_OUT or the increment bound). The full-speed REVERSAL at 24 V faulted once: PL-222.
 
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- its range rows at all six supplies: the
 > duty on the back-EMF line at each step, held passes 0, no second state, no fault below the ceiling.
@@ -2021,6 +2041,8 @@ close:** the speed-range test's per-step timing sweep and vibration (task 3700) 
 excess; then a desk root cause, and the change priced to Stephen. Until then the 14.8 V top is above its own rule.
 
 ### PL-210 -- the Doco hand load needs something to grip: a bare shaft cannot be held at 2-4 A
+> **Status (2026-10-12, D5 evaluation):** the grip worked at both supplies (the shaft stood at 11.1 and 24 V); the 24 V
+> verdicts are PL-223's. Rides with PL-170 on the D6 sheet.
 
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- the hand-load rows (`single-handload-
 > v11p1`, `-v24p0`) with a grip on the shaft, set up by Stephen: at 2 and 4 A the shaft stops, `R23-SGL-BLKSTOP` measured.
@@ -2116,6 +2138,14 @@ offsets, and it shapes how the Doco's speed-dependent lead can be measured (PL-2
 this board can resolve, decided with PL-212's desk work.
 
 ### PL-216 -- the Doco's shipped speed limits sit well inside its measured range
+> **Status (2026-10-12, D5 evaluation): TOPS CERTIFIED; FLOORS NOT YET.** The slowest steady speed held 0.10 ticks/s at
+> 22.2, 18.5 and 14.8 V and 0.75 at 7.4 V (band 4.00), but 0.15 at 11.1 V and 2.00 / 1.50 at 24 V (band 0.10; D4 held
+> 0.10 at both). Desk: the crawl path is unchanged since D4 (DRIVER_REV 58-60 act only on a stop by rotation, at
+> |incr| >= 201e6, or in Spin2; the rest is pasm_equiv-identical) and the duty floor is the same 1,600; 22.2 V, run
+> minutes after the 24 V failure, held 0.10. Consistent with run-to-run stick-slip at the floor (11.1 V's 0.10 rung
+> sits in the low tail of its spread) and a disturbed 24 V run (5 min after the adoption tool's 8.46 A slip); not
+> settled. No code change: the D6 sheet re-runs `single-mininc` at 11.1 and 24 V. If a floor fails again, the shipped
+> floor at that supply is set to what holds (`minFwdIncreAtPwr` / `minRevIncreAtPwr`), and that ruling is Stephen's.
 
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- the range and L-mininc rows: each row's
 > ceiling held (following about 1,000 per mille, no fault) and the floors held (0.10 ticks/s from 11.1 V up, 4.00 at
@@ -2187,6 +2217,9 @@ draws 2–3× unit 1's current at the same speeds (more drag). **To close:** Ste
 offsets question.
 
 ### PL-218 -- since DRIVER_REV 57 a timed stop ends late by the passes held in its slowdown
+> **Status (2026-10-12, D5 evaluation): CERTIFIED at 11.1, 14.8 and 24 V** -- every timed stop ended within -55..+15 ms,
+> every stop by rotation inside -240..+180 counts. **7.4 V not run:** the qualify row ended at its second top stop by
+> rotation (PL-221); the D6 sheet runs `single-stops-v7p4`.
 
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE DOCO CLOSEOUT** -- the stop rows at 7.4 and 11.1 V:
 > `R23-SGL-STOPTIME` within its band at the top (D4 read +95 and +115 ms on DRIVER_REV 57) and `R23-SGL-STOPROT` inside
@@ -2213,6 +2246,8 @@ A stop by rotation promises distance and a stop by time promises time; the fix k
 **To close:** hold the generator only on a stop by rotation; then STOPTIME and STOPROT at 7.4 and 11.1 V.
 
 ### PL-219 -- R23-SGL-MISDIAL's premise (fixed timing) fails on the lead table, so the check reads +96..+250 ‰ (harness)
+> **Status (2026-10-12, D5 evaluation): CLOSED.** Cold, the pair reads -10, -1 and +11 per mille at 7.4, 14.8 and 24 V
+> against +-30 (D4's +40 at 24 V was the hot motor, as the desk found).
 
 > **Status (2026-10-10, burn-down «#3707»): FIXED at the desk (`test_bench_single` SRC_REV 20, fmt 16); CERTIFIED BY THE
 > DOCO CLOSEOUT's qualify rows.** The check fits a dedicated pass, not the ladder: one climb a sign through 650, 900,
@@ -2273,6 +2308,58 @@ the position fault (|err| ≥ 125), and the peak error had climbed 96 → 111, w
 the record cannot rule on: from ~4,780 rpm the hall edges arrive faster than one per drive pass on average, and
 `B1-RANGE` carries neither `hall_missed` nor the fault's kind. **To close:** `B1-RANGE` prints the step's hall-missed
 and hall-illegal deltas and the fault event's kind.
+
+### PL-221 -- at 7.4 V a top stop by rotation ended on the harness's over-current guard, 5 ticks short
+
+> **Status (2026-10-12): OPEN, a finding (MEASURED once, D5 row 1); no driver change licensed.** Mine.
+
+D5's 7.4 V qualify (`DOCs/analyses/bench/2026-10-11/debug_261011-130120.log:126-127, 153`): the second NEG top stop by
+rotation (limit 9,600 from the 7.4 V top, 302e6, ~99 % of no-load speed) tripped the harness guard (>= 3,680 mA for 4
+samples) at `rest_net 9,595`, peak 4,380 mA; the first (7,200) at the same speed and every stop at 11.1-24 V were clean.
+Its stop rows (7 cells) never ran. **Desk (servo model, a copy with a stop-by-rotation mode):** the fitted Doco
+reproduces the stop (3.41 s, 1,377 ticks, ~230 held passes) with no over-current; with the rotor's stiction doubled it
+sticks near the end, the trim winds duty to `duty_max` in ~45 ms and the DC link reads ~3.75 A -- the full-duty stall
+at 7.4 V over the Doco's ~1.8 ohm. PL-218's stop wait is NOT the cause (the model trips identically with the wait off).
+Every candidate bound (end the wait early; freeze the duty while waiting; a lower ramp-down ceiling) either changes
+nothing or costs the stop's rest accuracy or the torque that frees a stuck rotor. Consistent with a position-dependent
+stick at the end of the stop, not settled. **Harness, SRC_REV 21:** a guard that ends a run now prints `B1-GUARD`
+(duty, duty_capped, err, state, lag_held, drv_incr, pos, enc at the tripping reading), and an aborted stop's `travel`
+is to the abort (it printed minus the start position: row 1's `travel,727_445`). **To close:** the D6 sheet's
+`single-stops-v7p4` runs the 7.4 V stops; clean, the cells certify; tripped again, `B1-GUARD` says whether duty sat at
+its cap against a stood rotor, and the remedy (a bounded duty in the stop's last ticks, or a guard allowance for a
+breakaway pulse) goes to Stephen with that evidence.
+
+### PL-222 -- the 24 V full-speed reversal faulted once on the way down
+
+> **Status (2026-10-12): OPEN, a finding (MEASURED once, D5 row 3); no driver change licensed.** Mine.
+
+D5's 24 V qualify (`debug_261011-133743.log:122`): `B1-REVERSE ... ran,2,faulted,TRUE,resyncs,1 ... fol1_pm,0` -- the
+first reversal ever run from the new 24 V top (980.5e6, 6,551 rpm); every reversal from a lower top has passed, and the
+plain ramp down from this top is clean both ways, as are four stops from it. Timing places the fault within about 2 s
+of the flip, above ~5,000 rpm, not at the zero crossing; a re-sync is a position fault (|err| >= 125). Desk: the
+generator, the damping (off in SLOW_TO_CHG as in SPIN_DN), the lead (keyed on |speed|) and the offset choice (the field's
+direction of travel, not the command's sign) are symmetric with a stop, and all their arithmetic is in range over the
+reversal. The log could not say more: `B1-REVERSE` carried no fault kind. **Harness, SRC_REV 21:** it now prints
+`fault_kind`, `fault_phase`, `fault_ms`, `fault_incr`, `fault_err`. **To close:** the D6 sheet runs `single-ramp-v24p0`
+twice (two reversals); clean, the SMOOTH / TOPSPD reversal cells certify; faulted, the record names the kind, speed and
+lag, which is what a fix needs.
+
+### PL-223 -- a wheel stood by hand at 24 V and a 4 A limit was never latched blocked
+
+> **Status (2026-10-12): FIXED at the desk, DRIVER_REV 61 and `test_bench_single` SRC_REV 21; the D6 sheet certifies.**
+
+D5's 24 V hand load (`debug_261011-170058.log`): at 4 A, `end,NO_LATCH` with the shaft stood 1,180 ms (53 counts of
+creep, under one hall tick) and `ilim 0`; at 11.1 V both steps latched on time. **Root cause:** `bFrontProtect()` counts
+toward the blocked stop only on a pass with |err| >= LAG_SOFT (80) or a limiter action since the last tick
+(`duty_capped + foldback_frames`). A fold arms the limit hold, which then holds the field at LAG_LIM (64); at 24 V the
+stood wheel's current sat just under the fold, so after its last tick no fold fired and |err| stayed at 64 -- neither
+half counted, and the drive would have pushed on indefinitely. **Fix:** the limiter sum includes `lag_held`, so a pass
+the lag limiter held counts as a limiter action. A held pass needs |err| at LAG_LIM (armed) or LAG_HOLD; the LAG_HOLD
+case already counted through LAG_SOFT, a turning wheel's tick still restarts the count, and the limiter half still acts
+only in SPIN_UP / AT_SPEED -- so a crawl, a stop and a slow-down are untouched. **The 2 A step's `latch_tick_ms,-3`**
+was the harness: the reading that showed the latch also showed a tick stamped after it (the shaft relaxing as the stop
+released it), which replaced the stand's last tick; SRC_REV 21 uses the tick before when one is stamped after the latch.
+**To close:** D6's `single-handload-v24p0` (both steps latch 988-1,168 ms) and `single-handload-v11p1` as its guard.
 
 ---
 

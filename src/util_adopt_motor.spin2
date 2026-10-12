@@ -162,7 +162,7 @@ CON { timing }
 
 CON { tool identity }
 
-    TOOL_REV        = 5                                     ' this source's revision (5: PK-1 retired, task 3707; 4:a side ends BRACKETED, PL-209; 3:the DocoEng record at 40 A, PL-207; 2: counted loops are REPEAT n WITH idx, task 3695)
+    TOOL_REV        = 6                                     ' this source's revision (6: a side's bracket is the scan's lowest clean point, a SKIPPED point prints zeros, D5 F7/F10; 5: PK-1 retired, task 3707; 4:a side ends BRACKETED, PL-209; 3:the DocoEng record at 40 A, PL-207; 2: counted loops are REPEAT n WITH idx, task 3695)
     FMT_VERSION     = 2                                     ' the MA- record format (2: MA-PLAN cap_incr is bound_incr)
     RECORD_FORMAT   = 1                                     ' the motor record's layout (CON { the motor record })
 
@@ -767,6 +767,12 @@ PRI bScanSpeedSign(eSpeed, eSign) : bGoOn | nIncr, slotIdx, eSide, spIdx
         ptOutcome[slotIdx] := PO_NOT_RUN
         ptD[slotIdx] := 0
         ptDeg[slotIdx] := 0
+        ptDcMa[slotIdx] := 0                                ' TOOL_REV 6 (D5 F10): every reading too, so a SKIPPED point
+        ptDuty[slotIdx] := 0                                '  prints zeros, never the scan before's
+        ptFolPm[slotIdx] := 0
+        ptHeld[slotIdx] := 0
+        ptCapped[slotIdx] := 0
+        ptResyncs[slotIdx] := 0
     repeat eSide from SIDE_PLUS to SIDE_MINUS
         sideEnd[eSide] := PO_NOT_RUN
         if bGoOn
@@ -779,11 +785,11 @@ PRI bScanSpeedSign(eSpeed, eSign) : bGoOn | nIncr, slotIdx, eSide, spIdx
     fitScan(spIdx)
     emitFit(eSpeed, eSign, spIdx)
 
-PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa, nRefMa, nPrevMa, bSeenClean, bEnded, bResting, nEdgeRun, ePo, nLowCleanD, nLowCleanMa
+PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa, nRefMa, nPrevMa, bSeenClean, bEnded, bResting, nEdgeRun, ePo, nLowCleanD, nLowCleanMa, bLowSeeded
 ' One side of the start pair at one speed: at rest the start pair, from rest to the speed, then each point outward (the
 ' start pair first), the offset changed while driven by one step; a WALL or a FAULT ends the side at once, EDGE_RUN
 ' DROOP or HUNT points in a row end it, and its 90 degrees end it. PL-209 (TOOL_REV 4): so does a point FIT_HALF_DEG
-' past the side's lowest CLEAN point (END_BRACKETED) -- the fit uses no point further out, and at the library's 40 A
+' past the scan's lowest CLEAN point so far, either side's (END_BRACKETED; TOOL_REV 6, it was the side's own) -- the fit uses no point further out, and at the library's 40 A
 ' nothing caps the current where the motor's torque collapses (D2: every Doco run ended on 4.5-10.2 A about 30 degrees
 ' past a minimum it had already bracketed). A side still falling walks on, since its lowest point moves with it. Until the side has seen a CLEAN point, a DROOP or
 ' HUNT point drawing less current than the point before it does not count toward the run (it restarts it): the walk is
@@ -811,6 +817,7 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
 ' @local ePo - a point's outcome
 ' @local nLowCleanD - the lowest CLEAN point's degrees from the start pair (PL-209)
 ' @local nLowCleanMa - its DC link, mA (posx until one)
+' @local bLowSeeded - T/F where T means the other side's clean points seeded the lowest (TOOL_REV 6)
 
     bGoOn := TRUE
     bEnded := FALSE
@@ -818,6 +825,12 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
     bSeenClean := FALSE
     nLowCleanD := 0
     nLowCleanMa := posx
+    bLowSeeded := FALSE
+    repeat slotIdx from 0 to OFS_POINTS - 1                 ' TOOL_REV 6 (D5 F7): the bracket is the SCAN's, as the fit's
+        if (ptOutcome[slotIdx] == PO_CLEAN) and (ptDcMa[slotIdx] < nLowCleanMa)   '  is (fitScan()): the other side's
+            nLowCleanMa := ptDcMa[slotIdx]                  '  clean points seed the lowest, so a noisy dip on this side
+            nLowCleanD := ptD[slotIdx]                      '  cannot walk it 20 degrees past a minimum already bracketed
+            bLowSeeded := TRUE                              '  (D5 24 V: -15 read low, -30 was driven, the rotor slipped)
     nEdgeRun := 0
     nLimitMa := 0
     nRefMa := posx
@@ -872,7 +885,7 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
                 bGoOn := bFaultRecover()
             elseif ePo == PO_STOPPED
                 bGoOn := FALSE
-            elseif bSeenClean and (abs(nD - nLowCleanD) >= FIT_HALF_DEG)
+            elseif (bSeenClean or bLowSeeded) and (abs(nD - nLowCleanD) >= FIT_HALF_DEG)
                 sideEnd[eSide] := END_BRACKETED                 ' PL-209: the fit has every point it can use
                 bEnded := TRUE
         elseif bGoOn

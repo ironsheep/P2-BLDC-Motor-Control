@@ -104,8 +104,9 @@ PACK_DIR="${BENCH_PACK_DIR:-}"
 #              was a provisional 120 MHz, which start() now refuses).
 #   clk-200    200 MHz, as the original dual-clock-200
 #   clk-270    270 MHz, the files' own default, as dual-clock-270
-#   clk-300    300 MHz, as dual-clock-300
-#   clk-350    350 MHz, the fastest the P2 PLL makes (VCO / 1): getct() differences wrap at 6.1 s
+#   clk-300    300 MHz, as dual-clock-300: the highest supported clock, the library's MAX_CLKFREQ_HZ (DRIVER_REV 61, PL-199)
+#   clk-350    350 MHz, the fastest the P2 PLL makes (VCO / 1): getct() differences wrap at 6.1 s. OVER the ceiling since
+#              DRIVER_REV 61: a run built at it must be REFUSED by start() with ERR_CLOCK_TOO_FAST and drive nothing
 #   clk-frac   271.25 MHz, a clock that is NOT a whole number of MHz (every whole-MHz arithmetic goes wrong on it).
 #              An integer in Hz, and the P2's PLL makes it EXACTLY from the 20 MHz crystal: 20 MHz x 217 / 16 (pnut-ts
 #              writes CLKMODE $013CD8FB: divide 16, multiply 217, VCO / 1) -- verified by compiling it, not on a board.
@@ -193,8 +194,8 @@ Usage:  tools/bench-run.sh <tier> [<clock>]
                    clk-floor  130 MHz  the lowest supported clock (start() refuses below it)
                    clk-200    200 MHz
                    clk-270    270 MHz  (what a run without a clock uses)
-                   clk-300    300 MHz
-                   clk-350    350 MHz  the fastest clock the P2 makes
+                   clk-300    300 MHz  the highest supported clock (start() refuses above it)
+                   clk-350    350 MHz  OVER the ceiling: start() must refuse (ERR_CLOCK_TOO_FAST) and nothing moves
                    clk-frac   271.25 MHz  not a whole number of MHz
                    clk-under  120 MHz  UNDER the floor: start() must refuse (ERR_CLOCK_TOO_SLOW) and nothing moves
   <tier>      -- one of:
@@ -217,7 +218,7 @@ Usage:  tools/bench-run.sh <tier> [<clock>]
                    scan-droop     droop-stop self-test: pure logic, three point sequences through the real stop decision  [NOTHING MOVES]
                    dual-a         motion harness part A: PREFLT, STOPMODE, LIVE, LADDER, LOWSPD  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
                    dual-a-legacy  as dual-a, on the LEGACY commutation offsets 43/317 -- the control leg, draws far more current  [MOTORS CONNECTED, WHEELS UP, UNATTENDED]
-                   dual-clock     motion harness clock load at the clock you name: PREFLT, CLOCK -- takes the <clock> argument, e.g. dual-clock clk-350  [WHEELS UP, UNATTENDED]
+                   dual-clock     motion harness clock load at the clock you name: PREFLT, CLOCK -- takes the <clock> argument, e.g. dual-clock clk-300  [WHEELS UP, UNATTENDED]
                    dual-clock-200 motion harness clock load at 200 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-270 motion harness clock load at 270 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
                    dual-clock-300 motion harness clock load at 300 MHz: PREFLT, CLOCK  [WHEELS UP, UNATTENDED]
@@ -286,7 +287,7 @@ Examples:
   tools/bench-run.sh detect
   tools/bench-run.sh char
   tools/bench-run.sh dual-clock-200
-  tools/bench-run.sh dual-clock clk-350
+  tools/bench-run.sh dual-clock clk-300
   tools/bench-run.sh t0 clk-frac
   tools/bench-run.sh single-passprobe-v11p1 clk-floor
 EOF
