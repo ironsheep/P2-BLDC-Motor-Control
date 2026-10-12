@@ -1197,6 +1197,11 @@ every lifetime of every tier. One clean pass after a reseat is one observation, 
 
 ### PL-126 -- the P2's output stopped mid-record 2 s into right trial 19, and the wire then carried lone zero bytes
 
+> **Status (2026-10-12, D7 evaluation): NOT RECURRED, still a watch.** All 13 D7 runs (about 75 minutes on the Doco
+> bench) end in `B1-END,abort,NONE`. The two 292-byte logs (`debug_261012-171850.log`, `-173149.log`) are the
+> terminal's session header before a download, as D6's `-130447.log`: no run, each followed at once by the full run.
+> The sheet's two observations (power light, supply current) were not needed. The Rev B session carries the watch.
+>
 > **Status (2026-10-12, D6 evaluation): RECURRED ONCE, still a watch.** `debug_261012-133443.log` (24 V ramp, Rev A,
 > the Doco bench, a different rig from 2026-09-24's): 5.4 s into the POS climb the stream turned binary at 13:35:21.2
 > and stopped; the next two downloads found no P2 ("No Propeller v2 device found"); the third ran, and the rerun
@@ -2361,6 +2366,15 @@ breakaway pulse) goes to Stephen with that evidence.
 
 ### PL-222 -- the 24 V full-speed reversal faulted once on the way down
 
+> **Status (2026-10-12, D7 evaluation): CLOSED CERTIFIED on DRIVER_REV 62.** D7 (13 runs, Rev A unit 2, binaries
+> rebuilt from 258aca9 byte for byte: ramp 51,830, stops 50,426) ran the speed-up, stop and reversal from every
+> supply's top -- 7.4, 11.1, 14.8, 18.5, 22.2 V once, 24 V twice -- and the stops at each: every `B1-REVERSE` reads
+> `ran,3,faulted,FALSE,resyncs,0`, every `B1-RAMPDN` `faulted,FALSE,fault_kind,NONE`, R23-SGL-SMOOTH / TOPSPD /
+> RAMPARR PASS in all 7 ramp logs (RAMPARR -40..+16 per mille), no `B1-FTRACE` in any log; 21 reversals and 14 plain
+> slow-downs from the tops, 0 faults (D6: 3 of 3 and 1 of 7 at 24 V). All 48 stop cells PASS; the tops' stops at
+> 22.2 / 24 V now spread -66..+129 counts per drive (D5 at 24 V: -21..+74), inside -240..+180, consistent with the
+> fix's cuts acting during the slow-down; their mean moved toward zero (24 V: +14, D5 +45), so no systematic shortfall. `DOCs/analyses/bench/2026-10-12/D7-EVALUATION.md`.
+>
 > **Status (2026-10-12, desk root cause): FIXED at the desk, DRIVER_REV 62; `VISIT-D7-RUNSHEET.md` certifies.** The servo
 > model (`DOCs/plans/servo-model/spin2_model.py`, run as D6's L-ramp: the top, 2 s held, then a reversal or a stop)
 > reproduces the fault: 24 V, LAG, 3.1 s into the slow-down (bench 2.4-2.7 s), and finds it at 18.5 V (0.6 s) and
