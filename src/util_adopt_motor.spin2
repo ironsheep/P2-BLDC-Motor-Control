@@ -10,19 +10,7 @@
 ''   E-mail..... stephen@ironsheep.biz
 ''   Started.... 04 Oct 2026
 ''   Updated.... 04 Oct 2026
-''               04 Oct 2026 -- task 3695 (TOOL_REV 2): the ladder's rung loops are REPEAT nRungs WITH idx (FROM 0 TO
-''               nRungs - 1 runs twice at nRungs = 0). A record that refuses its plan never reaches them; no record changes.
-''               06 Oct 2026 -- PL-207 (TOOL_REV 3): the DocoEng record's scan and ladder limits are the library's 40 A,
-''               as the measuring harness's are (they were 2 and 3 A, at which this motor's own scan hunted and drooped
-''               on Rev A). No output format changes.
-''               07 Oct 2026 -- PL-209 (TOOL_REV 4): a scan side also ends FIT_HALF_DEG past its lowest clean point
-''               (MA-SIDE end,BRACKETED): at 40 A every Doco side walked on into the torque wall and over-current. A
-''               new end token; no field changes.
-''               10 Oct 2026 -- task 3707 (TOOL_REV 5, FMT_VERSION 2): PK-1 retired. The 419e6 field-step margin went with
-''               the driver's frame-at-a-time field (DRIVER_REV 54) and its last trace with DRIVER_REV 59, whose Doco
-''               ceilings reach 980.5e6; the bound is now the command range, CMD_INCR_MAX (2^30 - 1). The DocoEng record's
-''               ladder climbs to 6_720 rpm in 280 rpm rungs, so the climb meets the reserve at every supply. MA-PLAN's
-''               cap_incr is bound_incr; every increment prints unclamped (LIM_INCR).
+''               The history of these changes is in CHANGELOG.md.
 ''
 '' =================================================================================================
 
@@ -53,9 +41,9 @@
   (isp_bldc_motor_userconfig.spin2, the single-motor block) and run from the debug terminal, because that is what the
   reader of ADDING_MOTOR.md has: their own motor, one board, their configuration file, pnut-ts and the debug terminal --
   and, in general, no shaft encoder. So it measures only what the board itself can see: the halls, the DC-link current
-  and the drive's own counters. Our bench runs this same source (tools/bench-run.sh doco-adopt-<voltage> on the Doco
+  and the drive's own counters. Our bench runs this same source (test/bench-run.sh doco-adopt-<voltage> on the Doco
   bench, adopt-wheel on one 6.5in wheel); the bench's shaft encoder judges the tool there from outside, through the
-  bench's own measurement harness (test_bench_single.spin2). Nothing here needs the encoder, and no bench file is
+  bench's own measurement harness. Nothing here needs the encoder, and no bench file is
   needed to build it.
 
   THE MOTOR RECORD (record format 1, RECORD_FORMAT). One record per motor type, REC_LONGS longs, in this order; the
@@ -157,19 +145,19 @@
 
 CON { timing }
 
-    CLK_FREQ = 270_000_000                                  ' tools/bench-run.sh sets this line to a clock chosen by NAME
+    CLK_FREQ = 270_000_000                                  ' test/bench-run.sh sets this line to a clock chosen by NAME
     _clkfreq = CLK_FREQ
 
 CON { tool identity }
 
-    TOOL_REV        = 6                                     ' this source's revision (6: a side's bracket is the scan's lowest clean point, a SKIPPED point prints zeros, D5 F7/F10; 5: PK-1 retired, task 3707; 4:a side ends BRACKETED, PL-209; 3:the DocoEng record at 40 A, PL-207; 2: counted loops are REPEAT n WITH idx, task 3695)
+    TOOL_REV        = 6                                     ' this source's revision
     FMT_VERSION     = 2                                     ' the MA- record format (2: MA-PLAN cap_incr is bound_incr)
     RECORD_FORMAT   = 1                                     ' the motor record's layout (CON { the motor record })
 
 OBJ { the motor, its configuration, the record builder }
 
 #ifdef BENCH_CFG
-    user     : "isp_bldc_motor_userconfig_bench"            ' our bench's fixed statement (-D BENCH_CFG, tools/bench-run.sh)
+    user     : "isp_bldc_motor_userconfig_bench"            ' our bench's fixed statement (-D BENCH_CFG, test/bench-run.sh)
 #else
     user     : "isp_bldc_motor_userconfig"                  ' your configuration: the single-motor block
 #endif
@@ -246,7 +234,7 @@ CON { the procedure -- the same for every motor }
     FOLLOW_TOL_PM       = 30                                ' a clean point or rung follows within 3 %
 
   ' The ceiling: the 6.5in's duty reserve, 92.5 % of the duty ceiling; and the command range no command passes (the
-  '  driver's |incr| < 2^30, setTargetAccel()). Task 3707: it was PK-1's 419e6 field-step margin, gone since DRIVER_REV 54
+  '  driver's |incr| < 2^30, setTargetAccel()).
     DUTY_RESERVE_PM     = 925
     CMD_INCR_MAX        = 1_073_741_823
     RUNGS_MAX           = 40
@@ -281,7 +269,7 @@ CON { enums }
     END_LIMIT           = 100                               ' a side reached its 90 degrees
     END_RESERVE         = 101                               ' a climb reached the duty reserve
     END_TOP             = 102                               ' a climb ran its last rung below the reserve
-    END_BRACKETED       = 103                               ' PL-209 (TOOL_REV 4): a side reached FIT_HALF_DEG past its lowest clean point
+    END_BRACKETED       = 103                               ' a side reached FIT_HALF_DEG past its lowest clean point
 
   ' a sampler reading's outcome
     #0, GO_RUNNING, GO_FAULT, GO_OVER_CURRENT, GO_CHARGE_CAP, GO_TIME_CAP
@@ -302,7 +290,7 @@ CON { enums }
     LIM_SMALL           = benchLog.LIM_SMALL
     LIM_MID             = benchLog.LIM_MID
     LIM_BIG             = benchLog.LIM_BIG
-    LIM_INCR            = benchLog.LIM_INCR                 ' every increment, unclamped (task 3707)
+    LIM_INCR            = benchLog.LIM_INCR                 ' every increment, unclamped
     TOKMAX              = 14                                ' the longest token any field prints
 
 DAT { motor records -- format 1: the layout is the CON block above, and the file's header says what each field means }
@@ -320,20 +308,17 @@ motorRecords    LONG    KEY_6_5_INCH, RECORD_FORMAT, RS_MEASURED
                 LONG    90, 5_000, 500, 4, 4
                 LONG    33, 65, 30, 15, 435
   ' THE DocoEng 4k-rpm MOTOR. PROVISIONAL: from its data sheet (DOCs/DOCOMotor.pdf) and our desk model of it; each
-  '  number is set by measuring this motor against a shaft encoder (test_bench_single.spin2), as named.
+  '  number is set by measuring this motor against a shaft encoder, as named.
   '  ticks_rev 24: DOCOENG_MOTOR.md; checked by the hall-map leg's encoder check (1,440 counts per 24 ticks).
   '  rated_ma 1_840 and no_load_ma 400: the data sheet (0.0625 N.m at 0.034 N.m/A; 0.4 A no-load).
-  '  scan_a / ladder_a 40: the library's own I_PEAK_A, as the measuring harness has run since its SRC_REV 14 (STEPHEN
-  '   2026-10-05 "yes A"); the protection is the tool's absolute abort, twice the rated current. PL-207 (TOOL_REV 3):
-  '   they were 2 and 3, the harness's test limits before that change; at 2-3 A on Rev A this motor's crawl-speed phase
-  '   current reaches the limit, so 5 degrees off the start a point hunted and the next drooped and no fit resolved
-  '   (D2, 2026-10-06: debug_261006-140837 and -161820).
+  '  scan_a / ladder_a 40: the library's own I_PEAK_A, as the measuring harness runs it; the protection is the tool's
+  '   absolute abort, twice the rated current. At 2-3 A on Rev A this motor's crawl-speed phase
+  '   current reaches the limit, so 5 degrees off the start a point hunted and the next drooped and no fit resolved.
   '  slow_rpm 560 / fast_rpm 1_120: 25 % and 50 % of the 2023 table's 12 V ceiling (335e6), the offset-scan leg's two
   '   lower speeds. Set by the offset-scan leg: its minimum must resolve at both.
   '  ladder 280 .. 6_720 rpm in 280 rpm rungs (24): past the sheet's 6,800 rpm no-load less a rung, so the climb meets
-  '   the reserve at every supply (DRIVER_REV 59's ceilings, on that reserve, run 2,018 rpm at 7.4 V to 6,551 at 24 V).
-  '   Task 3707: it was 280 .. 2_800 in 140 rpm rungs, stopping at PK-1's 419e6, so from 14.8 V up the climb ran out
-  '   of rungs below the reserve and read NOT FOUND. Set by the ladder leg's duty line.
+  '   the reserve at every supply (the driver's ceilings, on that reserve, run 2,018 rpm at 7.4 V to 6,551 at 24 V).
+  '   Set by the ladder leg's duty line.
                 LONG    KEY_DOCO_4KRPM, RECORD_FORMAT, RS_PROVISIONAL
                 LONG    24, 1_840, 400, 40, 40
                 LONG    560, 1_120, 280, 280, 6_720
@@ -767,7 +752,7 @@ PRI bScanSpeedSign(eSpeed, eSign) : bGoOn | nIncr, slotIdx, eSide, spIdx
         ptOutcome[slotIdx] := PO_NOT_RUN
         ptD[slotIdx] := 0
         ptDeg[slotIdx] := 0
-        ptDcMa[slotIdx] := 0                                ' TOOL_REV 6 (D5 F10): every reading too, so a SKIPPED point
+        ptDcMa[slotIdx] := 0                                ' every reading too, so a SKIPPED point
         ptDuty[slotIdx] := 0                                '  prints zeros, never the scan before's
         ptFolPm[slotIdx] := 0
         ptHeld[slotIdx] := 0
@@ -788,9 +773,9 @@ PRI bScanSpeedSign(eSpeed, eSign) : bGoOn | nIncr, slotIdx, eSide, spIdx
 PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa, nRefMa, nPrevMa, bSeenClean, bEnded, bResting, nEdgeRun, ePo, nLowCleanD, nLowCleanMa, bLowSeeded
 ' One side of the start pair at one speed: at rest the start pair, from rest to the speed, then each point outward (the
 ' start pair first), the offset changed while driven by one step; a WALL or a FAULT ends the side at once, EDGE_RUN
-' DROOP or HUNT points in a row end it, and its 90 degrees end it. PL-209 (TOOL_REV 4): so does a point FIT_HALF_DEG
-' past the scan's lowest CLEAN point so far, either side's (END_BRACKETED; TOOL_REV 6, it was the side's own) -- the fit uses no point further out, and at the library's 40 A
-' nothing caps the current where the motor's torque collapses (D2: every Doco run ended on 4.5-10.2 A about 30 degrees
+' DROOP or HUNT points in a row end it, and its 90 degrees end it. So does a point FIT_HALF_DEG
+' past the scan's lowest CLEAN point so far, either side's (END_BRACKETED) -- the fit uses no point further out, and at the library's 40 A
+' nothing caps the current where the motor's torque collapses (every Doco run ended on 4.5-10.2 A about 30 degrees
 ' past a minimum it had already bracketed). A side still falling walks on, since its lowest point moves with it. Until the side has seen a CLEAN point, a DROOP or
 ' HUNT point drawing less current than the point before it does not count toward the run (it restarts it): the walk is
 ' still coming down toward a minimum it has not reached, as it must when a driver's start pair sits in the hunting
@@ -815,9 +800,9 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
 ' @local bResting - T/F where T means the motor already rests (a refusal or a fault's recovery left it there)
 ' @local nEdgeRun - DROOP or HUNT points in a row that count
 ' @local ePo - a point's outcome
-' @local nLowCleanD - the lowest CLEAN point's degrees from the start pair (PL-209)
+' @local nLowCleanD - the lowest CLEAN point's degrees from the start pair
 ' @local nLowCleanMa - its DC link, mA (posx until one)
-' @local bLowSeeded - T/F where T means the other side's clean points seeded the lowest (TOOL_REV 6)
+' @local bLowSeeded - T/F where T means the other side's clean points seeded the lowest
 
     bGoOn := TRUE
     bEnded := FALSE
@@ -826,11 +811,11 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
     nLowCleanD := 0
     nLowCleanMa := posx
     bLowSeeded := FALSE
-    repeat slotIdx from 0 to OFS_POINTS - 1                 ' TOOL_REV 6 (D5 F7): the bracket is the SCAN's, as the fit's
+    repeat slotIdx from 0 to OFS_POINTS - 1                 ' the bracket is the SCAN's, as the fit's
         if (ptOutcome[slotIdx] == PO_CLEAN) and (ptDcMa[slotIdx] < nLowCleanMa)   '  is (fitScan()): the other side's
             nLowCleanMa := ptDcMa[slotIdx]                  '  clean points seed the lowest, so a noisy dip on this side
             nLowCleanD := ptD[slotIdx]                      '  cannot walk it 20 degrees past a minimum already bracketed
-            bLowSeeded := TRUE                              '  (D5 24 V: -15 read low, -30 was driven, the rotor slipped)
+            bLowSeeded := TRUE                              '  (at 24 V: -15 read low, -30 was driven, the rotor slipped)
     nEdgeRun := 0
     nLimitMa := 0
     nRefMa := posx
@@ -868,7 +853,7 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
                 nEdgeRun := 0
             if ePo == PO_CLEAN
                 bSeenClean := TRUE
-                if ptDcMa[slotIdx] < nLowCleanMa                ' PL-209: the side's lowest clean point so far
+                if ptDcMa[slotIdx] < nLowCleanMa                ' the side's lowest clean point so far
                     nLowCleanMa := ptDcMa[slotIdx]
                     nLowCleanD := nD
             if (ePo == PO_CLEAN) or (ePo == PO_ROUGH)
@@ -886,7 +871,7 @@ PRI bScanSide(eSign, eSide, nIncr) : bGoOn | eUp, stepIdx, slotIdx, nD, nLimitMa
             elseif ePo == PO_STOPPED
                 bGoOn := FALSE
             elseif (bSeenClean or bLowSeeded) and (abs(nD - nLowCleanD) >= FIT_HALF_DEG)
-                sideEnd[eSide] := END_BRACKETED                 ' PL-209: the fit has every point it can use
+                sideEnd[eSide] := END_BRACKETED                 ' the fit has every point it can use
                 bEnded := TRUE
         elseif bGoOn
             ptOutcome[slotIdx] := PO_SKIPPED
