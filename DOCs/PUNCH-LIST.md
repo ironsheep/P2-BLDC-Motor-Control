@@ -130,6 +130,9 @@ or report the sense fields as `NOMEAS` when no cog is running.
 
 ### PL-23 -- bench binaries print booleans as numbers
 
+> **Status (2026-10-13, Rev B evaluation): CLOSED CERTIFIED.** `t0 clk-floor` (`debug_261013-091507.log`) prints its
+> board flag as a word on both boards (`T0-20,base,16,...,rev_b,TRUE`, `base,32 ... rev_b,TRUE`); 30 of 30 cells PASS.
+
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT** -- its `t0 clk-floor` row: the T0-20 line
 > prints `rev_b,TRUE`, a word.
 
@@ -1000,6 +1003,10 @@ Moving them over is a change to certified tiers and is not made here.
 
 ### PL-120 -- the right board's bridge puts no voltage on any phase
 
+> **Status (2026-10-13, Rev B evaluation): NOT RECURRED, still a watch.** Every start check took both boards (dual-a
+> `R14-DUAL-REVB-A ... measured,0` both wheels; demo-dual `LEFT checked $5F, RIGHT checked $1F`) and both pre-flights
+> moved (`BM-PREFLT ... ticks,32,hw_ticks,32,moved,TRUE`).
+
 > **Status (2026-10-10, burn-down «#3707»): A WATCH ON THE REV B CLOSEOUT** -- no start check refuses the right board
 > across the session's loads.
 
@@ -1197,6 +1204,9 @@ every lifetime of every tier. One clean pass after a reseat is one observation, 
 
 ### PL-126 -- the P2's output stopped mid-record 2 s into right trial 19, and the wire then carried lone zero bytes
 
+> **Status (2026-10-13, Rev B evaluation): NOT RECURRED (and PL-43 with it), still a watch.** All 8 Rev B logs reach
+> their end record; the eight 292-byte logs are the terminal's header before each download.
+
 > **Status (2026-10-12, D7 evaluation): NOT RECURRED, still a watch.** All 13 D7 runs (about 75 minutes on the Doco
 > bench) end in `B1-END,abort,NONE`. The two 292-byte logs (`debug_261012-171850.log`, `-173149.log`) are the
 > terminal's session header before a download, as D6's `-130447.log`: no run, each followed at once by the full run.
@@ -1258,6 +1268,9 @@ control that performs it.
 Later runs of those rows are unchanged.
 
 ### PL-136 -- PL-120's diagnostics are reachable only from a fault trial, so a wheel dead at PREFLT is never diagnosed
+
+> **Status (2026-10-13, Rev B evaluation): NOMEAS, still a watch.** No pre-flight failed in the session, so no
+> `BM-PFRETRY` was printed; it certifies itself on a wheel's first PREFLT failure.
 
 > **Status (2026-10-10, burn-down «#3707»): A WATCH ON THE REV B CLOSEOUT** -- built; it certifies itself on a wheel's
 > first PREFLT failure (`BM-PFRETRY`), and is owed nothing while no wheel fails.
@@ -1423,6 +1436,11 @@ DRIVE-OBJECTS-SERIAL.md row and a Python wrapper. Measured speed is **not** in 6
 measured speed right now"*); `getPower()` reports what was commanded.
 
 ### PL-164 -- the driver's supported clock range is one point, 270 MHz; users choose their own clock
+
+> **Status (2026-10-13, Rev B evaluation): OPEN, all but one reading certified.** At 130 MHz on the 6.5″: the frame and
+> drive pass right (`BM-CLOCK ... frame_cnt,2_954,exp_fram,2_954,pass_us,523,fram_ok,TRUE`, both wheels), halls clean,
+> Tier 0 30 of 30 PASS with the dead gap 34 ticks (261 ns) and the sense noise 0.7-2.9 mV. The steering front cog's worst
+> pass was not printed by the tier (PL-227); this closes with it.
 
 > **Status (2026-10-10, burn-down «#3707»): CERTIFIED BY THE REV B CLOSEOUT** -- the clock-floor rows (`dual-clock
 > clk-floor`, `t0 clk-floor` at 130 MHz): the front cog's late count 0 and worst pass under 900 us with two wheels;
@@ -1666,6 +1684,11 @@ schedule draws less than the fixed pair (`amps` 990 against 1,043, 779 against 8
 pairs, both directions, before any claim about the schedule's saving at the quarter on the floor.
 
 ### PL-190 -- SRVKEEP's fixed reference reads a day's spread as a regression
+
+> **Status (2026-10-13, Rev B evaluation): OPEN, measured again, same shape.** `debug_261013-084502.log`: LEFT FAIL,
+> rung 7 reverse `inet_x10,301` (rid 22) against the reference 285, +5.6 %; its duty 18,575 against 18,486, +0.5 %;
+> RIGHT PASS. Duty holds; only the net current wanders. Settles it, as before: a same-session control or a band from
+> repeat runs. A harness cell, not a driver regression.
 
 > **Status (2026-10-10, «#3708»): READ BY THE REV B CLOSEOUT's row 1** (`dual-a`, wheels up; SRVKEEP is a part-A ladder
 > cell, not a floor one as the burn-down line below said). The sheet names its known limit beside the cell.
@@ -2465,6 +2488,45 @@ re-checked at the sweep.
 
 **To close:** a sweep of the 22 files with the pattern widened to every label class finds none, and each release
 top's binary is byte-identical before and after. Before «#3690» (release).
+
+### PL-225 -- the dual harness's parameter names stop one long short of the driver's run
+
+> **Status (2026-10-13, Rev B evaluation): OPEN, FIX (harness).** Every dual log of the Rev B session reads
+> `R21-DUAL-TOKTAB ... FAIL`: `BM-TOKCHK ... bad_count,1 ... first_bad,tokAbiParams`. `tokAbiParams`
+> (`test_bench_dual.spin2:25949-25955`) names 27 longs ending `sense_zero`; the driver's parameter run is 28 since
+> DRIVER_REV 55 (`sense_shift`, `isp_bldc_motor.spin2:7209`). The 6.5″ had not run since DRIVER_REV 49. **Fix:** append
+> `"sense_shift"`. **To close:** TOKTAB PASS on the next dual run.
+
+### PL-226 -- dual-d's lag bound read 125 on the right wheel with no fault raised
+
+> **Status (2026-10-13, Rev B evaluation): OPEN, FIX (harness), then a rerun of `dual-d`.**
+> `debug_261013-090801.log`: `BM-LAG ... motor,RIGHT ... max_err,125 ... samples,3_671` (LEFT 120; bar 124), and dual-d
+> has `faults,0` in every segment and no fault event. The driver tests |err| >= 125 every frame while the bridge is
+> driven and faults at once (`isp_bldc_motor.spin2:8656-8662`), so the sample is *consistent with* one taken with the
+> bridge not driven (an e-stop, a coast, a stop) -- a state the bound should not judge, as it already skips faulted and
+> provoked samples (`test_bench_dual.spin2:24677-24687`). The record holds the maximum only, so it cannot separate that
+> from a driven 125 that went unreported. Earlier dual-d peaks: 101 / 102 (2026-09-25), 111 / 111 (09-26).
+> **Fix:** the bound folds only samples taken on a driven bridge (the driver's own rule), and `BM-LAG` prints the
+> maximum's time, drive state and bridge state, so the next reading settles it either way (overlay P1). **To close:**
+> dual-d's LAGBND PASS with the maximum placed, on the serial visit.
+
+### PL-227 -- the 130 MHz clock run does not print the front cog's worst pass
+
+> **Status (2026-10-13, Rev B evaluation): OPEN, FIX (harness), then a rerun of `dual-clock clk-floor`.** The Rev B
+> sheet promised *"late 0 and the worst front-cog pass under 900 us"* at 130 MHz; part CLOCK (`segClock()`,
+> `test_bench_dual.spin2:4993`) never emits the steering front cog's stats -- only part D does (`dStepFrontStats()`,
+> `:8234`). What the run did show: frame and pass right (`frame_cnt,2_954`, `pass_us,523`), dead gap 34 ticks, halls
+> clean, the instrument cog `late,0`. **Fix:** `segClock()` ends with the front-cog stats and a judged cell. **To close:**
+> the front cog's worst pass under its bound and late 0 at 130 MHz; with it PL-164 closes.
+
+### PL-228 -- the two-wheel demo's front cog runs late passes in its debug build
+
+> **Status (2026-10-13, Rev B evaluation): OPEN, root cause at the desk first.** `debug_261013-091106.log` (demo-dual,
+> 270 MHz, the library's debug channels on): 11 `PLATFORM EV_LATE_PASS` events in 64 s -- one a second at 1,344 /
+> 2,344 / 3,344 / 4,344 ms, then at each drive's start and stop. dual-d, the same steering object at the same clock built
+> `BENCH_QUIET`, reads `late,0` and FRONTST PASS; demo-single (its own front cog) logs none. Suspect, not settled: the
+> front cog's own debug output in a debug build. **To close:** the cause named from the code (what runs on the front cog
+> at those instants, with and without the channels), then fixed or documented; a plain build's behaviour stated.
 
 ---
 
