@@ -329,8 +329,8 @@ order, the PASM register block and the count constant change together.
 **The idea.** When you rewrite assembly to save space, "it still runs" isn't proof. Run the old and new
 images side by side in an emulator on the same stimulus, and compare everything they do.
 
-**How.** `tools/pasm_equiv` compiles the baseline and the candidate driver, runs both in an
-instruction-level P2 cog emulator, and at every PWM frame compares every hub write, every pin operation,
+**How.** Compile the baseline and the candidate driver, and run both in an
+instruction-level P2 cog emulator. Ours, at every PWM frame, compares every hub write, every pin operation,
 every CORDIC input, and every live register by name. It stops at the first difference and prints the
 instructions that led to it. It executes the compiled longs, never the source, and refuses any opcode it
 doesn't model rather than skipping it.
@@ -339,8 +339,6 @@ doesn't model rather than skipping it.
 LUT use from 507 to 457 of 512, each round proved equivalent. The first round was checked over 2,055
 scenarios and 8.1 million frames. The tool also found a real latent defect on its first run: the first drive
 pass read a register that no frame had yet written.
-
-**Where it lives.** `tools/pasm_equiv/` (its README explains the method and its limits).
 
 ### 3.4 Two code images in the LUT
 

@@ -940,7 +940,7 @@ Every measurement here was taken on two units of this motor, on a Rev B 64010 bo
 270 MHz (the clock every figure here is stated at; the drive's timing at other clocks is described in
 [DEVELOP.md](DEVELOP.md#choosing-a-clock)). The wheels were lifted, except for the floor results in §6.5,
 which were taken with the two units driving a 7.7 kg two-wheel platform. The speed figures were measured on a pack of about 20.5–20.7 V (§6.1). The measurements were made
-with the driver's own sense channels, read through the programs in `src/test_*.spin2`;
+with the driver's own sense channels, read through the programs in `test/`;
 [TECHNIQUES.md](TECHNIQUES.md) explains the methods.
 
 ---

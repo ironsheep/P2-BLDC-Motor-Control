@@ -10,8 +10,9 @@
 #
 # Enforced:
 #   1. Every library object compiles under EVERY configuration (-D each symbol).
-#   2. Every file compiles: a program that selects its configuration compiles as
-#      written; any other file compiles under AT LEAST ONE configuration.
+#   2. Every file in src/ and test/ compiles: a program that selects its
+#      configuration compiles as written; any other file compiles under AT LEAST
+#      ONE configuration. test/ holds the bench; it builds against src/ (-I).
 #   3. The config refuses a build that selects no configuration, with its
 #      message (the negative case: a silent fallback would drive a motor with
 #      another motor's settings).
@@ -21,20 +22,22 @@
 #      #IFDEF __PNUT_TS__, so PNut can still build the sources.
 #   4. RELEASE CERTIFICATION: both flagship demos -- demo_single_motor and
 #      demo_dual_motor -- compile. Neither ships uncertified. Every demo_* top
-#      must also compile with -d (DEBUG), which a plain compile never checks (PL-142).
+#      must also compile with -d (DEBUG), which a plain compile never checks.
 #   5. Every bench tier's DEBUG footprint is within the limit measured to run
-#      intact (P2-HAZARD-REGISTER DBG-1), checked through tools/bench-run.sh's
-#      own tier table in measure-only mode -- so an image that would lose its
-#      last debug() records fails here, at commit time, not at the rig.
+#      intact, checked through test/bench-run.sh's own tier table in
+#      measure-only mode -- so an image that would lose its last debug()
+#      records fails here, at commit time, not at the rig.
 #
-# Nothing in src/ is modified; the .bin and .lst files it writes are removed on exit.
+# Nothing in src/ or test/ is modified; every image it compiles is removed as
+# soon as it is built.
 #
 # Usage:  tools/build-check.sh [-v]      (-v lists per-file detail)
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SRC_DIR="${SCRIPT_DIR}/../src"
+SRC_DIR="$(cd "${SCRIPT_DIR}/../src" && pwd)"
+TEST_DIR="$(cd "${SCRIPT_DIR}/../test" && pwd)"
 CONFIG="isp_bldc_motor_userconfig.spin2"
 PNUT="${PNUT_TS:-/Applications/pnut_ts/pnut-ts}"
 
@@ -72,12 +75,29 @@ fi
 # ---- clean up our own outputs no matter how we leave --------------------
 FP_DIR=""                                       # step 5's per-tier results, removed here too
 cleanup() {
-    rm -f ./*.bin ./*.lst 2>/dev/null
+    rm -f ./*.bin ./*.lst "$SRC_DIR"/.build-check-*.bin "$TEST_DIR"/.build-check-*.bin 2>/dev/null
     [ -n "$FP_DIR" ] && rm -rf "$FP_DIR"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# Every compile sees both folders, by absolute path (pnut-ts resolves a relative -I against the
+# top file's folder). pnut-ts also writes -o relative to the top file's folder, so each image
+# gets a name of this script's own beside its source and is removed straight after.
+compile() {   # compile [flags...] <name>: a file in src/ or test/, by name
+    local name="${!#}" path out rc
+    path="$SRC_DIR/$name.spin2"
+    [ -f "$path" ] || path="$TEST_DIR/$name.spin2"
+    out=".build-check-$name.bin"
+    "$PNUT" -q -I "$SRC_DIR" -I "$TEST_DIR" -o "$out" "${@:1:$#-1}" "$path"
+    rc=$?
+    rm -f "$(dirname "$path")/$out"
+    return $rc
+}
+path_of() {   # $1 = name; echoes its file in src/ or test/
+    if [ -f "$SRC_DIR/$1.spin2" ]; then echo "$SRC_DIR/$1.spin2"; else echo "$TEST_DIR/$1.spin2"; fi
+}
 
 # The configuration symbols, and the message the config gives when a build selects neither.
 # (macOS ships bash 3.2 -- no mapfile, no associative arrays. Newline- or space-delimited
@@ -96,26 +116,9 @@ selects_config() {   # $1 = file; echoes the CFG_* symbol the file #DEFINEs for 
 #
 # Exclusions must be named here with a reason, and are printed on every run.
 # Nothing is excluded silently.
-EXCLUDED="hng034rm"
-# hng034rm  -- superseded, unused, and cannot compile. KEEP the file (Stephen,
-#              2026-09-10); this exclusion is permanent until that changes.
-#              It is "Nostalgic displaylisted HDMI for P2 Retromachine" v0.34
-#              alpha, (c) Piotr Kardasz (pik33), MIT.
-#              * It needs FOUR external files via DAT `file` directives, not one:
-#                vgafont.def, st4font.def, atari8.fnt, ataripalettep2.def
-#                (hng034rm.spin2:1199-1205). None is in the repo and none has ever
-#                been in git history. These four lines are the ONLY external file
-#                dependency anywhere in src/.
-#              * It was REPLACED by p2textdrv.spin2, which is present, compiles
-#                under every config, and needs no external files.
-#              * Its sole reference is COMMENTED OUT at isp_hdmi_debug.spin2:36.
-#                isp_hdmi_debug itself is very much alive -- 8 top-levels use it,
-#                including the release demo demo_single_motor -- but it drives
-#                HDMI through p2textdrv, not through this file.
-#              So HDMI debug works today and loses nothing by this exclusion.
-#              See PL-1 in DOCs/PUNCH-LIST.md.
+EXCLUDED=""
 
-TOPS=$(ls *.spin2 2>/dev/null | sed 's/\.spin2$//' \
+TOPS=$( (cd "$SRC_DIR" && ls *.spin2; cd "$TEST_DIR" && ls *.spin2) 2>/dev/null | sed 's/\.spin2$//' \
        | while read -r n; do
              skip=0
              for x in $EXCLUDED; do [ "$n" = "$x" ] && skip=1; done
@@ -125,7 +128,7 @@ TOPS=$(ls *.spin2 2>/dev/null | sed 's/\.spin2$//' \
 # PASSED holds "name=label" rows, one per certified top.
 PASSED=""
 N_PASSED=0
-DEBUG_FAILED=""                                  # demo_* tops that compile plain but not with -d (PL-142)
+DEBUG_FAILED=""                                  # demo_* tops that compile plain but not with -d
 FAILED_LIB=0
 N_TOPS=$(echo $TOPS | wc -w | tr -d ' ')
 
@@ -143,7 +146,7 @@ echo
 # 1. library objects must compile under every configuration
 for sym in $CFG_SYMBOLS; do
     for obj in $LIB_OBJECTS; do
-        if ! "$PNUT" -q -D "$sym" "$obj.spin2" >/dev/null 2>&1; then
+        if ! compile -D "$sym" "$obj" >/dev/null 2>&1; then
             echo "  FAIL  [-D $sym] library object $obj"
             FAILED_LIB=1
         fi
@@ -154,13 +157,13 @@ done
 # 2. every file: a program that selects its configuration compiles as written; any other file
 #    under at least one configuration
 for top in $TOPS; do
-    sym=$(selects_config "$top.spin2")
+    sym=$(selects_config "$(path_of "$top")")
     label=""
     if [ -n "$sym" ]; then
-        "$PNUT" -q "$top.spin2" >/dev/null 2>&1 && label="selects $sym"
+        compile "$top" >/dev/null 2>&1 && label="selects $sym"
     else
         for try in $CFG_SYMBOLS; do
-            if "$PNUT" -q -D "$try" "$top.spin2" >/dev/null 2>&1; then
+            if compile -D "$try" "$top" >/dev/null 2>&1; then
                 label="-D $try"
                 break
             fi
@@ -171,13 +174,13 @@ for top in $TOPS; do
 $top=$label"
     N_PASSED=$((N_PASSED + 1))
     [ $VERBOSE -eq 1 ] && echo "  ok    [$label] $top"
-    # PL-142: a shipped demo must also compile with DEBUG -- a plain compile skips every debug()
+    # a shipped demo must also compile with DEBUG -- a plain compile skips every debug()
     #  line, so a broken one would ship unseen
     case "$top" in
         demo_*)
             dflag=""
             [ -z "$sym" ] && dflag="-D ${label#-D }"
-            if ! "$PNUT" -q -d $dflag "$top.spin2" >/dev/null 2>&1; then
+            if ! compile -d $dflag "$top" >/dev/null 2>&1; then
                 DEBUG_FAILED="$DEBUG_FAILED $top"
                 echo "  FAIL  [$label] $top does not compile with -d (DEBUG)"
             fi
@@ -255,7 +258,7 @@ UNGUARDED=$(awk '
         print "    " FILENAME ":" FNR ": " $0
     }
     /[^[:space:]]/ { prev = $0 }
-' $(for top in $TOPS; do echo "$top.spin2"; done))
+' $(for top in $TOPS; do path_of "$top"; done))
 if [ -n "$UNGUARDED" ]; then
     echo "FAIL: PNut-TS-only directives outside #IFDEF __PNUT_TS__ (PNut could not build these):"
     printf '%s\n' "$UNGUARDED"
@@ -279,13 +282,13 @@ for top in $RELEASE_TOPS; do
     fi
 done
 
-# 5. every bench tier's DEBUG footprint (DBG-1) -- the limit and its provenance live
-#    in bench-run.sh beside the gate that refuses a run; this only walks its tiers.
+# 5. every bench tier's DEBUG footprint -- the limit and its reasons live in
+#    test/bench-run.sh beside the gate that refuses a run; this only walks its tiers.
 #    The tier list is read from bench-run.sh's case labels (4-space indent), and
-#    finding NONE is a failure, never a clean pass (INS-5).
+#    finding NONE is a failure, never a clean pass.
 echo
-echo "Bench-tier DEBUG footprint (bench-run.sh measure-only):"
-BENCH_RUN="${SCRIPT_DIR}/bench-run.sh"
+echo "Bench-tier DEBUG footprint (test/bench-run.sh measure-only):"
+BENCH_RUN="${TEST_DIR}/bench-run.sh"
 # The dual-clock-270 and -300 tiers are skipped: measure-only never applies a clock, so
 # they compile exactly what dual-clock-200 compiles, and it stands for all three.
 TIERS=$(sed -nE 's/^    ([a-z0-9|-]+)\).*/\1/p' "$BENCH_RUN" | tr '|' '\n' \
