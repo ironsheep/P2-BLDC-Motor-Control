@@ -21,6 +21,30 @@ release burn-down that headed this list until then is in git history (`git show 
 6.1.0 closeout swept twenty entries (PL-167's fix and everything certified with it) to
 [`plans/archive/PUNCH-LIST-ARCHIVE-2026-10-03.md`](plans/archive/PUNCH-LIST-ARCHIVE-2026-10-03.md).
 
+### v6.2.0 is release quality; what we look at next — 2026-10-13
+
+STEPHEN 2026-10-13, after the Rev B session: *"This is already release quality. It's already driven on the floor, so
+I think we're ready to go."* *"We are not going to qualify serial for this release."* The open items below are what we
+will look into for the next patch or minor release; none of them stops a user from driving the motors or the robot.
+Which of them read as Known Issues in v6.2.0's CHANGELOG is Stephen's («#3690»).
+
+**For this release (1):** PL-224 (process history out of the shipped comments), with the documentation and CHANGELOG
+close-out.
+
+**Next minor release — serial (4):** PL-111, PL-148, PL-154, PL-157: the serial top level and its host example have not
+been run on hardware in v6.2.0; the next minor release qualifies serial.
+
+**Next release — the driver under load (2):** PL-181 (lag peaks reach LAG_SOFT in calm running on the floor), PL-184
+(at quarter speed one direction draws more current). The platform last ran on the floor at DRIVER_REV 49 (2026-10-02);
+the 6.5″ is certified wheels up on DRIVER_REV 62.
+
+**Next release — the demo (1):** PL-228 (the two-wheel demo's debug build logs late front-cog passes; every drive still
+ends on time).
+
+**Next release — our test harness (7), no user effect:** PL-225 (parameter names), PL-226 (lag bound on undriven
+samples), PL-227 (front-cog stats at 130 MHz; PL-164 closes with it), PL-190 (SRVKEEP's drifting reference), PL-182 and
+PL-192 (floor sampler corrections never run), PL-136 (pre-flight retry, certifies itself on a failure).
+
 ### The register after the v6.2.0 burn-down — 2026-10-10
 
 STEPHEN 2026-10-08: *"Everything we find, we fix"*; *"clean up everything we can, test harness and all"*; then one

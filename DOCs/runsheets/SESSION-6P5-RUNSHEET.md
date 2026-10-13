@@ -112,3 +112,5 @@ Each was dropped on 2026-10-13 because it certifies no change and no release cla
   learn something that actually proves and certifies the driver"*): 16 runs and about 2½ hours become 10 runs and about
   1 hour. Each kept run names the driver change or release claim it certifies; `dual-limits`, `adopt-wheel`, two serial
   pairs and the floor row are dropped, with the reason above.
+- **2026-10-13** — run: rows 1 and 2 (`DOCs/analyses/bench/2026-10-13/REVB-EVALUATION.md`, no fault). Row 3 (serial) not
+  run: Stephen, *"We are not going to qualify serial for this release"*; the next minor release qualifies it.
