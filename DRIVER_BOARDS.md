@@ -1,4 +1,30 @@
-# The Universal Motor Driver boards — Rev A and Rev B
+# P2-BLDC-Motor-Control - The Motor Driver Boards
+
+Know which Rev A or Rev B Parallax 64010 Universal Motor Driver P2 Add-on Board you have, what the driver does with it, and when to be careful.
+
+![Project Maintenance][maintenance-shield]
+
+[![License][license-shield]](LICENSE)
+
+## Table of Contents
+
+On this Page:
+
+- [Which revision do you have?](#which-revision-do-you-have) - how the driver tells the boards apart
+- [Rev A](#rev-a) - the first board, with a coarse current sense
+- [Rev B](#rev-b) - the second board, with an amplified current sense
+- [What is the same on both](#what-is-the-same-on-both) - MOSFETs, dead-time, sense position, hall inputs
+- [What the driver protects against, and what it does not](#what-the-driver-protects-against-and-what-it-does-not) - the limits and their gaps
+- [When to be careful](#when-to-be-careful) - the cases that need care
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md) - How the driver uses the board
+- [Developing with these objects](DEVELOP.md) - Choosing the board detection setting
+- [Drive Objects](DRIVE-OBJECTS.md) - The public interface, including the events named below
+
+---
 
 The Parallax 64010 Universal Motor Driver P2 Add-on Board exists in two revisions, **Rev A** and **Rev B**. These
 objects drive both. This page gives the facts for each revision, so you know what the board you have does, what
@@ -7,15 +33,6 @@ the driver does with it, and when to be careful. It is not a buying guide.
 The board facts come from the two Parallax manuals for the board and the datasheet of its MOSFETs; the driver
 behaviour is the driver's own, verified on our hardware. The driver's behaviour, including how it holds speed up
 to its current limit, is validated on **Rev B** boards.
-
-## Contents
-
-- [Which revision do you have?](#which-revision-do-you-have)
-- [Rev A](#rev-a)
-- [Rev B](#rev-b)
-- [What is the same on both](#what-is-the-same-on-both)
-- [What the driver protects against, and what it does not](#what-the-driver-protects-against-and-what-it-does-not)
-- [When to be careful](#when-to-be-careful)
 
 ## Which revision do you have?
 
@@ -83,7 +100,7 @@ resolves about 7 mA.
   Rev A reads current 30 times more coarsely than Rev B, so its fold-back decides on the current smoothed over about
   a third of a millisecond, and a brief noise spike does not trip it; Rev B decides one PWM frame at a time. On both
   a sudden large surge is acted on in the frame it appears
-  ([how](DRIVER-THEORY-OF-OPERATIONS.md#the-frame-loop--current-limit)).
+  (see [the current limit in Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md#the-frame-loop-current-limit)).
 - **Against a blocked wheel.** A motor commanded to move that does not turn for about a second, with its rotor
   held far behind the field or the current limit acting on it, is stopped and latched (the protective stop; see
   [Drive Objects](DRIVE-OBJECTS.md)).
@@ -108,3 +125,38 @@ resolves about 7 mA.
 - **Forcing the revision.** `BRD_REV_A` or `BRD_REV_B` that does not match the board gives the driver a current scale
   30 times wrong, and its current limit with it. Leave detection on `BRD_AUTO_DET` unless you have a reason.
 - **Either board, braking by shorted phases.** It is not current-limited (above). From speed, prefer a ramped stop.
+
+---
+
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
+
+---
+
+> If you find this kind of written explanation useful, helpful I would be honored by your helping me out for a couple of :coffee:'s or :pizza: slices -or- you can support my efforts by contributing at my Patreon site!
+>
+> [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
+
+---
+
+## Disclaimer and Legal
+
+> *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
+
+---
+
+## License
+
+Licensed under the MIT License.
+
+Follow these links for more information:
+
+### [Copyright](copyright) | [License](LICENSE)
+
+[maintenance-shield]: https://img.shields.io/badge/maintainer-stephen%40ironsheep%2ebiz-blue.svg?style=for-the-badge
+
+[license-shield]: https://img.shields.io/badge/License-MIT-yellow.svg

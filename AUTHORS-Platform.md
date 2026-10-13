@@ -1,36 +1,57 @@
-# P2-BLDC-Motor-Control - The Authors' Test Platform
-as I work on these drivers I need to use a test platform.  This page describes what my platform looks like and how it is set up.
+# P2-BLDC-Motor-Control - The Author's Test Platform
+
+The test platform I use as I work on these drivers, and how it is set up.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
+## Table of Contents
+
+On this Page:
+
+- [Videos of my Platform](#videos-of-my-platform) - the platform under RPi and FlySky control
+- [Images of my Platform](#images-of-my-platform) - unboxing, assembly, parts and the finished platform
+- [The FlySky Connection](#the-flysky-connection) - SBus receiver wiring to the P2
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform
+- [Serial Control](SERIAL-CONTROL.md) - driving the platform from a Raspberry Pi
+
+---
+
+As I work on these Parallax Propeller 2 (P2) drivers I need a test platform. This page describes what my platform looks like and how it is set up.
+
 ## Videos of my Platform
 
-The video of this platform driven from an RPi is on the [Serial Control page](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/SERIAL-CONTROL.md).
+The video of this platform driven from an RPi is on the [Serial Control page](SERIAL-CONTROL.md).
 
 Earlier video of the [Platform under FlySky R/C control](https://youtu.be/EeIrPzJ0THU) @ YouTube
-
 
 ## Images of my Platform
 
 I decided to use the inset wheels design (See [Drawings](DRAWINGS.md)) for mine and ordered it from [SendCutSend.com](https://sendcutsend.com/). I ordered a bunch of the spacers too. The order arrived like this:
 
-![Unboxing platform v2](images/unboxing-platform.jpg)
+![The platform parts as delivered, laid out in their packaging](images/unboxing-platform.jpg)
+
+**Figure 1**: *The platform order as it arrived*
 
 You can see there are a number of predrilled holes for screws, castors, and cable feed through for the motor cables:
 
-- The 4 center small holes (for M3 screws) are for mounting the twin motors boards connected to the Mini Edge Breakout Board. 
--  2 ea. holes for each motor (for 1/4" - 20 Screws.)
--  2x - 4 ea. holes for each castor - (for 1/4" - 20 Screws.)
--  2x - 2 ea. holes for each spacer board (shim) (for 1/4" - 20 Screws.)
+- The 4 center small holes (for M3 screws) are for mounting the twin motor boards connected to the Mini Edge Breakout Board.
+- 2 ea. holes for each motor (for 1/4" - 20 Screws.)
+- 2x - 4 ea. holes for each castor - (for 1/4" - 20 Screws.)
+- 2x - 2 ea. holes for each spacer board (shim) (for 1/4" - 20 Screws.)
 
 ---
 
-
 After unboxing the parts need to be mounted:
 
-![Assembling the platform v2](images/building-the-platform.JPG)
+![The platform partly assembled, with pencil marks on the board](images/building-the-platform.JPG)
+
+**Figure 2**: *The platform during assembly*
 
 The pencil marks show where I drilled additional holes as I determined what additional parts I needed to mount.
 
@@ -38,7 +59,9 @@ The pencil marks show where I drilled additional holes as I determined what addi
 
 The finished platform looks like this:
 
-![Finished Platform](images/assembled-platform.JPG)
+![The finished two-wheel test platform](images/assembled-platform.JPG)
+
+**Figure 3**: *The finished platform*
 
 Here are links to key parts I used:
 
@@ -48,44 +71,56 @@ Here are links to key parts I used:
 - [150A Power Analyzer, High Precision RC with Digital LCD Screen](https://www.amazon.com/ANKG-Precision-Measurement-Connectors-connected/dp/B07YF393ZH) - Amazon, LCD screen shows V, A, W, Ah, Wh measurements
 - [Inline Blade-Fuse Holders](https://www.amazon.com/iGreely-Terminals-Connectors-Automotive-Compatible/dp/B07ST82H9H) - Amazon, Replaced ring-terminal ends with XT90 socket to mate with battery
 
-**Castors** Special Note: the set screws tend to come lose with vibration. I was driving on gravel.  So use loctite or something similar to hold them in place if you don't want castors falling off as your are driving.
+**NOTE:** *Castors: the set screws tend to come loose with vibration. I was driving on gravel. So use Loctite or something similar to hold them in place if you don't want castors falling off as you are driving.*
 
 ---
 
-And here I'm running tests of the FlySky remote control demo. (Of course, running on the test-bench required an empty amazon box.   ;-)
+And here I'm running tests of the FlySky remote control demo. (Of course, running on the test-bench required an empty Amazon box. ;-)
 
-![Driving with FlySly](images/drivingWithFlySky.PNG)
+![The platform sitting on a box while running the FlySky remote control demo](images/drivingWithFlySky.PNG)
 
-#### The FlySky Connection
+**Figure 4**: *Driving with the FlySky remote*
 
-*I used the* **P2 Edge Mini Breakout Board (#64019)** *for my Platform. I chose pin 58 for SBus receive*
+### The FlySky Connection
 
-The SBus receive pin and how to change it: see [Wiring the FlySky Connection](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/README.md#wiring-the-flysky-connection) in the README.
+*I used the* **Parallax 64019 P2 Edge Mini Breakout Board** *for my Platform. I chose pin 58 for SBus receive.*
+
+The SBus receive pin and how to change it: see [Wiring the FlySky Connection](README.md#wiring-the-flysky-connection) in the README.
 
 **P2 Wiring for SBus Receiver:**
 
-| P2 Pin# | P2 Purpose | P2 Pin # |
-| --- | --- | --- | 
-| GND | GND | Signal ground | 
-| Vcc | Vcc | 5v Power for the Receiver | 
-| 58 | Rx | Data from SBus Rcvr to the P2 | 
+| P2 pin | SBus receiver | Purpose |
+| --- | --- | --- |
+| GND | GND | Signal ground |
+| Vcc | Vcc | 5v Power for the Receiver |
+| 58 | Rx | Data from SBus Rcvr to the P2 |
 
-**NOTE**: *with the dual BLDC motor boards occupying the most of the pins finding 5v was challenging. I ended up soldering in a pin between the two headers, routing 5v to it and then connecting the SBus Rcvr Vcc to this pin.*
+**NOTE:** *With the dual BLDC motor boards occupying most of the pins, finding 5v was challenging. I ended up soldering in a pin between the two headers, routing 5v to it and then connecting the SBus Rcvr Vcc to this pin.*
 
 ---
 
-Here's an updated bech-setup with the RPi in the drivers' seat!
+Here's an updated bench setup with the RPi in the driver's seat!
 
-![Now with RPi in drivers' seat](images/more-complex-hasRPi.JPG)
+![The test platform with a Raspberry Pi mounted on it](images/more-complex-hasRPi.JPG)
 
-**NOTE:** the nVolt to 5V DC step-down supply was chosen so that I can power the P2 as well as the RPi from the same 5v. This picture shows me using a Y-splitter on the 5v with the two legs then feeding the P2 and the RPi.
+**Figure 5**: *The platform with the RPi in the driver's seat*
 
+**NOTE:** *The DC step-down supply was chosen so that I can power the P2 as well as the RPi from the same 5v. This picture shows me using a Y-splitter on the 5v with the two legs then feeding the P2 and the RPi.*
 
 ---
 
 > If you like my work and/or this has helped you in some way then feel free to help me out for a couple of :coffee:'s or :pizza: slices!
 >
 > [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
+
+---
+
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
 
 ---
 
@@ -105,12 +140,4 @@ Follow these links for more information:
 
 [maintenance-shield]: https://img.shields.io/badge/maintainer-stephen%40ironsheep%2ebiz-blue.svg?style=for-the-badge
 
-[marketplace-version]: https://vsmarketplacebadge.apphb.com/version-short/ironsheepproductionsllc.spin2.svg
-
-[marketplace-installs]: https://vsmarketplacebadge.apphb.com/installs-short/ironsheepproductionsllc.spin2.svg
-
-[marketplace-rating]: https://vsmarketplacebadge.apphb.com/rating-short/ironsheepproductionsllc.spin2.svg
-
 [license-shield]: https://img.shields.io/badge/License-MIT-yellow.svg
-
-

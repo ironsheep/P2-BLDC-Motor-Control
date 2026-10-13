@@ -1,16 +1,41 @@
-# The 6.5″ hub motor — a technical manual
+# P2-BLDC-Motor-Control - 6.5" Hub Motor Technical Manual
 
-**What it is, how the 64010 board drives it, and where it wants to run.**
+What the 6.5-inch hub motor is, how a Parallax Propeller 2 (P2) drives it through the 64010 board, and where it wants to run.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
-This manual describes the Parallax hoverboard-style 6.5-inch motor-in-wheel (`MOTR_6_5_INCH`)
-as we have actually measured it, and how to get good behaviour out of it with the Parallax
-64010 Universal Motor Driver board.
+## Table of Contents
 
-It is written for someone who wants to understand this motor — not a motor designer, but not a
+On this Page:
+
+- [1. How to read this manual](#1-how-to-read-this-manual) - the one idea to carry, and where each number comes from
+- [2. The motor](#2-the-motor) - construction, geometry, hall sensors and windings
+- [3. How the 64010 board drives it](#3-how-the-64010-board-drives-it) - the power stage and the control loop
+- [4. Position and geometry: the hall zero Z](#4-position-and-geometry-the-hall-zero-z) - where the hall sectors sit against the magnets
+- [5. Field placement: the lead L](#5-field-placement-the-lead-l) - where the field should sit against the rotor, by speed
+- [6. The operating envelope](#6-the-operating-envelope) - speeds, walls, starts, stops, faults and holding
+- [7. Current and power](#7-current-and-power) - what is measured, the protection limits, and what alignment is worth
+- [8. Driving it well](#8-driving-it-well) - the practical rules that follow from the rest
+- [9. What we do not know yet](#9-what-we-do-not-know-yet) - open questions and what would settle them
+- [10. About the measurements](#10-about-the-measurements) - what the numbers were measured on
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [DocoEng motor manual](MOTOR-DOCO-TECHNICAL-MANUAL.md) - The companion manual, built section for section on this one
+- [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md) - How the driver works inside
+- [Techniques](TECHNIQUES.md) - The methods behind these measurements
+- [Adding a Motor](ADDING_MOTOR.md) - The procedure this manual is the worked example for
+
+---
+
+This manual describes the Parallax hoverboard-style 6.5-inch motor-in-wheel (`MOTR_6_5_INCH`)
+as we have actually measured it, and how to get good behavior out of it with the Parallax 64010 Universal
+Motor Driver P2 Add-on Board.
+
+It is written for someone who wants to understand this motor: not a motor designer, but not a
 beginner either. Section 3 assumes you know what PWM is. Nothing else assumes much.
 
 Its companion, the [DocoEng motor's manual](MOTOR-DOCO-TECHNICAL-MANUAL.md), is built section for section on
@@ -22,13 +47,13 @@ the methods are explained in [TECHNIQUES.md](TECHNIQUES.md).
 
 ---
 
-## 1 · How to read this manual
+## 1. How to read this manual
 
 ### 1.1 The one idea to carry through
 
 > **One electrical cycle is 24° of wheel.**
 
-The motor has 30 magnets — 15 pole pairs — so the electrical machine goes round 15 times for
+The motor has 30 magnets (15 pole pairs), so the electrical machine goes round 15 times for
 every one turn of the wheel. Almost everything in this manual is an *electrical* angle, and
 electrical angles are small in wheel terms. The three hall sensors divide each electrical
 cycle into six 60° sectors, so:
@@ -50,15 +75,15 @@ Every table says how its numbers were obtained:
 
 | Basis | Means |
 |---|---|
-| **measured** | measured on our hardware — two units of this motor on a Rev B board, wheels lifted unless stated — with its error where we have one |
+| **measured** | measured on our hardware (two units of this motor on a Rev B board, wheels lifted unless stated), with its error where we have one |
 | **calculated** | worked out from measured values or from the driver's constants; the arithmetic is shown |
 | **vendor** | taken from a datasheet or a Parallax manual, not checked on our hardware |
-| **driver** | a constant or behaviour of the driver in `src/isp_bldc_motor.spin2` |
+| **driver** | a constant or behavior of the driver in **isp_bldc_motor.spin2** |
 
 A number without an error bar is a number claiming more precision than it has. Where we have
 a spread or a standard error, it is printed.
 
-### 1.3 Motor, driver, instrument — the three things this manual keeps apart
+### 1.3 Motor, driver, instrument: the three things this manual keeps apart
 
 A lot of what one observes on a bench is a property of the *system*, not of the motor. This
 manual attributes every quantity, because getting that wrong is how a "motor specification"
@@ -66,19 +91,19 @@ becomes misleading:
 
 | Quantity | Belongs to |
 |---|---|
-| Pole count, hall geometry, the hall zero **Z**, winding resistance | the **motor** — durable, transfers with any driver |
-| The lead **L**, the servo setpoint, the offsets, the fault limit, how it stops and holds | the **driver** — our choices, not the motor's properties |
-| Whether L's speed dependence is the motor's electrical time constant or our commutation lag | **not separated** — §9 |
+| Pole count, hall geometry, the hall zero **Z**, winding resistance | the **motor**: durable, transfers with any driver |
+| The lead **L**, the servo setpoint, the offsets, the fault limit, how it stops and holds | the **driver**: our choices, not the motor's properties |
+| Whether L's speed dependence is the motor's electrical time constant or our commutation lag | **not separated** (§9) |
 | Current readings in mV, the abort thresholds | the **instrument** |
 
 ### 1.4 What is not settled
 
-Open questions are marked ⬚ where they arise and collected in §9. Strike every one of them and
+Open questions are flagged where they arise and collected in §9. Strike every one of them and
 §§2–8 remain a complete description of the motor and how to drive it.
 
 ---
 
-## 2 · The motor
+## 2. The motor
 
 ### 2.1 Construction and geometry
 
@@ -97,18 +122,14 @@ Open questions are marked ⬚ where they arise and collected in §9. Strike ever
 | Hall state sequence | positive power (ticks rising): 1-5-4-6-2-3 · negative power (ticks falling): 1-3-2-6-4-5 | driver (`deltas65`), and measured |
 | Winding resistance, phase to phase | **≈ 0.48 Ω** (every pair 0.41–0.55 Ω) | measured, §2.4 |
 
-There is **no shaft**. The motor *is* the wheel, so there is nowhere to mount a shaft encoder
-— which is why every position fact below had to be obtained from the halls or by hand.
+There is **no shaft**. The motor *is* the wheel, so there is nowhere to mount a shaft encoder,
+which is why every position fact below had to be obtained from the halls or by hand.
 
 ### 2.2 How the 90 ticks were counted
 
-With the motor unpowered, a wheel was turned **three full revolutions by hand** and the hall
-transitions counted:
-
-```
-T0-12,begin,told_direction,CW_FROM_HUB,revolutions,3,wheel,RIGHT_P16
-T0-12,end,transitions,270,illegal,0,pos,-270,final_hall_code,6
-```
+With the motor unpowered, a wheel was turned **three full revolutions by hand** (clockwise as seen
+from the hub) and the hall transitions counted. The counter read **270 transitions and no illegal hall
+codes**, and the hall code at the end of the third turn was the one the count began on.
 
 270 ÷ 3 = **exactly 90 ticks per revolution**, hence 15 electrical cycles and 30 magnets. The
 starting and final hall codes match (as they must after a whole number of cycles) and no illegal
@@ -116,8 +137,8 @@ hall state occurred.
 
 Note what this measurement does *not* use: no library constant appears anywhere in it. A human
 supplied the ground truth and a counter counted edges. Checks that *look* like confirmations
-but are circular — the mm-per-tick arithmetic, a speed sweep, comparing the driver's RPM with a
-program's RPM — all divide by the same 90 they would be confirming.
+but are circular (the mm-per-tick arithmetic, a speed sweep, comparing the driver's RPM with a
+program's RPM) all divide by the same 90 they would be confirming.
 
 ### 2.3 Hall sensor health, as observed
 
@@ -141,7 +162,7 @@ R = d² × V × rSense ÷ net mV.
 | The two units | 7 % apart | | measured |
 
 The supply voltage matters here: computed with the *nominal* 18.5 V instead of the measured 20.72 V,
-the same readings come out 12 % low — exactly the ratio 18.5 / 20.72. The negative case is exact: with
+the same readings come out 12 % low, exactly the ratio 18.5 / 20.72. The negative case is exact: with
 one lead withheld in firmware, the two pairs through that lead read "not visible" and the third still
 measures, in 10 of 10 starts.
 
@@ -161,7 +182,7 @@ floor for any sub-sector interpolation.
 
 ---
 
-## 3 · How the 64010 board drives it
+## 3. How the 64010 board drives it
 
 ### 3.1 The power stage
 
@@ -170,11 +191,11 @@ floor for any sub-sector interpolation.
 | Bridge | four half-bridges (U, V, W, X); three used for a BLDC motor | vendor |
 | MOSFETs | Micro Commercial MCAC85N06Y-TP, 60 V, 85 A package-limited (54 A at 100 °C case) | vendor |
 | Gate driver | Rev A: MIC4604 · Rev B: TI UCC27211D | vendor |
-| Current sense | low-side shunt in the common MOSFET-ground return — **total bridge current** | vendor |
+| Current sense | low-side shunt in the common MOSFET-ground return: **total bridge current** | vendor |
 | Sense scale | Rev A **5 mV/A** (5 mΩ, no amplifier) · Rev B **150 mV/A** (3 mΩ × INA180B2 gain 50) | vendor |
 | Phase sense | three **phase-voltage** channels (U, V, W), read every frame beside the current | driver; measured in use |
 | Bus-voltage sense | **none on the board** (see the optional [pack sensor](VOLTAGE-SENSOR.md)) | vendor |
-| Minimum dead-time | **250 ns, both revisions** — set by MOSFET response, not by driver speed | vendor |
+| Minimum dead-time | **250 ns, both revisions**, set by MOSFET response, not by driver speed | vendor |
 
 **Every measurement in this manual was taken on two units of this motor on a Rev B board.**
 
@@ -182,7 +203,7 @@ Rev B has 30× the sense resolution of Rev A. At 10 A, Rev A presents 50 mV to a
 presents 1.5 V. Rev B is the better instrument by a wide margin, and that is why measurements are
 taken there. §8.1 says what can and cannot be measured on Rev A.
 
-⚠ **The shunt sits between the FETs' common ground and system ground, so it sees only current that
+**WARNING:** **The shunt sits between the FETs' common ground and system ground, so it sees only current that
 returns through the supply.** When the drive shorts the phases (all low sides on), the braking current
 circulates phase to phase through the low-side FETs and never crosses the shunt. The board therefore
 cannot measure a phase short's current, and the current limit cannot limit it. In practice the shunt
@@ -197,11 +218,11 @@ of this manual.
 Each PWM frame the driver:
 
 1. reads the current-sense and phase ADCs;
-2. advances the commanded field angle `angle_` by `drv_incr` — the speed command;
+2. advances the commanded field angle `angle_` by `drv_incr`, the speed command;
 3. computes the three phase outputs as `duty × sin(angle_ + 0° / 120° / 240°)` with the P2's
    CORDIC (`QROTATE`);
 4. reads the halls, looks up the sector's angle, adds the direction's offset, and forms
-   `err_ = angle_ − (hall_angle + offset)` — how far the field leads the rotor estimate;
+   `err_ = angle_ − (hall_angle + offset)`, how far the field leads the rotor estimate;
 5. sets `duty` as a **feedforward** from the field's speed plus an integral **trim** that holds
    `|err_|` at the setpoint (below).
 
@@ -221,7 +242,7 @@ whole driver.
 | Duty trim | each frame adds (the magnitude of `err_` − 48) × (duty ÷ 16) to an accumulator, applied shifted right 16 (`SERVO_ACC_SHIFT`, a gain sized for a 7.7 kg platform): symmetric, untruncated, and with a gain that scales with duty | driver |
 | Duty trim, fast slope | while the rotor trails the field by more than `LAG_SOFT`, each frame also adds (lag − 80) × (duty ÷ 16) at 64 times the calm trim's gain per count, so a load is answered with torque at once; below `LAG_SOFT` it adds nothing | driver |
 | What the servo actually holds | a **point**: mean `err` **47–48 counts** at every speed step tried, both motors, both directions | measured |
-| Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **27,648**, the largest amplitude the PWM carries without clipping after the drive re-centres the three levels each frame. The floor is a fixed fraction of the PWM frame (100 / 6,136), so it scales with the frame at any other clock; the ceiling follows the frame and the dead gap | calculated; measured clip-free |
+| Duty floor / ceiling at 270 MHz | `duty_min` **1,600** · `duty_max` **27,648**, the largest amplitude the PWM carries without clipping after the drive re-centers the three levels each frame. The floor is a fixed fraction of the PWM frame (100 / 6,136), so it scales with the frame at any other clock; the ceiling follows the frame and the dead gap | calculated; measured clip-free |
 | Dead gap applied | 260 ns, converted to clocks at the running clock and rounded up: **71 clocks (263 ns) at 270 MHz**, never under the 250 ns minimum | driver |
 | Lag: the ramp eases its acceleration off, and the trim's fast slope begins | `LAG_SOFT` 80 counts = **112.5°** | driver |
 | Ramp shape | jerk-limited: acceleration eases in and out over **250 ms**; built-in limits **1,000 mm/s²** up and **1,470 mm/s²** down, both provisional until measured under load | driver |
@@ -229,7 +250,7 @@ whole driver.
 | Lag: the field's hold at the current limit | `LAG_LIM` 64 counts = **90°**, the motor's strongest angle (§7.2) | driver |
 | Lag: fault | 125 counts = **175.8°** | driver |
 
-### 3.3 The two knobs that place the field — and they add
+### 3.3 The two knobs that place the field, and they add
 
 This is the single most important thing to understand about driving this motor, and the easiest
 thing to get wrong.
@@ -244,7 +265,7 @@ add together:**
 
 Total steady-state field placement is the **sum**. Two consequences follow:
 
-1. ⚠ **A correction applied to both knobs is applied twice.** The textbook says drive at ±90°
+1. **WARNING:** **A correction applied to both knobs is applied twice.** The textbook says drive at ±90°
    electrical, and the setpoint is below that; the offset's lead makes up the difference. Moving
    the setpoint as well would count the same correction twice, and given how steep the current
    basin is (§5.3: 12.7× over 30°), that is not marginal.
@@ -261,10 +282,10 @@ placement can lower the steady current further.
 | The textbook principle | What we do |
 |---|---|
 | Place power at ±90° electrical from the rotor | The duty servo holds **67.5°**, and the offset adds a lead that varies with speed |
-| Resolve electrical angle to 12 bits (4,096 positions) | **6 positions** — one hall sector, 60° wide |
+| Resolve electrical angle to 12 bits (4,096 positions) | **6 positions**: one hall sector, 60° wide |
 | Compute electrical angle from a fine mechanical angle | The motor has no shaft and no fine sensor |
 
-The textbook method (`electrical = mechanical_12bit × pole_pairs MOD 4096`) is correct — and it
+The textbook method (`electrical = mechanical_12bit × pole_pairs MOD 4096`) is correct, and it
 starts from a 12-bit *mechanical* angle this motor cannot provide. The gap is architectural, not a
 tuning difference: that method assumes an absolute position sensor, and this motor carries three hall
 sensors. Closing it here would mean interpolating within a sector from edge timing and speed, or
@@ -272,12 +293,12 @@ estimating angle from the phase voltages the driver already samples.
 
 ---
 
-## 4 · Position and geometry: the hall zero **Z**
+## 4. Position and geometry: the hall zero **Z**
 
 ### 4.1 What Z is
 
 The halls tell you which 60° sector the rotor is in. They do not tell you where that sector
-boundary sits relative to true electrical zero. **Z is that offset** — a fixed property of how
+boundary sits relative to true electrical zero. **Z is that offset**, a fixed property of how
 the sensors were placed in this motor. It is geometry: it cannot change with speed, load or
 direction, and it transfers to any driver.
 
@@ -303,7 +324,7 @@ them against the hall edges (8 legs per motor, both directions, two hand speeds,
 | LEFT | **−3.31°** | −3.34 / −3.29 | measured |
 | RIGHT | **−3.25°** | −3.22 / −3.28 | measured |
 
-**Take Z = −4° electrical for this motor**, on both units — right to within 0.7° by both methods,
+**Take Z = −4° electrical for this motor**, on both units. It is right to within 0.7° by both methods,
 which is inside the constant's own 1° resolution.
 
 ### 4.3 Why we trust it
@@ -313,19 +334,19 @@ Five independent confirmations, and they do not share a signal path:
 1. **The symmetry prediction held.** The two per-direction minima are symmetric about a common
    midpoint on both motors, and the two midpoints agree within 0.5°. An aliased or spurious
    minimum would not land symmetrically about a common Z.
-2. **Two physically separate motors and boards agree** — within 0.55°.
+2. **Two physically separate motors and boards agree**, within 0.55°.
 3. **It reproduces across independent runs** and across two speeds, within stated error.
 4. **Z is speed-invariant, as geometry must be**: it moved 0.2–0.55° across a doubling of
    speed, while the lead L moved 12.2° across the same doubling. That is the method's own
    negative case, and it passed.
 5. **A second method, sharing nothing with the first, agrees within 0.35°.** The cold back-EMF
    measurement uses no drive, no current and no offset sweep, and its own negative case holds too:
-   slow and brisk legs agree within 0.12°. Its frame is itself tested by the data — the three
+   slow and brisk legs agree within 0.12°. Its frame is itself tested by the data: the three
    phases fall 120° apart in the one order the drive's phase convention predicts.
 
 ### 4.4 The honest limit
 
-The offset sweep covers about **126° of the 360° electrical cycle** — roughly 35 %, bounded
+The offset sweep covers about **126° of the 360° electrical cycle**, roughly 35 %, bounded
 outward by an over-current abort and inward by the motor faulting. Inside that window there is
 exactly one minimum per direction, deep and reproducible.
 
@@ -337,11 +358,11 @@ measurement (§9).
 
 ### 4.5 A caution for anyone turning the wheel by hand
 
-Turning an unpowered 6.5″ hub wheel, you can plainly feel periodic detent — magnetic cogging
+Turning an unpowered 6.5″ hub wheel, you can plainly feel periodic detent: magnetic cogging
 between the magnets and the stator teeth. **That is not commutation.** It is a property of the
 iron, it exists with the drive switched off, and it must not be read as evidence about offsets.
 Likewise, any low-current region you find while rotating the wheel repeats **15 times per
-revolution, once every 24°** — those are not fifteen candidate alignments, they are one
+revolution, once every 24°**. Those are not fifteen candidate alignments, they are one
 alignment seen fifteen times. The offset is a single electrical angle applied identically inside
 every one of the 15 cycles; "which one around the circumference" is not something the parameter
 can express.
@@ -372,10 +393,7 @@ wave of 281–1,006 mV peak to peak, crossing at the hall rate, on both units, f
 phases together and the signal is gone. That is one reason a coast is the kinder response when the
 halls are lost (§6.5).
 
-⬚ The same signal exists while the motor is being driven, but the phase pins then also carry the
-drive's PWM. Whether it can still be read there is not yet measured (§9). That is the question that
-decides whether this can become a live position source for the drive, not just a way to measure the
-motor.
+**NOTE:** *The same signal exists while the motor is being driven, but the phase pins then also carry the drive's PWM. Whether it can still be read there is not yet measured (§9). That is the question that decides whether this can become a live position source for the drive, not just a way to measure the motor.*
 
 ### 4.7 What differs from one unit to the next
 
@@ -383,9 +401,9 @@ Measured on two units by the method in §4.6:
 
 | Property | LEFT | RIGHT | Unit-specific? |
 |---|---|---|---|
-| Hall zero Z | −3.31° | −3.25° | **No** — within measurement scatter; one constant serves both |
+| Hall zero Z | −3.31° | −3.25° | **No**: within measurement scatter; one constant serves both |
 | Sector widths (§2.4) | ±0.9° about 60° | ±0.55° | **Yes**, each unit has its own fixed pattern, and it is small |
-| Hall lag, each direction | ±1.05° | ±0.8 to ±1.2° | No — the same size on both |
+| Hall lag, each direction | ±1.05° | ±0.8 to ±1.2° | No: the same size on both |
 
 **Hall lag** is the halls switching slightly late in the direction of travel. Forward readings of
 Z sit about 2° more negative than reverse ones. The difference is the same at 43 and 117 edges/s,
@@ -399,15 +417,15 @@ population, though (§9).
 
 ---
 
-## 5 · Field placement: the lead **L**
+## 5. Field placement: the lead **L**
 
 ### 5.1 What L is
 
-Z says where the halls sit. **L sets where the field sits against the rotor** — and, as the
+Z says where the halls sit. **L sets where the field sits against the rotor**, and, as the
 driver writes it, a larger L places the field *less* far ahead (§5.2). It is a drive parameter,
 not a motor property. The two combine into the offset pair:
 
-```
+```text
 offset_fwd = Z + L      applied to NEGATIVE increments
 offset_rev = Z − L      applied to POSITIVE increments
 ```
@@ -435,10 +453,10 @@ the table it holds the end value and never extrapolates.
 hold for this driver's duty servo: a servo that settles at a different point moves the whole curve.
 That is what a drive parameter does, and it is why L is not quoted as a property of the motor.
 
-⚠ **L, as this driver writes it, is a lag.** The driver places the field ahead of the hall angle
+**WARNING:** **L, as this driver writes it, is a lag.** The driver places the field ahead of the hall angle
 plus the offset, and the pair is `Z + L` on negative increments and `Z − L` on positive ones, so a
 larger L puts the field **less** far ahead of the rotor in both directions. "L falls with speed"
-therefore means the field's real lead **rises** with speed — the direction the textbook predicts,
+therefore means the field's real lead **rises** with speed, the direction the textbook predicts,
 since the current lags the applied voltage more at higher electrical frequency. How fast it rises
 at walking pace, though, is not the windings' doing (§5.4, §9).
 
@@ -455,10 +473,10 @@ Measured current against swept offset, LEFT motor, negative increment, net mV:
 |---|---|---|---|---|---|---|---|---|---|---|
 | net mV | abort | 392.8 | **167.1** | 67.2 | 40.5 | 23.7 | 14.6 | **13.1** | 15.1 | fault |
 
-**167.1 → 13.1 mV over 30° — a 12.7× change.**
+**167.1 → 13.1 mV over 30°, a 12.7× change.**
 
 A basin that deep is consistent with off-optimum current being dominated by **circulating current
-that produces no torque**, rather than by a modest loss of torque per amp — which is also the most
+that produces no torque**, rather than by a modest loss of torque per amp, which is also the most
 natural reading of the 15–26× difference in §7.3.
 
 **What it means for you: alignment on this motor is worth a lot, and being 30° out costs an
@@ -466,9 +484,9 @@ order of magnitude in current, not a few percent.**
 
 ### 5.4 The lead curves
 
-The two bowls a lead sweep gives at each speed — current and duty — their bottoms against speed (the
+The two bowls a lead sweep gives at each speed (current and duty), their bottoms against speed (the
 **efficiency** and **headroom** curves), and the model's four predictions about them are described once,
-in [DRIVER-THEORY-OF-OPERATIONS.md](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves--where-the-offset-should-sit).
+in [DRIVER-THEORY-OF-OPERATIONS.md](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves-where-the-offset-should-sit).
 The [DocoEng manual §5.4](MOTOR-DOCO-TECHNICAL-MANUAL.md#54-the-lead-curves) gives the same for that motor.
 "Lead" here is the field's real lead over the rotor: on this motor, the opposite of L.
 
@@ -488,7 +506,7 @@ both units' flat regions (§5.2).
 
 ---
 
-## 6 · The operating envelope
+## 6. The operating envelope
 
 ### 6.1 Speeds
 
@@ -511,7 +529,7 @@ reserve: at 165 × 10⁶ duty runs at 92–93 % of its ceiling, on both motors a
 It is not the speed at which the wheel stops following, which is far higher (§6.3). How much of that
 reserve survives a load is not yet measured (§9).
 
-**The figures labelled 18.5 V were measured on a pack of about 20.5–20.7 V**, the bench pack. On a pack at
+**The figures labeled 18.5 V were measured on a pack of about 20.5–20.7 V**, the bench pack. On a pack at
 the nominal 18.5 V the same speed needs more voltage than the pack gives: full power needs about
 102–104 % of the duty ceiling (calculated from the 92–93 % measured). The drive then keeps up the way it does
 above the knee (§6.3). The other voltages' ceilings are scaled from the same measured figure.
@@ -525,8 +543,8 @@ for **two different reasons**, and they are not the same wall:
 
 | Wall | Side | What happens |
 |---|---|---|
-| **Current wall** | too much L — the field too little ahead | Current explodes, and the run aborts on the current cap. |
-| **Torque wall** | too little L — the field too far ahead | The rotor falls behind the field: it slows, or the field outruns it and it faults. It lies just past the bottom of the duty bowl (§5.4): beyond it a rotor that falls back needs more voltage, not less, so it falls further. |
+| **Current wall** | too much L: the field too little ahead | Current explodes, and the run aborts on the current cap. |
+| **Torque wall** | too little L: the field too far ahead | The rotor falls behind the field: it slows, or the field outruns it and it faults. It lies just past the bottom of the duty bowl (§5.4): beyond it a rotor that falls back needs more voltage, not less, so it falls further. |
 
 At 90° from optimum, torque is zero at any speed. The reachable arc is the band between the two
 walls, and **it narrows as speed rises**.
@@ -557,7 +575,7 @@ sits below the knee, with reserve, rather than at the speed where following ends
 **Alignment moves the knee as well.** The lead table unpinned 147 and 155 × 10⁶, which a flat 18° lead
 had held at the ceiling. So alignment buys headroom as well as current.
 
-### 6.4 Starting from rest — the transient
+### 6.4 Starting from rest: the transient
 
 **A start from rest is quiet.** The current rises smoothly to the settled value, and duty does
 not swing on the way:
@@ -582,9 +600,7 @@ current peak grows with the acceleration, as it must (1.26–1.34 × settled at 
 at twice it and 1.57–2.13 at four times), and in absolute terms it stays at about 0.2 A. Slowing down
 produces no surge at either rate tried: the current only falls.
 
-⬚ These start figures were measured at a constant acceleration. The driver's ramp eases its acceleration
-in and out (§7.5); that ramp is measured for its shape and its stops, not yet for start current. Every
-trace here was taken wheels-up; how a start behaves under load is in §9.
+**NOTE:** *These start figures were measured at a constant acceleration. The driver's ramp eases its acceleration in and out (§7.5); that ramp is measured for its shape and its stops, not yet for start current. Every trace here was taken wheels-up; how a start behaves under load is in §9.*
 
 ### 6.5 Stopping, faulting and holding
 
@@ -599,12 +615,12 @@ back-EMF. Here is one unit from a forced fault at speed, wheels up:
 | 120 × 10⁶ | 1.9 m/s | 115–116 / 703 | 1–3 / 11–89 |
 
 Measured over three runs, reproducing within 3 ticks; the other unit gave the same comparison. One tick
-is 5.76 mm, so the 120 × 10⁶ coast is about 0.67 m of tyre.
+is 5.76 mm, so the 120 × 10⁶ coast is about 0.67 m of tire.
 
-⚠ **Read these as the wheel's own behaviour, not a robot's.** Wheels up, a coast is resisted only by the
+**WARNING:** **Read these as the wheel's own behavior, not a robot's.** Wheels up, a coast is resisted only by the
 motor's drag, and a short stops only the wheel's own inertia. On the floor the platform's mass is behind
 the wheel. A short from speed then becomes a braking torque at the contact patch, and the platform tips
-if its centre of gravity is high. A coast becomes a roll, and on an incline a runaway. The
+if its center of gravity is high. A coast becomes a roll, and on an incline a runaway. The
 short-circuit current behind that torque is about **35–42 A** from the ceiling speed: 17–20 V of back-EMF
 into ≈ 0.48 Ω. That figure is calculated from the measured resistance; it cannot be measured on this
 board, because the shunt cannot see it (§3.1).
@@ -649,10 +665,10 @@ unit draws about **0.26–0.27 A** of DC-link current. A firm hand push makes it
 limit time at the ceiling it hands off to the phase short. That was measured wheels up, by hand, and it
 sizes nothing for a slope (§9).
 
-**A wheel commanded but not turning** is caught by the blocked-rotor stop about 1 s in, in the user's
-stop mode. The second is counted from the moment the wheel stops ticking while the field is pressed against it
-(held past `LAG_SOFT`) or the current limit has acted on it since its last tick, so a wheel that keeps rocking
-against an obstacle restarts the count with every tick (below).
+**A wheel commanded but not turning** is caught by the blocked-rotor stop about 1 s after it stops ticking, in your
+configured stop mode. The second is counted from the moment the wheel stops ticking while the field is pressed against it
+(held past `LAG_SOFT`) or the current limit has acted on it since its last tick. A wheel that keeps rocking
+against an obstacle therefore restarts the count with every tick (§9).
 
 **On the floor** (a 7.7 kg two-wheel platform, two units, Rev B boards):
 
@@ -682,13 +698,13 @@ when a check fails. Wheels up, both units:
 
 | Check | Healthy reading | What a failure looked like | Basis |
 |---|---|---|---|
-| Current-sense rest zero | LEFT 6.4–9.4 mV, RIGHT −0.3–3.1 mV; the accepted band is −17…+36 mV, calculated from the INA180's and the P2 ADC's figures (the comment at `REST_ZERO_MIN_MV` in `src/isp_bldc_motor.spin2`) | — | readings measured over 60+ starts; band calculated |
+| Current-sense rest zero | LEFT 6.4–9.4 mV, RIGHT −0.3–3.1 mV; the accepted band is −17…+36 mV, calculated from the INA180's and the P2 ADC's figures | n/a | readings measured over 60+ starts; band calculated |
 | Each lead drives its phase (probe) | driven phase 777–823 mV, undriven phases follow at ≥ 95 % | a withheld lead ≤ 31 mV; a bridge not driving, 11–27 mV on all three | measured |
 | Halls present and legal | legal at every start | connector unplugged: `%111`, caught 10 of 10 | measured |
 | Winding resistance (opt-in) | §2.4 | the withheld lead's two pairs go dark, 10 of 10 | measured |
 | Wiring walk, one electrical cycle each way (opt-in, moves the wheel) | legs of 7 ticks out and back, 13–21 mV peak | swapped hall pair (made in firmware): fails 3 of 3 | measured |
 
-⚠ **A miswired walk with no guard drew a ~26 A peak** (3,858 mV). The walk now ends a leg at 150 mV net
+**WARNING:** **Without its guard, a miswired walk drew a ~26 A peak** (3,858 mV). The walk ends a leg at 150 mV net
 (about 1 A), and a miswired walk peaks right at that trip. 20 of 20 healthy walks pass, including a
 healthy wheel beside a miswired partner.
 
@@ -697,13 +713,11 @@ when the program started, nothing more.
 
 ### 6.7 Smoothness and vibration
 
-⬚ Not measured on this motor: it has no shaft to carry an encoder, so the speed wobble inside a turn
-cannot be timed the way the DocoEng manual's §6.7 does. On the floor, starts, speed changes and stops felt
-smooth, with no unusual sound (§7.5).
+**NOTE:** *Not measured on this motor: it has no shaft to carry an encoder, so the speed wobble inside a turn cannot be timed the way the DocoEng manual's §6.7 does. On the floor, starts, speed changes and stops felt smooth, with no unusual sound (§7.5).*
 
 ---
 
-## 7 · Current and power
+## 7. Current and power
 
 ### 7.1 What is measured and what is not
 
@@ -712,12 +726,12 @@ smooth, with no unusual sound (§7.5).
 | Total bridge current (DC link) | **measured**, calibrated, 150 mV/A on Rev B |
 | Per-phase voltages | **measured** |
 | Winding resistance | **measured** by the driver at start, ±6 % per reading (§2.4) |
-| Bus voltage | ⛔ **not measured by the board** — assumed from the configured `DRIVE_VOLTAGE`, unless the optional [pack sensor](VOLTAGE-SENSOR.md) is fitted (`getPackVoltage()`) |
-| A phase short's current | ⛔ **not visible** — it never crosses the shunt (§3.1) |
-| Motor or board temperature | ⛔ not measured |
-| Regenerative current | ⛔ **not visible** — the shunt is low-side, so regeneration drives the sense node below ground, and Rev B's amplifier (INA180) is a one-direction part with no reference pin |
+| Bus voltage | **not measured by the board**: assumed from the configured `DRIVE_VOLTAGE`, unless the optional [pack sensor](VOLTAGE-SENSOR.md) is fitted (`getPackVoltage()`) |
+| A phase short's current | **not visible**: it never crosses the shunt (§3.1) |
+| Motor or board temperature | not measured |
+| Regenerative current | **not visible**: the shunt is low-side, so regeneration drives the sense node below ground, and Rev B's amplifier (INA180) is a one-direction part with no reference pin |
 
-⚠ **Every power figure in this manual is a current measurement against an assumed voltage.** Without a
+**WARNING:** **Every power figure in this manual is a current measurement against an assumed voltage.** Without a
 pack sensor, nothing in the system feeds back battery voltage, and a sagging pack looks identical to a
 healthy one.
 
@@ -731,9 +745,9 @@ healthy one.
 | Peak restored below | 80 % of continuous | driver |
 | Averaging window | ~1 s | driver |
 | Fault (field outruns rotor) | 175.8° electrical | driver |
-| Blocked-rotor detection | ~1 s with no hall tick while the field is held past `LAG_SOFT`, or after the current limit has acted on the wheel since its last tick; stops in the user's stop mode | driver; measured firing at about 1 s |
+| Blocked-rotor detection | ~1 s with no hall tick while the field is held past `LAG_SOFT`, or after the current limit has acted on the wheel since its last tick; stops in your configured stop mode | driver; measured firing at about 1 s |
 
-These protect the board, not the motor, and they are not user settings. None of them can limit the
+These protect the board, not the motor, and you cannot change them. None of them can limit the
 current of a phase short, which the shunt cannot see (§3.1). A short is limited only by the winding
 resistance, or by the graded short's duty (§6.5).
 
@@ -778,7 +792,7 @@ current that is already an order of magnitude smaller than misaligned.
 
 ### 7.4 What off-optimum current costs
 
-From §5.3: 30° off optimum multiplies current by 12.7×. Most of that is not doing work — it is
+From §5.3: 30° off optimum multiplies current by 12.7×. Most of that is not doing work. It is
 circulating current producing no torque, and it comes out as heat in the MOSFETs and the
 windings.
 
@@ -811,12 +825,13 @@ reporting STOPPED; stop limits armed at cruise and mid-ramp came to rest within 
 limits, and the same stop plans repeated to within a millisecond on a second day.
 
 **On the floor**, driven by remote control on the 7.7 kg platform, starts, speed changes and stops felt smooth,
-with no clicking and no unusual motor sound. ⬚ **Not yet known:** the current each draws under load, and whether
-the built-in rates suit every loaded platform (§9).
+with no clicking and no unusual motor sound.
+
+**NOTE:** *Not yet known: the current each draws under load, and whether the built-in rates suit every loaded platform (§9).*
 
 ---
 
-## 8 · Driving it well
+## 8. Driving it well
 
 Everything here follows from §§4–7 and cites the section it comes from.
 
@@ -834,7 +849,7 @@ Everything here follows from §§4–7 and cites the section it comes from.
 **Speed**
 
 4. **No fixed offset pair suits the whole speed range.** The lowest-current L falls about 15°
-   between 49 and 98 ticks/s — the field's real lead rising (§5.2). A fixed pair is a one-speed tune.
+   between 49 and 98 ticks/s, the field's real lead rising (§5.2). A fixed pair is a one-speed tune.
 5. **Stay below the duty knee** where you care about efficiency or about current readings meaning
    anything. `power` 100 keeps about 7 % unloaded duty reserve on the bench pack, and none on a pack at the nominal 18.5 V
    (§6.1). Above the knee the wheel keeps up by letting its lag grow, and the current it draws unloaded
@@ -876,13 +891,13 @@ Everything here follows from §§4–7 and cites the section it comes from.
 The two quantities that matter most are not equally available on Rev A, and the difference is the
 current channel:
 
-- **Z — the hall zero — needs no current and no drive.** It is measured with the bridge coasting and
+- **Z, the hall zero, needs no current and no drive.** It is measured with the bridge coasting and
   the wheel turned by hand (§4.6). Nothing in that method reads the current-sense channel, so Rev A's
   30×-coarser sense does not degrade it, and nothing can fault or run away because nothing is driven.
   One check first: the driver scales the three phase channels identically on both boards, but whether
   the two *boards* present phase voltage at the same scale is not something the vendor documentation
   addresses. Confirm it before trusting a Rev A phase reading.
-- **L — the lead — needs the motor driven and a current minimum located.** Rev A presents current to
+- **L, the lead, needs the motor driven and a current minimum located.** Rev A presents current to
   the ADC at 5 mV/A against Rev B's 150 mV/A. At good alignment the whole signal is a few hundred
   millivolts on Rev B, so the same measurement on Rev A sits in the bottom two percent of the range.
   Expect much wider error bars.
@@ -892,13 +907,13 @@ current channel:
 - **The start check's rest-zero band** for Rev A (−17…+17 mV) is calculated from component data and
   has not yet been checked against a Rev A board.
 
-⭐ Notice the pattern: **the quantity that belongs to the motor can be measured on any board; the
+Notice the pattern: **the quantity that belongs to the motor can be measured on any board; the
 quantity that belongs to the driver depends on which board it is.** That is §1.3's attribution showing
 up as a practical fact.
 
 ---
 
-## 9 · What we do not know yet
+## 9. What we do not know yet
 
 Each question says why it matters and what would settle it.
 
@@ -911,7 +926,7 @@ Each question says why it matters and what would settle it.
 | **Why the real lead rises so fast at walking pace.** About 13° per doubling of speed from 33 rpm (§5.4). The direction is the textbook's (§5.2), but the windings' L/R cannot move it that fast at these speeds; the commutation scheme at walking pace (the rotor surging between hall edges, the servo's averaging) can. | It decides whether a speed law can be written down or must be measured per motor. | The motor's time constant does not care about the drive-pass rate and loop lag does, so the lead measurement repeated on a build with a different pass rate would tell them apart. |
 | **The lead curves.** The efficiency curve is measured at 18.5 V; the headroom curve and other supplies are not (§5.4). | They decide whether the lead table needs the supply as a second input near the top. | A motor model fitted to the measured bowls, then a few checking points. |
 | **Is the alignment the global optimum?** About 35 % of the electrical cycle has been swept (§4.4); one minimum per direction lies inside it. | Theory says there is only one, but that is an argument. | A full-cycle sweep, by a method that does not drive the motor into the current wall to get there. |
-| **Unit-to-unit variation.** Two units measured; Z agrees within 0.06° and resistance within 7 %. | Two is not a population. | More units — Z can be measured on any board (§8.1). |
+| **Unit-to-unit variation.** Two units measured; Z agrees within 0.06° and resistance within 7 %. | Two is not a population. | More units. Z can be measured on any board (§8.1). |
 | **Winding inductance, and so L/R.** Only bounded (§2.4). | It sets how finely a graded short can be sliced, and how a current pulse rises. | An LCR meter across two leads, or a fast read of the current's rise during a drive pulse. |
 | **Can back-EMF be read while the motor is driven?** It reads cleanly while coasting (§4.6). While driving, every ADC reading averages a whole PWM frame. | It decides whether back-EMF can become a position source when the halls are lost. | Releasing the bridge for a few frames at a few speeds and capturing the phase pins. |
 | **Bus voltage.** The board cannot measure it (§7.1). Our rig has the optional pack sensor fitted, calibrated against a meter at one voltage (within 7 mV at 20.74 V); the winding measurement (§2.4) uses it. | The power figures in §7 still rest on the nominal voltage, and the calibration has one point. | A check at a second pack voltage. |
@@ -919,18 +934,27 @@ Each question says why it matters and what would settle it.
 
 ---
 
-## 10 · About the measurements
+## 10. About the measurements
 
 Every measurement here was taken on two units of this motor, on a Rev B 64010 board, with the P2 at
-270 MHz (the clock every figure here is stated at; the drive's timing at other clocks is described in [DEVELOP.md](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#choosing-a-clock)), during the driver work of September and October 2026: with the wheels lifted, except the floor results in §6.5,
+270 MHz (the clock every figure here is stated at; the drive's timing at other clocks is described in
+[DEVELOP.md](DEVELOP.md#choosing-a-clock)). The wheels were lifted, except for the floor results in §6.5,
 which were taken with the two units driving a 7.7 kg two-wheel platform. The speed figures were measured on a pack of about 20.5–20.7 V (§6.1). The measurements were made
 with the driver's own sense channels, read through the programs in `src/test_*.spin2`;
-[TECHNIQUES.md](TECHNIQUES.md) explains the methods. The analyses behind each number are kept in this
-repository's `DOCs/analyses/` folder.
+[TECHNIQUES.md](TECHNIQUES.md) explains the methods.
 
 ---
 
-> If you like my work and/or this has helped you in some way then feel free to help me out for a couple of :coffee:'s or :pizza: slices!
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
+
+---
+
+> If you find this kind of written explanation useful, helpful I would be honored by your helping me out for a couple of :coffee:'s or :pizza: slices -or- you can support my efforts by contributing at my Patreon site!
 >
 > [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
 
@@ -938,7 +962,7 @@ repository's `DOCs/analyses/` folder.
 
 ## Disclaimer and Legal
 
-> _Parallax, Propeller Spin, and the Parallax and Propeller Hat logos_ are trademarks of Parallax Inc., dba Parallax Semiconductor
+> *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
 
 ---
 

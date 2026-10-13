@@ -1,23 +1,43 @@
-# Techniques — how we measured the motor and built the driver
+# P2-BLDC-Motor-Control - Techniques
+
+How we measured the motors and built the driver, written so you can reuse the methods.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
-The 6.0 driver was rebuilt around measurement: every constant that places the motor's field, limits
+## Table of Contents
+
+On this Page:
+
+- [Part 1 - Characterizing a motor](#part-1---characterizing-a-motor) - counting poles, finding the hall order and the hall zero, the lead, the speed limits, the winding, the stop
+- [Part 2 - Trusting a measurement](#part-2---trusting-a-measurement) - negative cases, independent routes, self-judging tests, suspect the instrument first
+- [Part 3 - Engineering on the P2](#part-3---engineering-on-the-p2) - one owner for shared state, layout checks, proving a PASM rewrite, overlays, compile-time configuration, DEBUG budget, bench panels
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [ADDING_MOTOR.md](ADDING_MOTOR.md) - turns Part 1 into steps for a new motor
+- [6.5″ Hub Motor Technical Manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - the full record the worked examples come from
+- [DocoEng Motor Technical Manual](MOTOR-DOCO-TECHNICAL-MANUAL.md) - the second motor, measured the same way
+- [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md) - how the driver works inside
+
+---
+
+The driver is built around measurement: every constant that places the motor's field, limits
 its speed or stops it came from the motor itself, read through the driver's own sense channels. This
 page collects the methods that got us there, so you can reuse them. You don't have to repeat our
 work to use the driver. You only need these if you are adding a motor, changing the driver, or
-building something of your own on the P2.
+building something of your own on the Parallax Propeller 2 (P2).
 
 Each technique is written the same way: **the idea**, **how**, **a worked example** with our real
 numbers, and **where it lives** in this repo.
 
-| If you are… | Read |
+| If you are... | Read |
 |---|---|
-| adding a motor | [Part 1](#part-1--characterizing-a-motor), then [ADDING_MOTOR.md](ADDING_MOTOR.md), which turns it into steps |
-| deciding whether to trust a number — ours or yours | [Part 2](#part-2--trusting-a-measurement) |
-| changing the driver, or writing your own P2 code | [Part 3](#part-3--engineering-on-the-p2) |
+| adding a motor | [Part 1](#part-1---characterizing-a-motor), then [ADDING_MOTOR.md](ADDING_MOTOR.md), which turns it into steps |
+| deciding whether to trust a number (ours or yours) | [Part 2](#part-2---trusting-a-measurement) |
+| changing the driver, or writing your own P2 code | [Part 3](#part-3---engineering-on-the-p2) |
 
 The worked examples are the 6.5″ hub motor. Its full record is the
 [6.5″ motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md), and how the driver works is in
@@ -25,7 +45,7 @@ The worked examples are the 6.5″ hub motor. Its full record is the
 
 ---
 
-## Part 1 — Characterizing a motor
+## Part 1 - Characterizing a motor
 
 ### 1.1 Count revolutions by hand; don't calculate them
 
@@ -40,13 +60,12 @@ at the end must equal the code at the start, and no illegal code (`%000` or `%11
 **Worked example.** Three revolutions of a 6.5″ wheel gave **270 transitions**, 0 illegal, and the same
 start and end code: exactly 90 ticks per revolution, 15 electrical cycles, 30 magnets.
 
-⚠ **Beware circular checks.** Wheel travel per tick, a speed sweep's ticks per second, and the driver's
+**WARNING:** **Beware circular checks.** Wheel travel per tick, a speed sweep's ticks per second, and the driver's
 RPM against a program's RPM all *look* like confirmations, but each divides by the same 90 it claims to
 confirm. Only the hand count doesn't.
 
-**Where it lives.** `src/test_bench_t0.spin2` built with `-D T0_HAND` (its log lines begin `T0-12`) counts for you, with a
-panel that tells you what to do. A program that starts the motor with no drive command and prints
-`getRawHallTicks()` works just as well.
+**Where it lives.** A program that starts the motor with no drive command and prints
+`getRawHallTicks()` while you turn the wheel does the counting.
 
 ### 1.2 The hall order and the transition table
 
@@ -88,13 +107,14 @@ their midpoint; L is half their separation. Repeat at a second speed. **Z must n
 the speed Z moved only 0.2–0.55°, while L moved 12.2°: geometry held still, and the drive parameter
 didn't.
 
-⚠ **The window you can sweep is bounded.** Too much lead and current climbs until the run has to abort.
+**WARNING:** **The window you can sweep is bounded.** Too much lead and current climbs until the run has to abort.
 Too little and the motor can't make torque, so it slows or faults. On this motor that left about 126° of
 the 360° cycle to sweep. The minimum you find is a true local minimum, and theory says it is the only
 one, but that is an argument, not a measurement.
 
-**Where it lives.** `src/test_bench_scan.spin2` runs the sweep unattended, per motor and per direction,
-fitting each minimum and reporting how close it sits to the fault edge.
+**Where it lives.** An unattended sweep program, per motor and per direction, steps the offset, fits
+each minimum, and reports how close it sits to the fault edge. The offsets it finds go into
+`offsetsForMotor()`.
 
 ### 1.4 Find the hall zero cold, from the motor's own voltage
 
@@ -116,9 +136,11 @@ phase convention predicts, so the frame the method assumes is itself tested.
 **Why it matters for you:** this needs no current resolution at all, so it works just as well on a Rev A
 board (5 mV/A) as on Rev B (150 mV/A). Nothing is driven, so nothing can fault or run away.
 
-**Where it lives.** The `dual-align` tier of `src/test_bench_dual.spin2`.
+**Where it lives.** A program that coasts the bridge and records hall edges and the three phase
+voltages on the driver's frame clock does the measurement. The result is in the
+[6.5″ manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md).
 
-### 1.5 Measure the lead at several speeds — it is not a constant
+### 1.5 Measure the lead at several speeds: it is not a constant
 
 **The idea.** The lead that gives least current changes with speed, so a single fixed offset pair is a
 one-speed tune. Measure L at several speeds, one octave apart, and let the driver interpolate.
@@ -131,16 +153,15 @@ just the minimum, and choose a table value inside it.
 196 and 393 ticks/s, 3–8°. The table holds 20.5°, 5°, 8° and 8°. Against a flat 18°, the table draws
 **24–78 % less current** from 107 to 374 ticks/s.
 
-⚠ **The textbook model gives the wrong sign.** It says the lead should *grow* with speed, because
+**WARNING:** **The textbook model gives the wrong sign.** It says the lead should *grow* with speed, because
 current lags voltage more at higher frequency. On this motor it falls, then holds. Measure; don't design
 from the model.
 
-⚠ **The offset and the duty servo's setpoint add.** Both place the field. Carry the lead in the offset,
+**WARNING:** **The offset and the duty servo's setpoint add.** Both place the field. Carry the lead in the offset,
 which acts instantly, and leave the setpoint alone. Correcting both counts the same correction twice, in
 a basin where 30° of error costs 12.7× the current.
 
-**Where it lives.** The `dual-lead` tier of `src/test_bench_dual.spin2`; the table is `leadIncrTbl` /
-`leadTenthsTbl` in `src/isp_bldc_motor.spin2`.
+**Where it lives.** The table is `leadIncrTbl` / `leadTenthsTbl` in `src/isp_bldc_motor.spin2`.
 
 ### 1.6 Choose the speed ceiling by duty reserve, not by where the motor gives up
 
@@ -161,8 +182,7 @@ The other voltages' ceilings are that one number scaled by voltage, and measurem
 voltages followed that line to within 2.5 %. On a pack at the nominal 18.5 V the same ceiling needs about
 102–104 % of the duty ceiling (calculated), so it is run past the knee.
 
-**Where it lives.** The `dual-limits` and `dual-limits-top` tiers of `src/test_bench_dual.spin2`;
-`confgurePowerLimits()` in the driver.
+**Where it lives.** `confgurePowerLimits()` in the driver holds the per-voltage ceilings and floors.
 
 ### 1.7 Let the driver measure the winding
 
@@ -195,16 +215,15 @@ strongly non-linearly with the percentage (10 / 25 / 50 % added about 0.8×, 5×
 That is why the driver's default fault response uses a gentle graded short rather than a hard one: a hard
 short behind a tall platform is a tip-over.
 
-**Where it lives.** The `dual-fault` tier of `src/test_bench_dual.spin2`; `setFaultResponse()` and
-`BRAKE_PCT` in the driver.
+**Where it lives.** `setFaultResponse()` and `BRAKE_PCT` in the driver.
 
 ---
 
-## Part 2 — Trusting a measurement
+## Part 2 - Trusting a measurement
 
 These are general. They are what separated the numbers we trust from the ones we threw away.
 
-### 2.1 A check that cannot fail proves nothing — measure the negative case
+### 2.1 A check that cannot fail proves nothing: measure the negative case
 
 **The idea.** A test has only been shown to work once it has been shown to *fail* on a case that
 should fail. An instrument shown only healthy input hasn't been tested.
@@ -216,7 +235,7 @@ load. Run the negative first.
 **Worked example.** The start checks were certified by making them fail: a withheld lead read ≤ 31 mV
 against 777–823 mV healthy; a hall pair swapped in firmware failed the wiring walk 3 of 3; an unplugged
 hall connector was caught 10 of 10. The same discipline found a real hazard. An unguarded walk on a
-miswired motor drew a 26 A peak, so the walk now trips at about 1 A.
+miswired motor drew a 26 A peak, so the walk trips at about 1 A.
 
 ### 2.2 Independent routes that agree
 
@@ -238,8 +257,6 @@ record.
 condition never arose*, as its own result: it is not a pass. A zero can mean the defect is absent, or it
 can mean the thing that triggers it never happened.
 
-**Where it lives.** The `SIGNOFF` records in every `src/test_bench_*.spin2`.
-
 ### 2.4 When the measurement and the system disagree, suspect the measurement
 
 **The idea.** Before concluding the motor or the driver is wrong, check the instrument's assumptions:
@@ -260,8 +277,8 @@ of exploring.
 size of the step. The cause was in the code: on the one pass where a ramp reached its target, the field
 did not advance, so every arrival stepped the field back by a whole increment. A desk model reproduced
 the logged kicks to within about 10 mV before the fix was built. After the fix the worst kick fell from
-64–183 mV to 13–16 mV. The start surge of v5.0.2's duty servo was predicted the same way: an integral servo
-whose fixed gain was too high for a rotor that is only slightly stiff at low speed.
+64–183 mV to 13–16 mV. The same method predicted the start surge of an integral duty servo: its fixed
+gain was too high for a rotor that is only slightly stiff at low speed.
 
 ### 2.6 Say what is not known
 
@@ -271,22 +288,22 @@ keeps a list of what is not yet known, and why each item matters.
 
 ---
 
-## Part 3 — Engineering on the P2
+## Part 3 - Engineering on the P2
 
 ### 3.1 One owner for shared state
 
 **The idea.** When two cogs can write the same hub long, sooner or later they write it in the wrong order.
 Give every piece of shared state exactly one writer, and have everyone else *ask* it.
 
-**How.** The 6.0 driver runs one Spin2 **front cog** per drive. It is the only writer of the driver's
+**How.** The driver runs one Spin2 **front cog** per drive. It is the only writer of the driver's
 command, the e-stop, the stop limits and the tracking, and the only caller of `cogatn`. A public method
 validates its arguments on the caller's cog, posts a request into that cog's own slot (indexed by
 `COGID()`), and waits, bounded, for the answer. Each slot is written sequence-number-*last* by the caller
 and answered sequence-number-last by the front cog, so every long has one writer.
 
-**Worked example.** In 5.x, the drive command, the e-stop, the stop limits and the tracking window each had
-two writers: the caller's cog and the sense cog. The consequences included a stop arriving between two
-synchronized writes and stranding an ATN, and stop limits checked 8 times a second, so a stop could be up
+**Worked example.** Give the drive command, the e-stop, the stop limits and the tracking window two
+writers each (the caller's cog and the sense cog) and the consequences follow: a stop arriving between two
+synchronized writes can strand an ATN, and stop limits checked 8 times a second can be up
 to 125 ms (about 29 cm at top speed) late. With a single owner, limits are checked every millisecond
 against the driver's own stop plan, and they land within 2 ticks.
 
@@ -373,9 +390,9 @@ output you needed isn't there. Treat the budget as a design limit, with room to 
 memory and build lines at run time through one shared helper, rather than writing many literal
 `debug()` statements.
 
-**Worked example.** Rebuilding the demos' output through shared helpers cut the R/C demo's DEBUG data
+**Worked example.** Building the demos' output through shared helpers cut the R/C demo's DEBUG data
 from 13,406 to 10,488 bytes against a 12,404-byte limit, with the output unchanged line for line. Every
-debug build now has at least 1,374 bytes spare.
+debug build has at least 1,374 bytes spare.
 
 ### 3.8 DEBUG PLOT panels as a bench UI
 
@@ -388,9 +405,6 @@ window can be that screen, with no host software.
 right after opening the window, since the default coordinate basis puts y up from the bottom-left and
 your hit tests will miss; and put window titles in single quotes with no parentheses, because a
 double-quoted title is silently dropped and a `)` ends the `debug()` call.
-
-**Where it lives.** `bmpanel` in `src/test_bench_dual.spin2`, with its art generated by
-`tools/gen_dual_assets.py`.
 
 ### 3.9 Let the driver publish its own stop plan
 
@@ -408,13 +422,22 @@ their limits. A stop from about 1.25 m/s ran 122 ticks against the driver's own 
 
 **The idea.** A helper script that runs your tools should never hide what it runs.
 
-**How.** `tools/bench-run.sh` compiles and loads one test by a short name, and echoes every command
+**How.** A script that compiles and loads one test by a short name should echo every command
 verbatim before running it, so the transcript can be replayed by hand. Every value the run needs is chosen
 by name, never typed.
 
 ---
 
-> If you like my work and/or this has helped you in some way then feel free to help me out for a couple of :coffee:'s or :pizza: slices!
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
+
+---
+
+> If you find this kind of written explanation useful, helpful I would be honored by your helping me out for a couple of :coffee:'s or :pizza: slices -or- you can support my efforts by contributing at my Patreon site!
 >
 > [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
 
@@ -422,7 +445,7 @@ by name, never typed.
 
 ## Disclaimer and Legal
 
-> _Parallax, Propeller Spin, and the Parallax and Propeller Hat logos_ are trademarks of Parallax Inc., dba Parallax Semiconductor
+> *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
 
 ---
 

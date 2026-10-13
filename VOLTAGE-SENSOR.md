@@ -1,12 +1,37 @@
 # P2-BLDC-Motor-Control - Adding a battery voltage sensor
 
-This page shows how to build a small voltage sensor, so the P2 can read your robot's battery pack voltage on
-one pin. The motor driver boards cannot do this themselves: their four sense channels measure phase
-**current**, not voltage. The sensor is four resistors and a capacitor, with an optional fifth part.
+Build a small voltage sensor so your Parallax Propeller 2 (P2) can read your robot's battery pack voltage on one pin!
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
+
+## Table of Contents
+
+On this Page:
+
+- [What it does](#what-it-does) - the divider, the filter and what the driver does with the reading
+- [Schematic](#schematic) - the circuit
+- [Parts](#parts) - the parts list and why each part is there
+- [The numbers (5S)](#the-numbers-5s) - divider ratio and pin voltages
+- [Construction](#construction) - building the pack end and the P2 end
+- [Choosing the P2 pin](#choosing-the-p2-pin) - which pins to avoid
+- [Test before plugging into the P2](#test-before-plugging-into-the-p2) - meter checks
+- [Calibration](#calibration) - the one calibration value
+- [The unit as built](#the-unit-as-built) - the sensor on our platform, measured
+- [Other pack sizes](#other-pack-sizes) - 2S to 4S packs
+- [Things to know](#things-to-know) - standby draw and temperature drift
+- [How to Contribute](#how-to-contribute) - help improve this project
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [Drive Objects](DRIVE-OBJECTS.md) - `getPackVoltage()` and `getHealth()`
+- [Driver Boards](DRIVER_BOARDS.md) - the Rev A and Rev B boards and their current sense
+- [Developing with the objects](DEVELOP.md) - wiring the objects into your own project
+
+The motor driver boards cannot read the pack voltage themselves: their four sense channels measure phase
+**current**, not voltage. The sensor is four resistors and a capacitor, with an optional fifth part.
 
 ## What it does
 
@@ -15,14 +40,14 @@ the motors' switching noise. It is sized for a **5S lithium pack** (18.5 V nomin
 the pack this project is developed on and the one most hoverboard-motor platforms use. The same sensor also
 reads 4S, 3S and 2S packs; see [Other pack sizes](#other-pack-sizes).
 
-The driver reads it for you: set it up in `isp_bldc_motor_userconfig.spin2` ([Calibration](#calibration)), and
+The driver reads it for you: set it up in **isp_bldc_motor_userconfig.spin2** ([Calibration](#calibration)), and
 `getPackVoltage()` returns the pack voltage in millivolts. `getHealth()` reports a sensor configured as fitted
 that reads no pack, and the event log records the pack being connected or disconnected. The drive itself does
 not use the reading yet: `getCurrent()`'s watts and the speed table still assume the configured `DRIVE_VOLTAGE`.
 
 ## Schematic
 
-```
+```text
   PACK +  (Anderson Powerpole)
     │
     ├──[ 4.7 nF C0G 100 V ]──── PACK −      (optional: only at the pack end, only if the lead is long)
@@ -86,8 +111,8 @@ overshoot or the bus rising while the motors brake.
 1. **Pack end: R1 inline at the Powerpole.**
    - Solder R1 directly to the Powerpole contact, or to a very short heavy pigtail crimped into it, and put
      the Powerpole on the pack's **+** distribution.
-   - ⚠ The smallest Powerpole contacts are made for 12-16 AWG wire, so a bare resistor lead or thin signal
-     wire will not crimp securely. Either solder R1's lead to a short 16 AWG pigtail and crimp the pigtail,
+   - **WARNING:** *The smallest Powerpole contacts are made for 12-16 AWG wire, so a bare resistor lead or thin signal
+     wire will not crimp securely.* Either solder R1's lead to a short 16 AWG pigtail and crimp the pigtail,
      or fold the lead and fill the barrel with solder.
    - Keep R1 **right at the connector**. Everything after it then carries under 0.3 mA, so a chafed wire
      further down cannot short the pack.
@@ -134,7 +159,7 @@ resistors are 1% parts. One calibration covers the resistor tolerances and the l
 R4's loading alone is about 1 %: R4 sits in parallel with R2 through R3, so with the listed parts the true
 multiplier is about 7.89, not 7.81. Expect a calibration value near 1010 before any tolerance.
 
-1. In `isp_bldc_motor_userconfig.spin2`, set `PACK_SENSOR_FITTED = TRUE` and `PACK_SENSE_PIN` to your pin.
+1. In **isp_bldc_motor_userconfig.spin2**, set `PACK_SENSOR_FITTED = TRUE` and `PACK_SENSE_PIN` to your pin.
    `start()` begins reading the sensor; on a two-wheel platform the steering object reads it once, for both.
 2. Run your program and read `getPackVoltage()`: it returns a status, which should be `PACK_PRESENT`, and the
    voltage in millivolts, averaged over about 64 ms. At the same moment, read the pack with a meter. Do this
@@ -143,7 +168,7 @@ multiplier is about 7.89, not 7.81. Expect a calibration value near 1010 before 
    and the driver reads 18.50 V, set 1006.
 
 One calibration point is enough. It folds the ADC's small offset into the gain, which leaves a calculated error
-of about 25 mV at the bottom of a 5S pack's range: far finer than a battery gauge needs.
+of about 25 mV at the bottom of a 5S pack's range, far finer than a battery gauge needs.
 
 With `PACK_SENSOR_FITTED = TRUE`, a sensor that is not wired to `PACK_SENSE_PIN`, or whose lead is broken, reads as
 `PACK_ABSENT`, never as a voltage: a wiring or configuration mismatch. (With the default `FALSE` the pin is never read
@@ -177,8 +202,7 @@ voltage × 7.81.
 | 3S | 12.6 V | 1.61 V |
 | 2S | 8.4 V | 1.08 V |
 
-A smaller pack uses less of the pin's range, but each millivolt at the pin is still 7.8 mV at the pack,
-which is far finer than a battery gauge needs.
+A smaller pack uses less of the pin's range, but each millivolt at the pin is still 7.8 mV at the pack.
 
 **To use the full range for a smaller pack instead,** keep R2 at 10.0k and change only R1:
 
@@ -198,7 +222,36 @@ multiplier then becomes (R1 + 10.0k) ÷ 10.0k.
 - **The reading drifts slightly with temperature**, by up to about 0.4% over a 40 °C swing with typical
   100 ppm/°C resistors. Matching R1 and R2 (same type and series) keeps the drift closer to zero.
 
+That's all there is to it! Enjoy!
+
+*Stephen*
+
 ---
+
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
+
+---
+
+> If you like my work and/or this has helped you in some way then feel free to help me out for a couple of :coffee:'s or :pizza: slices!
+>
+> [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
+
+---
+
+## Disclaimer and Legal
+
+> *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
+
+---
+
+## License
+
+Licensed under the MIT License.
 
 Follow these links for more information:
 

@@ -1,178 +1,219 @@
-# P2-BLDC-Motor-Control - README
+# P2-BLDC-Motor-Control
 
-Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
+Single and two-motor BLDC drive objects, in Spin2/Pasm2, for the Parallax Propeller 2 (P2) and the Parallax 64010 Universal Motor Driver P2 Add-on Board
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
-## The Project
+```text
+Latest Changes:
+v6.2.0  The objects run at any system clock from 130 to 300 MHz; the DocoEng motor is
+        characterized and verified on our hardware at six supply voltages; smoother
+        slow-downs and stops from top speed.
+v6.1.0  The drive holds its commanded speed under load, giving way only at its current limit.
+v6.0.0  A reworked drive: lower current, a quiet start, built-in protection, and every
+        command reporting its result.
+```
 
-Provide ready-to-use objects easily incorporated into your own code which control Brushless DC (BLDC) motors via the [Parallax 64010 Universal Motor Driver P2 Add-on Boards](https://www.parallax.com/product/universal-motor-driver-p2-add-on-board/) These boards can be used with any of the following boards:
-
-| Board                                                                                                                       | Features                                                                                                                                                                                                                        |
-| --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Parallax 64020 P2 Edge Module Breadboard](https://www.parallax.com/product/p2-edge-module-breadboard/)                     | larger size, solder-free prototyping area, 4 12-pin header pairs                                                                                                                                                                |
-| [Parallax 64029 P2 Edge Breakout Board](https://www.parallax.com/product/p2-edge-breakout-board/)                           | medium size, NO solder-free prototyping area, 4 12-pin header pairs <br><br>(**Recommended for mobile platforms** _unless you need smaller form factor of Mini Edge 64019 and not using the extra pins provided by this board_) |
-| [Parallax 64019 P2 Edge Mini Breakout Board](https://www.parallax.com/product/p2-edge-mini-breakout-board/)                 | smaller, only 2 12-pin header pairs plus an extra 12-pn header (partially used)<br><br>(**Alternate recommendation for mobile platforms** _if you have less space and use fewer pins_)                                          |
-| [Parallax 64000 Propeller 2 Evaluation Board (Rev C)](https://www.parallax.com/product/propeller-2-evaluation-board-rev-c/) | medium size, NO solder-free prototyping area, 4 12-pin header pairs                                                                                                                                                             |
-
-NOTE: _If you wish to add more than a couple of sensors to your mobile platform then you'll want to use the larger 64029 P2 Edge Breakout board as it provides more pins for connecting your additonal sensors._
-
-Parallax offers a pair of the [6.5" Hoverboard wheels along with mounting hardware](https://www.parallax.com/product/6-5-hub-motors-with-encoders-and-mounting-blocks-bundle/) which is perfect for use with the drivers from this project.
-
-A new smaller higher RPM motor is also available from Parallax that works with this driver. [SKU 750-90020](https://www.parallax.com/product/motor-bldc-24v-4000-rpm/)
-
-This post [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/) describes our two-wheel system. The objects provided by this project are all you need to get your platform moving!
-
-**Serial Control:** If you wish to use an Arduino or Rapspberry Pi to control your **BLDC Motor platform** then head over to our: [Serial Control Page](SERIAL-CONTROL.md) for example instructions using a Raspberry Pi.
-
-## Two Motors now Supported
-
-This driver now supports the smaller BLDC motor from DocoEng.com sold by parallax.com in addition to the 6.5" Hub Motor w/Encoder.
-
-![Supported Motors](./images/supportedMotors.png)
-
-**FIGURE:** &nbsp;&nbsp;LEFT: 6.5" hub motor [SKU 27860](https://www.parallax.com/product/6-5-hub-motor-with-encoder/) &nbsp;&nbsp;|&nbsp;&nbsp; RIGHT: new smaller motor with DocoEng.com label. [SKU 750-90020](https://www.parallax.com/product/motor-bldc-24v-4000-rpm/)
-
-See also:
-
-- [How to select the motor in your project code](MOTOR_CHOICE.md) - has motor reference info
-- [Connecting the smaller motor](DOCOENG_MOTOR.md) - wiring information
-- [The 6.5" motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - what we measured about the 6.5" motor, and how to drive it well
-- [Adding support for a new motor](ADDING_MOTOR.md) - the procedure for characterizing a motor and adding it to the driver
-
-## Current status
-
-What changed in each release, and the known issues of the current one, are in the [CHANGELOG](CHANGELOG.md).
-
-Why v6.0.0 reworked the drive, what changed, and how each change was checked: [The 6.0 driver — what changed, and how we know](DRIVER-6.0-REWORK.md).
-
-**New in v6.1.0:** the drive holds its commanded speed under load. It answers a load with torque, up to its current limit, and gives up speed only where the limit acts: a 7.7 kg platform spinning in place runs at its commanded speed, ramps arrive when the rate says, and a hand pushing on the platform does not slow it below the limit. A wheel at its current limit cannot lag-fault when it is pushed, a blocked wheel stops itself after about a second, and the wheel keeps up smoothly past the speed the pack's voltage can drive. When one wheel is at its limit the steering slows both wheels together to keep the platform's path. The drive is validated on Rev B driver boards. How it works is in [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md); the 6.5" motor's figures are in [its technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md). The FlySky demos hold the stopped wheel in a full turn, so the platform pivots about it, and their ramp knobs send a new rate only when moved.
-
-**New in v6.0.0:** a program selects its configuration in `isp_bldc_motor_userconfig.spin2` with a few lines at the top of its file, or, with PNut, in the configuration file itself — see [DEVELOP.md](DEVELOP.md#building-with-pnut).
+The full history, and the known issues of the current release, are in the [CHANGELOG](CHANGELOG.md).
 
 ## Table of Contents
 
 On this Page:
 
-- [Motor Object Introduction](https://github.com/ironsheep/P2-BLDC-Motor-Control#single-and-two-wheeled-motor-control-objects) - An overview of the objects provided by this project
-- [System Diagram](https://github.com/ironsheep/P2-BLDC-Motor-Control#system-diagram) - A quick visual overview of the motor and steering runtime structure
-- [Future Directions](https://github.com/ironsheep/P2-BLDC-Motor-Control#future-directions) - Notes about areas we can improve over time if you have experience and want to help us with these, please contact us in Forums [(in this thread)](https://forums.parallax.com/discussion/174516/universal-motor-driver-dual-wheel-steering-motor-control-and-position-tracking-objects-for-p2#latest)
-- [DEMOs](https://github.com/ironsheep/P2-BLDC-Motor-Control#demos) - Example files that show how to interact with the motor control and steering objects provided by this project
-- [FlySky Controls for DEMO](https://github.com/ironsheep/P2-BLDC-Motor-Control#flysky-controls-for-demo) - How our Switches and Joysticks are tasked
-- [Reference](https://github.com/ironsheep/P2-BLDC-Motor-Control#references) - We looked at a number of control systems before deciding on the public interfaces for our steering and motor control objects
-- [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control#how-to-contribute) - We welcome contributions back to this project for all of us to use. Learn how, here!
+- [The Project](#the-project) - What these objects do, and the boards and motors they drive
+- [What you need](#what-you-need) - The parts for a one-motor or a two-wheel setup
+- [Getting started](#getting-started) - The pages to read, in order, to get your first motor turning
+- [Your first run](#your-first-run) - Which demo to build first, and what it prints
+- [The objects](#the-objects) - The steering object and the motor object, and how they divide the work
+- [DEMOs](#demos) - Every demo, and the FlySky remote-control setup
+- [Known Issues](#known-issues) - What does not work yet
+- [Future directions](#future-directions) - Where we would like to take this next
+- [How to Contribute](#how-to-contribute) - We welcome contributions back to this project
+- [Credits](#credits) - The work this project is built on
 
 Additional pages:
 
-- [Changelog](CHANGELOG.md) - What changed in each release, and the known issues of the current one
-- [Steering and Motor control](DRIVE-OBJECTS.md) - The object public interfaces
-- [Start your drive project using these objects](DEVELOP.md) - Walks thru configuration and setup of your own project using these objects
-- [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md) - How the driver works inside: its cogs, the Spin2/PASM2 contract, commutation, ramps, stops and protection, and the behaviors that will surprise you
-- [The 6.0 driver — what changed, and how we know](DRIVER-6.0-REWORK.md) - Why the drive was reworked for v6.0.0, and how each change was checked
-- [The 6.5" motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - The 6.5" motor as measured: geometry, commutation, speed and current envelope, stopping and holding
-- [Techniques](TECHNIQUES.md) - How we measured the motor and built the driver, written so you can reuse the methods
+**Getting started**, in this order:
+
+- [The motor driver boards](DRIVER_BOARDS.md) - Which Universal Motor Driver board you have (Rev A or Rev B), and what the driver does with each
+- [Connecting the 6.5" motor](MOTOR-6.5IN-CONNECTING.md) - Wiring the 6.5" hub motor to the driver board
+- [Connecting the DocoEng motor](DOCOENG_MOTOR.md) - Wiring the DocoEng 4,000 RPM motor to the driver board
+- [Configuring the driver for your motor](MOTOR_CHOICE.md) - Choosing your motor, drive voltage and wheel size in the configuration file
+- [Start your own drive project](DEVELOP.md) - Adding these objects to a program of your own, step by step
+
+**Using the objects:**
+
+- [Drive Objects](DRIVE-OBJECTS.md) - The public interface of the steering and motor objects
+- [Serial control from a Raspberry Pi or Arduino](SERIAL-CONTROL.md) - Driving your platform from another computer over serial
+- [Serial interface](DRIVE-OBJECTS-SERIAL.md) - The serial command set
+- [Adding a battery voltage sensor](VOLTAGE-SENSOR.md) - A five-part sensor so your program can read the pack's voltage on one P2 pin
+- [Platform drawings](DRAWINGS.md) - Files (.dwg) you can use to order your own platform inexpensively
+- [To-scale drawings](DOCs/bot-layout.pdf) - Possible rectangular and round platforms for the Edge Mini Breakout and JonnyMac P2 boards
+
+**The motors and the driver in depth:**
+
+- [The 6.5" motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - The 6.5" motor as measured: geometry, commutation, speed and current, stopping and holding
+- [The DocoEng motor technical manual](MOTOR-DOCO-TECHNICAL-MANUAL.md) - The DocoEng motor as measured, section for section beside the 6.5" manual
+- [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md) - How the driver works inside: its cogs, the Spin2/PASM2 contract, commutation, ramps, stops and protection
 - [Adding support for a new motor](ADDING_MOTOR.md) - Characterize your motor and add it to the driver
-- [Adding a battery voltage sensor](VOLTAGE-SENSOR.md) - Build a five-part sensor so the driver can read your pack's voltage on one P2 pin
-- [The motor driver boards](DRIVER_BOARDS.md) - The facts of the Rev A and Rev B boards, what the driver does with each, and when to be careful
-- [Use RPi or Arduino to control your platform](SERIAL-CONTROL.md) - Walks thru configuration and setup of RPi control system (extrapolate to Arduino)
-- [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
-- [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
-- [The author's development platform](AUTHORS-Platform.md) - Overview of the robot platform used when developing and testing the code for this project
+- [Techniques](TECHNIQUES.md) - How we measured the motors and built the driver, written so you can reuse the methods
 
-## Single and Two-wheeled Motor Control Objects
+**Background:**
 
-There are two objects in our motor control system. There is a lower-level object (**isp_bldc_motor.spin2**) that controls a single motor and there's an upper-level object (**isp_steering_2wheel.spin2**) which coordinates a pair of motors as a drive subsystem.
+- [The 6.0 driver rework](DRIVER-6.0-REWORK.md) - Why the drive was reworked for v6.0.0, and how each change was checked
+- [Movement API Study](Movement-STUDY.md) - The 2022 study of LEGO Mindstorms and BlocklyProp that shaped our public interfaces
+- [The Author's test platform](AUTHORS-Platform.md) - The robot platform these objects were developed and tested on
+- [Changelog](CHANGELOG.md) - What changed in each release, and the known issues of the current one
 
-If you are working with a dual motor device then you'll be coding to the interface of this upper-level steering object as you develop your drive algorithms.  If you were to work with say a three-wheeled device then you may want to create a steering object that can better coordinate all three motors at the same time. Actually this is true for any other number of motors you decide to control. Create your own better-suited steering object, base it on this project's 2-wheel version. (_And, if you do, please consider contributing your work to this project so it can be available to us all! See: [How to Contribute](https://github.com/ironsheep/P2-BLDC-Motor-Control/tree/develop#how-to-contribute) below._)
+## The Project
 
-The drive uses 2 cogs for a single motor and 3 for a two-wheel platform; how they divide the work, and how your calls reach them, is described in [Objects and cogs](DRIVE-OBJECTS.md#objects-and-cogs).
+Provide ready-to-use objects easily incorporated into your own code which control Brushless DC (BLDC) motors via the [Parallax 64010 Universal Motor Driver P2 Add-on Board](https://www.parallax.com/product/universal-motor-driver-p2-add-on-board/). One object drives a single motor; a second coordinates two motors as a two-wheel drive platform.
 
-The interfaces for these two objects are described in [BLDC Motor Drive Objects](DRIVE-OBJECTS.md)
+Two motors are supported:
 
----
+![Supported Motors](./images/supportedMotors.png)
 
-## System Diagram
+**Figure 1**: *Left: the 6.5" hub motor, [SKU 27860](https://www.parallax.com/product/6-5-hub-motor-with-encoder/). Right: the DocoEng 4,000 RPM motor, [SKU 750-90020](https://www.parallax.com/product/motor-bldc-24v-4000-rpm/).*
 
-The following diagram shows the nested motor control and sense subsystem comprised of the two objects: steering and motor control.
+Parallax offers a pair of the [6.5" hub motors along with mounting hardware](https://www.parallax.com/product/6-5-hub-motors-with-encoders-and-mounting-blocks-bundle/) for building a two-wheel platform. This post, [Build a Heavy-Duty Robot Using 6.5″ Hub Motors and Propeller 2 Control System](https://www.parallax.com/build-a-heavy-duty-robot-using-brushless-dc-motors/), describes our two-wheel system.
+
+## What you need
+
+| Part | For one motor | For a two-wheel platform |
+| --- | --- | --- |
+| A P2 board (see below) | 1 | 1 |
+| [Parallax 64010 Universal Motor Driver P2 Add-on Board](https://www.parallax.com/product/universal-motor-driver-p2-add-on-board/) | 1 | 2, one per motor |
+| A motor: the 6.5" hub motor or the DocoEng motor | 1 | 2 |
+| A battery pack or bench supply at one of the supported drive voltages (6.0 to 24 V; see [Configuring the driver for your motor](MOTOR_CHOICE.md)) | 1 | 1 |
+| Optional: the FlySky remote and SBUS receiver, for the remote-control demos | | 1 |
+| Optional: the [battery voltage sensor](VOLTAGE-SENSOR.md) | 1 | 1 |
+
+The driver board plugs onto any of these P2 boards:
+
+| Board | Features |
+| --- | --- |
+| [Parallax 64029 P2 Edge Breakout Board](https://www.parallax.com/product/p2-edge-breakout-board/) | medium size, no solder-free prototyping area, 4 12-pin header pairs<br><br>(**Recommended for mobile platforms**, *unless you need the smaller Mini Breakout and do not need its extra pins*) |
+| [Parallax 64019 P2 Edge Mini Breakout Board](https://www.parallax.com/product/p2-edge-mini-breakout-board/) | smaller, 2 12-pin header pairs plus an extra 12-pin header (partially used)<br><br>(**Alternate recommendation for mobile platforms**, *if you have less space and use fewer pins*) |
+| [Parallax 64020 P2 Edge Module Breadboard](https://www.parallax.com/product/p2-edge-module-breadboard/) | larger size, solder-free prototyping area, 4 12-pin header pairs |
+| [Parallax 64000 Propeller 2 Evaluation Board (Rev C)](https://www.parallax.com/product/propeller-2-evaluation-board-rev-c/) | medium size, no solder-free prototyping area, 4 12-pin header pairs |
+
+**NOTE:** *If you plan to add more than a couple of sensors to your platform, use the 64029 P2 Edge Breakout Board: two driver boards take most of the pins on the smaller boards.*
+
+## Getting started
+
+Follow these pages in order to get your first motor turning:
+
+1. **Know your driver board.** The Universal Motor Driver board comes in two revisions, Rev A and Rev B. The driver detects which one you have when it starts, and the two differ in how finely they measure current. [The motor driver boards](DRIVER_BOARDS.md) tells you which you have and what it means.
+1. **Connect your motor.** [Connecting the 6.5" motor](MOTOR-6.5IN-CONNECTING.md) or [Connecting the DocoEng motor](DOCOENG_MOTOR.md).
+1. **Configure the driver.** Choose your motor, drive voltage, pins and wheel size in **isp_bldc_motor_userconfig.spin2**: [Configuring the driver for your motor](MOTOR_CHOICE.md).
+1. **Run a demo.** See [Your first run](#your-first-run) below.
+1. **Write your own program.** [Start your own drive project](DEVELOP.md) walks through it, and [Drive Objects](DRIVE-OBJECTS.md) is the full interface.
+
+If you would rather drive from a Raspberry Pi or an Arduino, the same first three steps apply, then head over to [Serial control](SERIAL-CONTROL.md).
+
+## Your first run
+
+Put your wheels up off the bench (or the motor where its shaft can turn freely) before the first run: each demo's wiring check turns the wheel a little one way and back.
+
+- **One motor:** build and run **demo_single_motor.spin2**. Its configuration, as shipped, is the DocoEng motor on pins P16-P31 at 12 V; for the 6.5" motor or another voltage, change the single-motor section of **isp_bldc_motor_userconfig.spin2** first.
+- **Two wheels:** build and run **demo_dual_motor.spin2**. Its configuration, as shipped, is two 6.5" motors, left on P16-P31 and right on P32-P47, at 18.5 V.
+
+Each demo prints what it does as it goes: the start checks for each motor, the wiring check, then each drive and how it ended (`SR_AT_LIMIT` when a drive ends on its own limit), and finally `DONE`. If a start check fails, the demo tells you which one and why. [Start your own drive project](DEVELOP.md#checking-for-errors) explains each report.
+
+That's all there is to it. Once a demo runs, you have everything working that your own program needs.
+
+## The objects
+
+There are two objects in our motor control system. There is a lower-level object (**isp_bldc_motor.spin2**) that controls a single motor, and there is an upper-level object (**isp_steering_2wheel.spin2**) which coordinates a pair of motors as a drive subsystem.
+
+If you are working with a two-motor platform, you'll be coding to the interface of the steering object as you develop your drive algorithms. If you work with, say, a three-wheeled platform, you may want to create a steering object of your own that coordinates all three motors; base it on this project's two-wheel version. (*And if you do, please consider contributing your work to this project so it can be available to us all! See [How to Contribute](#how-to-contribute) below.*)
+
+The drive uses 2 cogs for a single motor and 3 for a two-wheel platform; how they divide the work, and how your calls reach them, is described in [Objects and cogs](DRIVE-OBJECTS.md#objects-and-cogs). The interfaces of both objects are in [Drive Objects](DRIVE-OBJECTS.md).
+
+Here's a quick diagram of how the objects and their cogs fit together:
 
 ![Motor Control System Diagram](./images/objects-cogs.png)
 
-In this diagram there are three **rectangular objects** depicting files (yellow background) of code. There are three methods within the files (white and green backgrounds) that are run in separate cogs. The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact. The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
+**Figure 2**: *The steering and motor objects and the cogs they run.*
 
-## Future directions
-
-We now have a working motor drive system that is fun to use. While this was being developed we kept track of further improvements that can be made in the future. Here's our list of the most notable:
-
-- Measure the battery voltage, so power figures and speed limits can follow a sagging pack
-- A public query for whether each motor is keeping up with its command
-- Support for platforms with more than two motors (such as the DocoEng motors driving a CNC)
+Basically, this image shows three files of code (yellow background) and the methods within them that run in their own cogs (white and green backgrounds, marked with a gear). The arrows show which objects interact with each other, and which object your application calls. Your top-level application runs in its own cog as well.
 
 ## DEMOs
 
-A small number of demos are provided with this project. Each one also shows how to read what the drive reports:
+Each demo also shows how to read what the drive reports:
+
 - why `start()` refused a motor (`getHealth()`);
 - why a drive ended (`getStopReason()`);
 - what the drive handled on its own (`getEvent()`);
 - the fault response in effect.
 
-They print these in words through the small helper object [demo_drive_names.spin2](src/demo_drive_names.spin2), which
-you can reuse.
+They print these in words through the small helper object [demo_drive_names.spin2](src/demo_drive_names.spin2), which you can reuse.
 
-| Spin2 File Name(s)                                                 | Demonstration                                                                                                                                                                                                            | Required Board                                                                                           |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| [demo_single_motor.spin2](src/demo_single_motor.spin2)             | Provides example code for controlling a single motor: the start checks, the wiring check, then a time-limited drive forward and one in reverse. (Uses HDMI (DVI) as display of live motor details.)                     | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
-| [demo_dual_motor.spin2](src/demo_dual_motor.spin2)                 | Provides example code for controlling a pair of motors and using the 2-wheel steering object: the start checks, the wiring check, a 1 ft drive, two steered drives, then each wheel alone.                              | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
-| [demo_dual_motor_hdmi.spin2](src/demo_dual_motor_hdmi.spin2)       | Provides example code for controlling a pair of motors and using the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables during one steady drive | Any of the three P2 boards with four 12-pin header pairs (**NOT the 64019 P2 edge mini-breakout board**) |
-| [demo_dual_motor_rc.spin2](src/demo_dual_motor_rc.spin2)           | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object; prints each event and stop as it happens, and re-arming the kill switch (swD) acknowledges a protective stop | Any of the four P2 Boards with two or more 12-pin header pairs                                           |
-| [demo_dual_motor_rc_hdmi.spin2](src/demo_dual_motor_rc_hdmi.spin2) | Provides example code for using our **FlySky Remote Controller and the SBUS receiver** to control the pair of motors via the 2-wheel steering object - adds HDMI providing visibility of both motor's internal variables | Any of the three P2 boards with four 12-pin header pairs (**NOT the 64019 P2 edge mini-breakout board**) |
+| Spin2 File Name(s) | Demonstration | Required Board |
+| --- | --- | --- |
+| [demo_single_motor.spin2](src/demo_single_motor.spin2) | Controlling a single motor: the start checks, the wiring check, then a time-limited drive forward and one in reverse. (Uses HDMI (DVI) to display live motor details.) | Any of the four P2 boards |
+| [demo_dual_motor.spin2](src/demo_dual_motor.spin2) | Controlling a pair of motors with the two-wheel steering object: the start checks, the wiring check, a 1 ft drive, two steered drives, then each wheel alone | Any of the four P2 boards |
+| [demo_dual_motor_hdmi.spin2](src/demo_dual_motor_hdmi.spin2) | The two-wheel steering object, with HDMI showing both motors' internal variables during one steady drive | Any of the three P2 boards with four 12-pin header pairs (**not the 64019 P2 Edge Mini Breakout Board**) |
+| [demo_dual_motor_rc.spin2](src/demo_dual_motor_rc.spin2) | Driving the pair from our **FlySky remote and SBUS receiver** through the steering object; prints each event and stop as it happens, and re-arming the kill switch (SwD) acknowledges a protective stop | Any of the four P2 boards |
+| [demo_dual_motor_rc_hdmi.spin2](src/demo_dual_motor_rc_hdmi.spin2) | The FlySky demo, with HDMI showing both motors' internal variables | Any of the three P2 boards with four 12-pin header pairs (**not the 64019 P2 Edge Mini Breakout Board**) |
 
-_NOTE: Each demo is commented as a starting point for your own program; [DEVELOP.md](DEVELOP.md) shows how to wire these objects into a project of your own._
-
-_NOTE: We also have a demo using the RPi to control the motors via serial comms with the P2. See: [Use RPi or Arduino to control your platform](SERIAL-CONTROL.md)._
+**NOTE:** *Each demo is commented as a starting point for your own program; [Start your own drive project](DEVELOP.md) shows how to wire these objects into a project of your own. For driving from a Raspberry Pi over serial, see [Serial control](SERIAL-CONTROL.md).*
 
 ### Preparing to run the FlySky Demo
 
-In getting ready to run the FlySky R/C demo you'll need to wire up the FlySky SBus Receiver to your platform and then understand what the controls on the R/C Transmitter do. These next sections help with this.
+To run the FlySky remote-control demo you'll wire the FlySky SBUS receiver to your platform, and then learn what the controls on the transmitter do.
 
 #### Wiring the FlySky Connection
 
-_We used the_ **P2 Edge Mini Breakout Board (#64019)** _for our Platform. We chose pin 58 for SBus receive_
+*We used the* **Parallax 64019 P2 Edge Mini Breakout Board** *for our platform, and chose pin 58 for SBUS receive.*
 
-The top-level file `demo_dual_motor_rc.spin2` provided by this project defines the rx pin as 58. This was due to the two motor control boards occupying most of the remaining pins on the Mini Edge Breakout board. Feel free to choose a different pin. Just remember to adjust the constants in your code to use your pin choice.
+The top-level file **demo_dual_motor_rc.spin2** defines the receive pin as 58, because the two motor driver boards occupy most of the remaining pins on the Mini Breakout board. Feel free to choose a different pin. Just remember to adjust the constants in your code to use your pin choice.
 
-**P2 Wiring for SBus Receiver:**
+**P2 Wiring for the SBUS Receiver:**
 
-| P2 Pin# | P2 Purpose | P2 Pin #                      |
-| ------- | ---------- | ----------------------------- |
-| GND     | GND        | Signal ground                 |
-| Vcc     | Vcc        | 5v Power for the Receiver     |
-| 58      | Rx         | Data from SBus Rcvr to the P2 |
+| Receiver pin | P2 connection | Purpose |
+| --- | --- | --- |
+| GND | GND | Signal ground |
+| Vcc | 5V | Power for the receiver |
+| Rx | P58 | Data from the SBUS receiver to the P2 |
 
-**NOTE**: _with the dual BLDC motor boards occupying the most of the pins finding 5v was challenging. I ended up soldering in a pin between the two headers, routing 5v to it and then connecting the SBus Rcvr Vcc to this pin._
+**NOTE:** *With the two driver boards occupying most of the pins, finding 5V was challenging. I ended up soldering in a pin between the two headers, routing 5V to it, and connecting the receiver's Vcc to this pin.*
 
-#### FlySky Controls for demo
+#### FlySky Controls for the Demo
 
-The R/C demo uses the following controls:
+The remote-control demo uses the following controls:
 
-| Control        | Purpose                                                                                                                   |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------- |
-|                | **SWITCHES**                                                                                                              |
-| SwA            | Motor Control Toggle: Up - disabled, Down - Enabled                                                                       |
-| SwB            | Show State: moving it Down prints both motors' current and power                                                          |
-| SwC            | Stop Demo - Up - running, Middle - print the drive states, Down - exit demo                                               |
-| SwD            | Emergency Cutoff: Up - disabled, Down - Immediately stop motors! Moving it back Up releases the emergency stop and any protective stop (a blocked wheel) |
-|                | **KNOBS**                                                                                                                 |
-| VrA            | Acceleration: the knob's travel sets `setAcceleration()` from 200 to 3000 mm/s^2; a new rate is sent only when the knob moves more than 10 mm/s^2, and always at either end |
-| VrB            | Deceleration: the knob's travel sets `setDeceleration()` from 1000 to 3000 mm/s^2 (from full speed, about 2 m to stop at the gentle end); sent as VrA's is |
-|                | **JOYSTICKS**                                                                                                             |
-| Left Joystick  | Steering: Left - turn to left (slow left motor), Right - turn to right (slow down right motor). Fully left or right stops that wheel and holds it, so the platform pivots about it |
-| Right Joystick | Speed: Up - go forward, Down - go backward (speed controlled by joystick center is stopped, at extremes is fastest)       |
+| Control | Purpose |
+| --- | --- |
+| | **SWITCHES** |
+| SwA | Motor control toggle: Up - disabled, Down - enabled |
+| SwB | Show state: moving it Down prints both motors' current and power |
+| SwC | Stop demo: Up - running, Middle - print the drive states, Down - exit the demo |
+| SwD | Emergency cutoff: Up - disabled, Down - immediately stop the motors. Moving it back Up releases the emergency stop and any protective stop (a blocked wheel) |
+| | **KNOBS** |
+| VrA | Acceleration: the knob's travel sets `setAcceleration()` from 200 to 3000 mm/s^2; a new rate is sent only when the knob moves more than 10 mm/s^2, and always at either end |
+| VrB | Deceleration: the knob's travel sets `setDeceleration()` from 1000 to 3000 mm/s^2 (from full speed, about 2 m to stop at the gentle end); sent as VrA's is |
+| | **JOYSTICKS** |
+| Left Joystick | Steering: Left - turn left (slow the left motor), Right - turn right (slow the right motor). Fully left or right stops that wheel and holds it, so the platform pivots about it |
+| Right Joystick | Speed: Up - forward, Down - backward (centered is stopped, the extremes are fastest) |
 
-## References
+## Known Issues
 
-- A study of Motor Control and Drive Techniques found in LEGO Mindstorms and in Parallax BlocklyProp is presented in: [Movement API Study](Movement-STUDY.md)
+The known issues of the current release are listed with its entry in the [CHANGELOG](CHANGELOG.md).
+
+**NOTE:** *Serial control has not been re-qualified on hardware for v6.2.0; it is planned for the next minor release.*
+
+## Future directions
+
+We kept a list of the improvements we would like to make next. Here are the most notable:
+
+- Use the measured pack voltage in the drive, so power figures and speed limits follow a sagging pack
+- A public query for whether each motor is keeping up with its command
+- Support for platforms with more than two motors (such as the DocoEng motors driving a CNC)
+
+If you have experience in these areas and want to help, please contact us in the Parallax Forums [(in this thread)](https://forums.parallax.com/discussion/174516/universal-motor-driver-dual-wheel-steering-motor-control-and-position-tracking-objects-for-p2#latest).
 
 ## How to Contribute
 
@@ -191,13 +232,13 @@ This is a project supporting our P2 Development Community. Please feel free to c
 
 ## Credits
 
-This work is entirely based upon **Chip Gracey**'s excellent **BLDC Motor Driver written in Pasm2** which he demonstrated to us in many of our [live forums](https://www.youtube.com/playlist?list=PLt_MJJ1F_EXa25_TWa4Sdi77daQaxA_ZU). This project allows us all to use this driver. Thank you Chip!
+This work is based upon **Chip Gracey**'s **BLDC Motor Driver written in Pasm2**, which he demonstrated to us in many of our [live forums](https://www.youtube.com/playlist?list=PLt_MJJ1F_EXa25_TWa4Sdi77daQaxA_ZU). This project allows us all to use this driver. Thank you Chip!
 
 The FlySky support and some of the serial support was written by **Jon McPhalen**. Thank you Jon!
 
 ## Disclaimer and Legal
 
-> _Parallax, Propeller Spin, and the Parallax and Propeller Hat logos_ are trademarks of Parallax Inc., dba Parallax Semiconductor
+> *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
 
 ---
 
@@ -210,11 +251,5 @@ Follow these links for more information:
 ### [Copyright](copyright) | [License](LICENSE)
 
 [maintenance-shield]: https://img.shields.io/badge/maintainer-stephen%40ironsheep%2ebiz-blue.svg?style=for-the-badge
-[marketplace-version]: https://vsmarketplacebadge.apphb.com/version-short/ironsheepproductionsllc.spin2.svg
-[marketplace-installs]: https://vsmarketplacebadge.apphb.com/installs-short/ironsheepproductionsllc.spin2.svg
-[marketplace-rating]: https://vsmarketplacebadge.apphb.com/rating-short/ironsheepproductionsllc.spin2.svg
-
 
 [license-shield]: https://img.shields.io/badge/License-MIT-yellow.svg
-
-

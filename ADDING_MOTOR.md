@@ -1,10 +1,34 @@
 # P2-BLDC-Motor-Control - Adding support for a new motor
 
-How to characterize a BLDC motor you want this driver to support, and where each result goes in the code.
+Characterize a BLDC motor so this Parallax Propeller 2 (P2) driver can support it, and put each result where it belongs in the code.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
+
+## Table of Contents
+
+On this Page:
+
+- [Motors Supported](#motors-supported) - the two motors the driver knows today
+- [Before you start](#before-you-start) - what the driver needs to know, what you need, and which commutation model to start with
+- [Step 1 - Connect the motor](#step-1---connect-the-motor) - hall and phase wiring
+- [Step 2 - Name your motor](#step-2---name-your-motor) - the motor enum
+- [Step 3 - Geometry: count revolutions by hand](#step-3---geometry-count-revolutions-by-hand) - hall ticks per revolution
+- [Step 4 - Hall order and the motor's tables](#step-4---hall-order-and-the-motors-tables) - the angle and delta tables
+- [Step 5 - Commutation: where to place the field](#step-5---commutation-where-to-place-the-field) - the motor-adoption tool
+- [Step 6 - Speed limits at each voltage](#step-6---speed-limits-at-each-voltage) - ceiling and floor
+- [Step 7 - Check the result](#step-7---check-the-result) - what to verify
+- [Step 8 - Record and share](#step-8---record-and-share) - send us what you learned
+- [Checklist: every place a motor is named](#checklist-every-place-a-motor-is-named) - the places to touch
+- [How to Contribute](#how-to-contribute) - help improve this project
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [Choosing your motor](MOTOR_CHOICE.md) - selecting a supported motor and its top speeds
+- [Techniques](TECHNIQUES.md) - the methods behind these steps, with worked examples
+- [6.5″ motor technical manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - a complete worked example
 
 This page is a procedure. Each step says **what to measure**, **how**, and **where the result goes**. The
 methods behind the steps are explained, with worked examples, in [TECHNIQUES.md](TECHNIQUES.md). The
@@ -41,26 +65,26 @@ each one is compiled in:
 
 **What you need.**
 
-- **A Rev B 64010 board**, if you can. Finding the commutation means finding a current *minimum*, and Rev B
+- **A Rev B Parallax 64010 Universal Motor Driver P2 Add-on Board**, if you can. Finding the commutation means finding a current *minimum*, and Rev B
   reads current at 150 mV/A against Rev A's 5 mV/A. The hall zero can also be measured cold, from the
   motor's back-EMF, on either (step 5).
 - **The motor free to turn**: wheel lifted, or shaft unloaded, and clamped so it cannot walk.
-- **The P2 at a clock the motor objects support**: see [Choosing a clock](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#choosing-a-clock). The demos run at 270 MHz.
+- **The P2 at a clock the motor objects support**: see [Choosing a clock](DEVELOP.md#choosing-a-clock). The demos run at 270 MHz.
 - **The debug terminal**, since these steps read the driver through `debug()` output.
 
 **Two commutation models, and which one to start with.** The driver places the field in one of two ways:
 
-- **A fixed pair** — one offset for each direction, chosen per supply voltage (and per board revision).
+- **A fixed pair**: one offset for each direction, chosen per supply voltage (and per board revision).
   **Start here.** It needs no code beyond table entries, and step 5 tells you how to find a good pair.
-- **A zero plus a lead that follows speed** — how both the 6.5″ and the DocoEng motor (on a Rev A board)
+- **A zero plus a lead that follows speed**: how both the 6.5″ and the DocoEng motor (on a Rev A board)
   are driven. The 6.5″ draws 24–78 % less current across its speed range than its best fixed pair, and the
   DocoEng motor needs more lead at the top than any one pair gives. Each motor has a lead table against
   speed, a zero and a sign (`leadTableForMotor()`: the 6.5″'s `leadIncrTbl` / `leadTenthsTbl`, the
   DocoEng's `docoLeadIncrTbl` / `docoLeadTenthsTbl`), and `bMotorHasLeadTable()` says which motors use it.
-  Adding your motor to it is a table and two `case` lines. How the table's values are found — a lead sweep
-  at a few speeds, and the curves it gives — is in [DRIVER-THEORY-OF-OPERATIONS.md](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves--where-the-offset-should-sit).
+  Adding your motor to it is a table and two `case` lines. How the table's values are found (a lead sweep
+  at a few speeds, and the curves it gives) is in [DRIVER-THEORY-OF-OPERATIONS.md](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves-where-the-offset-should-sit).
 
-## Step 1 — Connect the motor
+## Step 1 - Connect the motor
 
 Wire the three hall sensors (with their power and ground) to the board's **Hall IN** header and the three
 phases to **Motor out U, V, W**. If the colours don't tell you which is which, don't worry yet: step 4
@@ -75,26 +99,26 @@ Here is how the DocoEng motor was connected (its [specifications are here](./DOC
 | Yellow                | Hall U       | adapt Yellow                 | Hall IN: U      |
 | Green                 | Hall V       | adapt Green                  | Hall IN: V      |
 | Blue                  | Hall W       | adapt Orange                 | Hall IN: W      |
-| Black                 | Ground       | adapt Brown                  | Hall IN: +v     |
+| Black                 | Ground       | adapt Brown                  | Hall IN: GND    |
 | **Motor Drive Wires** |              | _- 20 AWG wires -_           |
 | Yellow                | Phase U      | -no adapter-                 | Motor out U     |
 | Green                 | Phase V      | -no adapter-                 | Motor out V     |
 | Blue                  | Phase W      | -no adapter-                 | Motor out W     |
 
-**FIGURE 1**: _This is the cabling per the table above._
+![A hand holding the motor's five hall wires, joined to colored adapter wires that plug into the Hall IN header of the Parallax 64010 board, with the three phase wires in the green Motor out terminals](images/new-motor-connect.jpg)
 
-![coffee](images/new-motor-connect.jpg)
+**Figure 1**: *This is the cabling per the table above.*
 
-**FIGURE 2**: _The new motor hooked up._
+![The small black DocoEng motor on the bench with its hall and phase wires running to a Parallax 64010 board stacked on a P2 Edge breadboard, and a strip of black electrical tape on the motor shaft](images/motor-hooked-up.jpg)
 
-![coffee](images/motor-hooked-up.jpg)
+**Figure 2**: *The motor hooked up.*
 
-\*NOTE: the electrical tape "flag" makes it easy to count whole turns of the shaft (step 3).
+**NOTE:** *the electrical tape "flag" makes it easy to count whole turns of the shaft (step 3).*
 
-## Step 2 — Name your motor
+## Step 2 - Name your motor
 
 The motor identifiers are defined in one place: the list of supported motors in
-`isp_bldc_motor_userconfig.spin2`. Choose a name that is specific enough for others to recognise the motor.
+**isp_bldc_motor_userconfig.spin2**. Choose a name that is specific enough for others to recognise the motor.
 
 At the top of `isp_bldc_motor_userconfig.spin2`:
 
@@ -107,10 +131,10 @@ becomes:
 
 ```spin2
 ' Names of supported Motors
-#0, MOTR_6_5_INCH, MOTR_DOCO_4KRPM, {YOUR_NEW_MOTOR_IDENTIFER}
+#0, MOTR_6_5_INCH, MOTR_DOCO_4KRPM, {YOUR_NEW_MOTOR_IDENTIFIER}
 ```
 
-(replacing `{YOUR_NEW_MOTOR_IDENTIFER}` with your name).
+(replacing `{YOUR_NEW_MOTOR_IDENTIFIER}` with your name).
 
 The motor object, `isp_bldc_motor.spin2`, does not keep its own copy of this list. It re-exports each name
 from the configuration file, so a program that uses only the motor object can still name the motors. Add one
@@ -120,17 +144,16 @@ line for your motor beside the existing ones at the top of `isp_bldc_motor.spin2
     ' Names of supported Motors
     MOTR_6_5_INCH       = user.MOTR_6_5_INCH
     MOTR_DOCO_4KRPM     = user.MOTR_DOCO_4KRPM
-    {YOUR_NEW_MOTOR_IDENTIFER} = user.{YOUR_NEW_MOTOR_IDENTIFER}
+    {YOUR_NEW_MOTOR_IDENTIFIER} = user.{YOUR_NEW_MOTOR_IDENTIFIER}
 ```
 
 Because the value comes from the configuration file, the two can never disagree. Then add your name to
 `validMotorForChoice()`'s list, so `start()` accepts it.
 
-⚠ **Several routines choose between the two existing motors with `if … else`.** A new motor falls silently
-into the `else` branch and inherits the other motor's values. The steps below name each routine; the
-[checklist](#checklist--every-place-a-motor-is-named) at the end lists them all.
+**WARNING:** *Several routines choose between the two existing motors with `if … else`. A new motor falls silently into the `else` branch and inherits the other motor's values.* The steps below name each routine; the
+[checklist](#checklist-every-place-a-motor-is-named) at the end lists them all.
 
-## Step 3 — Geometry: count revolutions by hand
+## Step 3 - Geometry: count revolutions by hand
 
 **Measure** hall ticks per revolution. Don't take it from a datasheet, and don't infer it from a speed
 reading: those checks divide by the number you are trying to confirm
@@ -148,7 +171,7 @@ revolutions, not one, and check that the hall code at the end matches the code a
 
 **If it is wrong:** every speed, rotation and distance the driver reports is wrong by the same ratio.
 
-## Step 4 — Hall order and the motor's tables
+## Step 4 - Hall order and the motor's tables
 
 **Measure** the order in which the hall codes arrive when the motor turns forward
 ([TECHNIQUES §1.2](TECHNIQUES.md#12-the-hall-order-and-the-transition-table)).
@@ -211,7 +234,7 @@ three places:
 **If it is wrong:** the motor won't turn, or moves a little and stops, or runs in one direction only. Once
 the motor runs, `getHallIntegrityCounts()` should report no missed transitions and no illegal codes.
 
-## Step 5 — Commutation: where to place the field
+## Step 5 - Commutation: where to place the field
 
 This is the step that matters most. On the 6.5″ motor, being 30° away from the best placement costs **12.7
 times** the current, and it is circulating current that does no work and only heats the board. Read
@@ -242,7 +265,7 @@ fails. The motor runs under your record's test current limit. The tool aborts on
 current, and it has a charge cap and a time cap. A driver fault is cleared and the scan goes on from rest, and
 the motor is stopped on every way out. To stop it at once, disconnect the supply.
 
-### 5a — Give the tool your motor's record
+### 5a - Give the tool your motor's record
 
 The tool reads a **parameter record** for your motor, found by the `MOTOR_TYPE` your configuration names.
 Before anything moves, it refuses a motor type that has no record. It also refuses a record whose hall ticks
@@ -253,7 +276,7 @@ At the top of `util_adopt_motor.spin2`, add your name to `CON { record keys }`:
 ```spin2
     KEY_6_5_INCH        = user.MOTR_6_5_INCH
     KEY_DOCO_4KRPM      = user.MOTR_DOCO_4KRPM
-    KEY_YOUR_MOTOR      = user.{YOUR_NEW_MOTOR_IDENTIFER}
+    KEY_YOUR_MOTOR      = user.{YOUR_NEW_MOTOR_IDENTIFIER}
 ```
 
 Then add one record to `DAT { motor records }`, above the line that ends the table. Use the same layout as the
@@ -286,7 +309,7 @@ Then select your motor in the single-motor block of `isp_bldc_motor_userconfig.s
 itself, as the demos do; with PNut, select it as [DEVELOP.md](DEVELOP.md#building-with-pnut) describes.
 Compile it with debug enabled and run it with the debug terminal open. From `src/`, for example:
 
-```
+```bash
 pnut-ts -d util_adopt_motor.spin2
 pnut-term-ts -r util_adopt_motor.bin
 ```
@@ -294,7 +317,7 @@ pnut-term-ts -r util_adopt_motor.bin
 A run takes 15–30 minutes at one supply voltage. Every line it prints starts `MA-`; the file's header
 describes each record.
 
-### 5b — Read the result and put it in the driver
+### 5b - Read the result and put it in the driver
 
 The last two lines are `MA-RESULT` and `MA-END`. `MA-END` reads `stopped,NONE` when the run finished, and
 otherwise names what ended it. In `MA-RESULT`:
@@ -323,7 +346,7 @@ asymmetric pair can be expressed.
 If the lead changes a lot between the two speeds (compare the two `lead_x10` values in `MA-PAIR`), that is the
 case for the second model: note it when you share your results.
 
-### 5c — Run it again, on your pair
+### 5c - Run it again, on your pair
 
 Rebuild and run the tool again. This time it starts from your pair, so each direction's minimum should sit
 within a degree or two of it (`from_start_x10` in `MA-FIT`). The ceiling it reports is now measured on your
@@ -335,14 +358,14 @@ the opposite of the textbook model, so measure it.
 
 **A second, independent way to find Z: cold, from back-EMF.** Coast the bridge and turn the shaft by hand in
 both directions. The phase voltages are the motor's own waves, fixed to the magnets. This needs no current
-resolution, so it works on a Rev A board too. On our bench the `dual-align` tier of
-`src/test_bench_dual.spin2` does this (see *About the bench programs* at the end of this page).
+resolution, so it works on a Rev A board too. The method is described in
+[TECHNIQUES §1.4](TECHNIQUES.md#14-find-the-hall-zero-cold-from-the-motors-own-voltage).
 
 **If it is wrong:** at worst the motor won't turn or faults at once. More often it runs, drawing one or two
 orders of magnitude more current than it needs, or more in one direction than the other. If a two-wheel
 platform draws more on one side than the other, suspect the commutation first.
 
-## Step 6 — Speed limits at each voltage
+## Step 6 - Speed limits at each voltage
 
 **Measure** the fastest speed that keeps a duty reserve (the **ceiling**) and the slowest that still turns
 steadily (the **floor**) ([TECHNIQUES §1.6](TECHNIQUES.md#16-choose-the-speed-ceiling-by-duty-reserve-not-by-where-the-motor-gives-up)).
@@ -371,7 +394,7 @@ which measurements at other voltages follow to within 2.5 %.
 - **`init()`** sets the feedforward's scale, `ff_ceiling`: the 6.5″ motor uses its measured back-EMF line, and
   any other motor uses its ceiling.
 
-## Step 7 — Check the result
+## Step 7 - Check the result
 
 Run the motor through its range in both directions and check:
 
@@ -385,9 +408,9 @@ Run the motor through its range in both directions and check:
   measure it.
 
 For each check, also make it fail once on purpose. A check you have only seen pass hasn't been tested
-([TECHNIQUES §2.1](TECHNIQUES.md#21-a-check-that-cannot-fail-proves-nothing--measure-the-negative-case)).
+([TECHNIQUES §2.1](TECHNIQUES.md#21-a-check-that-cannot-fail-proves-nothing-measure-the-negative-case)).
 
-## Step 8 — Record and share
+## Step 8 - Record and share
 
 Add your motor's rows to the [Motor Reference tables](MOTOR_CHOICE.md#motor-reference-top-speed-at-each-drive-voltage)
 (top speed at each voltage, and its commutation), marking which rows you verified on your hardware. Say what
@@ -395,9 +418,9 @@ you measured and how, in the same terms as the [6.5″ manual](MOTOR-6.5IN-TECHN
 calculated, or taken from the vendor.
 
 Then please share what you've learned! See [Contributing](CONTRIBUTING.md) for how to send us your changes,
-so we can keep growing the set of motors this driver supports.
+so we can keep growing the set of motors this driver supports. That's all there is to it!
 
-## Checklist — every place a motor is named
+## Checklist: every place a motor is named
 
 | Where | What to add |
 | ----- | ----------- |
@@ -419,11 +442,14 @@ so we can keep growing the set of motors this driver supports.
 A good check that you have them all: search `isp_bldc_motor.spin2` for `MOTR_DOCO_4KRPM` and for
 `MOTR_6_5_INCH`. Every match is a place that decides between motors.
 
-**About the bench programs.** `src/test_bench_*.spin2` are the programs we measured the 6.5″ motor with. They
-build through `tools/bench-run.sh` against `isp_bldc_motor_userconfig_bench.spin2`, which describes our
-bench: two 6.5″ motors on Rev B boards. To use them on your motor, set your motor and voltage in that file.
-Their speed steps are sized for the 6.5″ motor (`DRIVE_CEILING_INCRE` and the increments derived from it),
-so scale them to your motor's ceiling first. Each program's header says what it measures.
+---
+
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
 
 ---
 
@@ -435,7 +461,7 @@ so scale them to your motor's ceiling first. Each program's header says what it 
 
 ## Disclaimer and Legal
 
-> _Parallax, Propeller Spin, and the Parallax and Propeller Hat logos_ are trademarks of Parallax Inc., dba Parallax Semiconductor
+> *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
 
 ---
 

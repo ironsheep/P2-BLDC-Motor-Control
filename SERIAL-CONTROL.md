@@ -1,14 +1,42 @@
-# P2-BLDC-Motor-Control - Via Serial from RPi, Arduino, or...
+# P2-BLDC-Motor-Control - Serial Control
 
-Serial control of our Single and Two-motor driver objects P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Board
+Control our single-motor and two-wheel drive objects from an RPi, an Arduino or any other serial host, over a 2-wire serial link.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
+**NOTE:** *Serial control has not been re-qualified on hardware for v6.2.0; it is planned for the next minor release.*
+
+## Table of Contents
+
+On this Page:
+
+- [The Project](#the-project) - what serial control is
+- [Current status](#current-status) - where to find what changed in each release
+- [System Diagram](#system-diagram) - what are we setting up?
+- [Download the project files](#download-the-project-files) - get the latest project files
+- [Configuring your RPi](#configuring-your-rpi) - one time configure your RPi
+- [Wiring the Serial Connection](#wiring-the-serial-connection) - connect the RPi to the P2
+- [Flashing your P2 Edge](#flashing-your-p2-edge) - flash to P2 with the drive code
+- [Developing your own drive code](#developing-your-own-drive-code) - write your own drive code
+- [Checking the drive's status](#checking-the-drives-status) - the status numbers and what your code should do
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [Serial Interface of Steering Object](DRIVE-OBJECTS-SERIAL.md) - Every serial command and its reply
+- [Steering and Motor control](DRIVE-OBJECTS.md) - The object public interfaces
+- [Start your drive project using these objects](DEVELOP.md) - Walks through configuration and setup of your own project using these objects
+- [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
+- [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
+- [The author's development platform](AUTHORS-Platform.md) - Overview of the robot platform used when developing and testing the code for this project
+
+---
+
 ## The Project
 
-Instead of using the FlySky for remote control this document describes how to use a 2-wire serial interface to control your P2 hardware on your robot platform.
+Instead of using the FlySky for remote control, this document describes how to use a 2-wire serial interface to control the P2 hardware on your robot platform.
 
 The code for this project implements an active serial receiver running on the P2 and a top-level application which listens for drive/status commands arriving via serial and then forwards the requests to the 2-wheel steering system and sends responses back over serial to the host.
 
@@ -16,36 +44,15 @@ The code for this project implements an active serial receiver running on the P2
 
 What changed in each release, serial control included, is in the project's [CHANGELOG](CHANGELOG.md).
 
-## Table of Contents
-
-On this Page:
-
-- [System Diagram](#system-diagram) - what are we setting up?
-- [Download the latest files](#download-the-project-files) - get latest project files
-- [Configure the RPi](#configuring-your-rpi) - one time configure your RPi 
-- [Wiring the Serial Connection](#wiring-the-serial-connection) - Connect the RPi to the P2
-- [Flashing your P2](#flashing-your-p2-edge) - flash to P2 with the drive code
-- [Building your own drive code](#developing-your-own-drive-code) - write your own drive code!
-
-Additional pages:
-
-- [README](README.md) - The top level file for this repository
-- [Steering and Motor control](DRIVE-OBJECTS.md) - The object public interfaces
-- [Start your drive project using these objects](DEVELOP.md) - Walks thru configuration and setup of your own project using these objects
-- [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
-- [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
-- [The author's development platform](AUTHORS-Platform.md) - Overview of the robot platform used when developing and testing the code for this project
-
-
----
-
 ## System Diagram
 
 The following diagram shows the top-level serial object which hands off commands to the drive subsystem as they are received. It also shows the nested motor control and sense subsystem comprised of the two objects: steering and motor control.
 
-![Motor Control System Diagram](./images/serial-bldc-system.png)
+![Diagram of the serial top-level object handing commands to the steering and motor objects](./images/serial-bldc-system.png)
 
-In this diagram there are five **rectangular objects** depicting files (yellow background) of code. There are three methods within the motor files (white and green backgrounds) that are run in separate cogs and there is one method (white background) within the serial files that runs in a separate cog.  The **arrows** attempt to show which objects interact with each other and also show with which object the user application can interact.  The gear icon indicates which are running in their own Cog. You can see that the users' top-level control application runs in its own Cog as well.
+**Figure 1**: *The serial control system: the serial top-level object, the steering object and the motor objects*
+
+In this diagram there are five **rectangular objects** depicting files (yellow background) of code. There are three methods within the motor files (white and green backgrounds) that are run in separate cogs and there is one method (white background) within the serial files that runs in a separate cog. The **arrows** attempt to show which objects interact with each other and also show with which object your application can interact. The gear icon indicates which are running in their own cog. You can see that your top-level control application runs in its own cog as well.
 
 Video of author running the system: [Control our 2-wheel BLDC robot platform from an RPi](https://youtu.be/QF4qI9yVwWc) @ youtube
 
@@ -53,21 +60,21 @@ Video of author running the system: [Control our 2-wheel BLDC robot platform fro
 
 Head to the BLDC Motor repository [releases page](https://github.com/ironsheep/P2-BLDC-Motor-Control/releases) and download the `serial-control-archive-set.zip` file from the Assets section of the latest release. *(only present in v2.0.0 and later releases)*
 
-Create a working directory and unpack this .zip there. It holds one folder, `serial-control-archive-set/`, with two folders inside: `p2Src/`, the P2 project files, and `pythonSrc/`, the RPi side files. Each has a `_README_.txt` saying what it holds. We'll use all of these files in later steps.  Meanwhile, let's setup your RPi.
+Create a working directory and unpack this .zip there. It holds one folder, `serial-control-archive-set/`, with two folders inside: `p2Src/`, the P2 project files, and `pythonSrc/`, the RPi side files. Each has a `_README_.txt` saying what it holds. We'll use all of these files in later steps. Meanwhile, let's set up your RPi.
 
 ## Configuring your RPi
 
-Set up for your RPi is nearly the same as we did for setting up the RPi for P2 IoT Gateway use. 
+Setting up your RPi is nearly the same as we did for setting up the RPi for P2 IoT Gateway use.
 
 But, first, if you are configuring a bare new RPi then do: [Setting up your 1st Raspberry Pi](https://github.com/ironsheep/P2-RPi-IoT-gateway/blob/main/RPI-SETUP.md)
 
-If you have a well setup RPi and just need to configure it for use in this contect then do the following...
+If you have a well set up RPi and just need to configure it for use in this context then do the following.
 
 First install extra packages the script needs:
 
 ### Packages for Ubuntu, Raspberry pi OS, and the like
 
-```shell
+```bash
 sudo apt-get install git python3 python3-pip python3-tzlocal python3-sdnotify python3-colorama python3-unidecode python3-paho-mqtt python3-watchdog
 ```
 
@@ -77,8 +84,8 @@ You need to select a location to install your platform-drive python script.
 
 If you were installing in say your home directory/projects/ it might look something like this:
 
-```shell
-cd<return>  # insure you are in home directory
+```bash
+cd<return>  # ensure you are in home directory
 
 mkdir -p ~/projects/platform-drive    # make new directory (inclu. ~/projects/ if it doesn't exist)
 
@@ -87,60 +94,58 @@ cd ~/projects/platform-drive
 
 Head back to the folder where you unpacked the `serial-control-archive-set.zip` file. Copy the files from its `serial-control-archive-set/pythonSrc/` folder into this new directory on your RPi: the demo script `P2-BLDC-Motor-Control-Demo.py` and its `requirements.txt`. Finish up your system prep by ensuring the files needed for your drive script are installed with the following commands:
 
-```shell
+```bash
 cd ~/projects/platform-drive            # make sure we are where the new files arrived
 sudo pip3 install -r requirements.txt   # install supporting files
 ```
 
-
 ## Wiring the Serial Connection
 
-The **P2-BLDC-Motor-Control-Demo.py** script is built to use the main serial I/O channel at the RPi GPIO Interface.  These are GPIO pins 14 & 15 (header pins 8 & 10).
+The **P2-BLDC-Motor-Control-Demo.py** script is built to use the main serial I/O channel at the RPi GPIO Interface. These are GPIO pins 14 & 15 (header pins 8 & 10).
 
-**NOTE:** FYI a good reference is: [pinout diagram for RPi GPIO Pins](https://pinout.xyz/)
+**NOTE:** *A good reference is the [pinout diagram for RPi GPIO Pins](https://pinout.xyz/)*
 
 **RPi Wiring for Daemon use:**
 
-| RPi Hdr Pin# | RPi GPIO Name| RPi Purpose | P2 Purpose | P2 Pin # |
+| RPi Hdr Pin# | RPi GPIO Name | RPi Purpose | P2 Purpose | P2 Pin # |
 | --- | --- | --- | --- | --- |
-| 6 | GND | Signal ground| Signal ground | GND near Tx/Rx Pins|
-| 8 | GPIO 14 | Uart Tx | Serial Rx (from RPi) | 57
-| 10 | GPIO 15 | Uart Rx | Serial Tx (to RPi) | 56
+| 6 | GND | Signal ground | Signal ground | GND near Tx/Rx Pins |
+| 8 | GPIO 14 | Uart Tx | Serial Rx (from RPi) | 57 |
+| 10 | GPIO 15 | Uart Rx | Serial Tx (to RPi) | 56 |
 
 Pick two pins on your P2 dev board to be used for RPi serial communications. The top-level file provided by this project defines these two pins as 56, 57. This was due to the two motor control boards occupying most of the remaining pins on the Mini Edge Breakout board. Feel free to choose different pins. Just remember to adjust the constants in your code to use your pin choices.
 
 ## Flashing your P2 Edge
 
-The code for this project is setup for the P2 Mini Edge Breakout board with the two BLDC motor controllers installed at each of the dual-header locations. This leave one single header where you just connected the serial wires from the RPi.
+The code for this project is set up for the P2 Mini Edge Breakout board with the two BLDC motor controllers installed at each of the dual-header locations. This leaves one single header where you just connected the serial wires from the RPi.
 
 Head back to the folder where you unpacked the `serial-control-archive-set.zip` file, and open its `serial-control-archive-set/p2Src/` folder.
 
 There, `isp_steering_serial.spin2` is the top-level file. Compile it and download it to FLASH with PNut-TS, which needs nothing more: the file selects the two-wheel configuration itself. With PNut, first select that configuration in `isp_bldc_motor_userconfig.spin2`, as [Building with PNut](DEVELOP.md#building-with-pnut) describes.
 
-**NOTE:** *the pins are set in two files. The serial pins to the RPi are in `isp_steering_serial.spin2`. The motor boards' pin groups, the motor type and the drive voltage are in `isp_bldc_motor_userconfig.spin2`. If you are not set up as the demo specified, make your changes there before you flash the code.*
+**NOTE:** *The pins are set in two files. The serial pins to the RPi are in `isp_steering_serial.spin2`. The motor boards' pin groups, the motor type and the drive voltage are in `isp_bldc_motor_userconfig.spin2`. If you are not set up as the demo specified, make your changes there before you flash the code.*
 
-This should be all you need to test your new installation.  The demo file will drive the motors as if the platform is driving in a square (drive straight, turn right, drive strait, turn right, etc.)
+This should be all you need to test your new installation. The demo file will drive the motors as if the platform is driving in a square (drive straight, turn right, drive straight, turn right, etc.)
 
 You can test by running the following command on your RPi:
 
-```shell
-cd ~/projects/platform-drive            # make sure we are your project files are
+```bash
+cd ~/projects/platform-drive            # make sure we are where your project files are
 ./P2-BLDC-Motor-Control-Demo.py -d -v   # run with debug and verbose messaging enabled
 ```
 
 If this is working for you, congratulations, you are all set up and ready to do your own drive code!
 
-
 ## Developing your own drive code
 
 On your RPi copy the `P2-BLDC-Motor-Control-Demo.py` file to your own name:
 
-```shell
-cd ~/projects/platform-drive                        # make sure we are your project files are
-cp /P2-BLDC-Motor-Control-Demo.py {newName}.py      # create new copy
+```bash
+cd ~/projects/platform-drive                        # make sure we are where your project files are
+cp P2-BLDC-Motor-Control-Demo.py {newName}.py       # create new copy
 ```
 
-Do all your development in this new file. Start by replacing the sqaure-pattern drive code with your own.  
+Do all your development in this new file. Start by replacing the square-pattern drive code with your own.
 
 The full command set, with every reply, is in [Serial Interface of Steering Object](DRIVE-OBJECTS-SERIAL.md).
 
@@ -151,9 +156,9 @@ Send `getstatus`; the reply is `stat {left} {right}`, one number per wheel:
 | Number | Status | Means | What your code should do |
 | --- | --- | --- | --- |
 | 10 | DS\_Unknown | the drive is not running | check that the P2 started the motors |
-| 11 | DS\_MOVING | the wheel is being driven | — |
-| 12 | DS\_HOLDING | stopped, holding position | — |
-| 13 | DS\_OFF | stopped, coasting | — |
+| 11 | DS\_MOVING | the wheel is being driven | nothing |
+| 12 | DS\_HOLDING | stopped, holding position | nothing |
+| 13 | DS\_OFF | stopped, coasting | nothing |
 | 14 | **DS\_FAULTED** | the motor could not follow its command, or a hall sensor failed | send a stop or a new power to clear it; if it recurs, reduce the load or the speed |
 | 15 | **DS\_ESTOP** | emergency-stopped, or protectively stopped (a commanded wheel that could not turn) | drives are refused: send `emerclear` after an emergency stop, `protclear` after a protective stop (`getprot` says which) |
 
@@ -175,7 +180,12 @@ and `geterror` reads -1019 (ERR\_COMMAND\_TIMEOUT). See
 
 Have fun!
 
-### ...
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
 
 ---
 
@@ -201,13 +211,4 @@ Follow these links for more information:
 
 [maintenance-shield]: https://img.shields.io/badge/maintainer-stephen%40ironsheep%2ebiz-blue.svg?style=for-the-badge
 
-[marketplace-version]: https://vsmarketplacebadge.apphb.com/version-short/ironsheepproductionsllc.spin2.svg
-
-[marketplace-installs]: https://vsmarketplacebadge.apphb.com/installs-short/ironsheepproductionsllc.spin2.svg
-
-[marketplace-rating]: https://vsmarketplacebadge.apphb.com/rating-short/ironsheepproductionsllc.spin2.svg
-
-
 [license-shield]: https://img.shields.io/badge/License-MIT-yellow.svg
-
-

@@ -1,4 +1,4 @@
-# P2-BLDC-Motor-Control - Developing a P2 Application interacting with the new motor objects
+# P2-BLDC-Motor-Control - Start Your Own Drive Project
 
 Add a BLDC drive control subsystem to your own project!
 
@@ -12,18 +12,24 @@ On this Page:
 
 *Follow these steps to add motor control to your project:*
 
-- [Download the latest release .zip file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#download-the-latest-release-demo-archive-setzip-file) - get project files
-- [Adjust config file to your desired configuration](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#adjust-config-file-to-your-desired-configuration) 
-- [Include project objects in your top-object-file](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#include-project-objects-in-your-top-object-file)
-- [Choosing a clock](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#choosing-a-clock) - the supported range, and the clock must be final before `start()`
-- [Make calls to steering or motor object to drive your platform](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#and-youre-off--add-your-own-motor-control-code) 
-- [Driving a distance, and waiting for it to finish](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#driving-a-distance-and-waiting-for-it-to-finish) - and backing up
-- [Tuning the ramp for your robot's mass](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#tuning-the-ramp-for-your-robots-mass) - acceleration, deceleration and stopping distance
-- [Checking for errors](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DEVELOP.md#checking-for-errors)
+- [Download the latest release .zip file](#download-the-latest-release-archive-set-zip-file) - get project files
+- [Adjust config file to your desired configuration](#adjust-config-file-to-your-desired-configuration) - motor, pins, voltage, wheel, board
+- [Include project objects in your top-object-file](#include-project-objects-in-your-top-object-file) - select your configuration and include the objects
+  - [Building with PNut](#building-with-pnut) - selecting the configuration without PNut-TS
+  - [Using Two Motor Objects](#using-two-motor-objects) - the two-wheel platform
+  - [Using A Single Motor Object](#using-a-single-motor-object) - one motor
+- [Choosing a clock](#choosing-a-clock) - the supported range, and the clock must be final before `start()`
+- [Make calls to steering or motor object to drive your platform](#and-youre-off--add-your-own-motor-control-code) - your own drive code
+- [Driving a distance, and waiting for it to finish](#driving-a-distance-and-waiting-for-it-to-finish) - and backing up
+- [Tuning the ramp for your robot's mass](#tuning-the-ramp-for-your-robots-mass) - acceleration, deceleration and stopping distance
+- [Checking for errors](#checking-for-errors) - return codes and `getError()`
 
 Additional pages:
 
-- [Main Page](https://github.com/ironsheep/P2-BLDC-Motor-Control) - Return to the top of this repos
+- [Main Page](README.md) - Return to the top of this repo
+- [Choosing your motor and voltage](MOTOR_CHOICE.md) - which motors and supply voltages are supported
+- [Your driver board](DRIVER_BOARDS.md) - Rev A and Rev B of the Universal Motor Driver board
+- [Drive Objects](DRIVE-OBJECTS.md) - the full interface of the steering and motor objects
 - [Drawings](DRAWINGS.md) - Files (.dwg) that you can use to order your own platform inexpensively
 - [To-scale drawings](DOCs/bot-layout.pdf) of possible rectangular and round robotic drive platforms for Edge Mini Break and JonnyMac P2 Development boards
 
@@ -43,14 +49,16 @@ Lastly you'll start the objects and then add your drive code and any sensor code
 
 Edit the user configuration file, **isp\_bldc\_motor\_userconfig.spin2**, and adjust the settings to describe the configuration you will be using.
 
+Which revision of the Parallax 64010 Universal Motor Driver P2 Add-on Board you have (Rev A or Rev B) matters: the two sense current differently. The driver detects the revision when it starts, so you normally do not need to say, but it is worth knowing which one you have. See [DRIVER_BOARDS.md](DRIVER_BOARDS.md).
+
 The file holds **two configurations**, and your top-level program chooses one of them with a few lines at the very top of its file (see [Include Project Objects](#include-project-objects-in-your-top-object-file) below):
 
-- `CFG_SINGLE_MOTOR` — one motor, driven by `isp_bldc_motor` directly
-- `CFG_DUAL_MOTOR` — a two-wheel platform, driven by `isp_steering_2wheel`
+- `CFG_SINGLE_MOTOR`: one motor, driven by **isp_bldc_motor** directly
+- `CFG_DUAL_MOTOR`: a two-wheel platform, driven by **isp_steering_2wheel**
 
 Edit the configuration your program selects. As shipped, the two-wheel configuration is:
 
-```
+```spin2
     MOTOR_TYPE = MOTR_6_5_INCH
 
     LEFT_MOTOR_BASE = PINS_P16_P31
@@ -88,7 +96,7 @@ and the board detection, one of:
 
 A motor board uses its base pin and the 15 pins above it, so the two motors of a two-wheel platform need pin groups that do not overlap (for example `PINS_P16_P31` and `PINS_P32_P47`, or `PINS_P0_P15` and `PINS_P16_P31`). The configuration checks this when you compile. A base that is not one of the `PINS_*` groups, or two groups that share pins, stops the compile with an error like:
 
-```
+```text
 isp_bldc_motor_userconfig.spin2:190:error:Divide by zero (m145)
 ```
 
@@ -98,7 +106,7 @@ Use `BRD_AUTO_DET` unless you have a reason not to. With it, `start()` refuses a
 
 As shipped, the single-motor configuration is:
 
-```
+```spin2
     MOTOR_TYPE = MOTR_DOCO_4KRPM
 
     ONLY_MOTOR_BASE = PINS_P16_P31
@@ -116,11 +124,11 @@ Save your changes and you are ready to start adding the driver to your code.
 
 ## Include Project Objects in your top-object-file
 
-You now need to select objects based on if you are a one-wheel or two-wheel confuration.
+You now need to select objects based on if you are a one-wheel or two-wheel configuration.
 
-**First, select your configuration.** Put these lines at the very top of your top-level file, before anything else. They choose which of the two configurations in `isp_bldc_motor_userconfig.spin2` is compiled. With PNut-TS, a program without them does not compile, and the error names these lines.
+**First, select your configuration.** Put these lines at the very top of your top-level file, before anything else. They choose which of the two configurations in **isp_bldc_motor_userconfig.spin2** is compiled. With PNut-TS, a program without them does not compile, and the error names these lines.
 
-```script
+```spin2
 ' a two-wheel program:
 #DEFINE CFG_DUAL_MOTOR
 #IFDEF __PNUT_TS__
@@ -140,9 +148,9 @@ You now need to select objects based on if you are a one-wheel or two-wheel conf
 
 PNut has `#DEFINE` and `#IFDEF`, but a `#DEFINE` reaches only the file it is in, and PNut has no `#PRAGMA EXPORTDEF` to carry it further. So with PNut, the configuration file cannot see your program's choice, and you make the choice there instead. Do **one** of these:
 
-- **Edit the configuration file.** Near the top of `isp_bldc_motor_userconfig.spin2`, find these lines, and remove the leading `'` from the **one** that matches your program:
+- **Edit the configuration file.** Near the top of **isp_bldc_motor_userconfig.spin2**, find these lines, and remove the leading `'` from the **one** that matches your program:
 
-    ```script
+    ```spin2
     #IFNDEF __PNUT_TS__
     '#DEFINE CFG_SINGLE_MOTOR
     '#DEFINE CFG_DUAL_MOTOR
@@ -155,16 +163,16 @@ PNut has `#DEFINE` and `#IFDEF`, but a `#DEFINE` reaches only the file it is in,
 
 If you do neither, PNut stops with an error about an undefined symbol such as `MOTOR_TYPE`: that is the configuration file with no configuration selected.
 
-*The PNut path follows the P2 Knowledge Base's documented behaviour of PNut's preprocessor; we build and test with PNut-TS.*
+*The PNut path follows the P2 Knowledge Base's documented behavior of PNut's preprocessor; we build and test with PNut-TS.*
 
 ### Using Two Motor Objects
 
-- isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size)
-- isp\_steering_2wheel.spin2 - the steering object which include the motor objects
+- **isp_bldc_motor_userconfig.spin2** - your configuration (motor connections, power, wheel size)
+- **isp_steering_2wheel.spin2** - the steering object which includes the motor objects
 
 You simply include them with something like:
 
-```script
+```spin2
 #DEFINE CFG_DUAL_MOTOR
 #IFDEF __PNUT_TS__
 #PRAGMA EXPORTDEF CFG_DUAL_MOTOR
@@ -180,7 +188,7 @@ OBJ { Objects Used by this Object }
 
 Starting the wheels object in Spin2 is also pretty simple:
 
-```script
+```spin2
 
 PUB main() | frontCog, eError, eLeftError, eRightError
 
@@ -197,18 +205,18 @@ PUB main() | frontCog, eError, eLeftError, eRightError
 
   ... and do your app stuff from here on ...
   
-   wheels.stop()   ' if you wish to shutdown COGs and release motor pins
+   wheels.stop()   ' if you wish to shutdown cogs and release motor pins
    
 ```
 
 ### Using A Single Motor Object
 
-- isp\_bldc\_motor_userconfig.spin2 - your configuration (motor connections, power, wheel size)
-- isp\_bldc_motor.spin2 - the motor object
+- **isp_bldc_motor_userconfig.spin2** - your configuration (motor connections, power, wheel size)
+- **isp_bldc_motor.spin2** - the motor object
 
 You simply include them with something like:
 
-```script
+```spin2
 #DEFINE CFG_SINGLE_MOTOR
 #IFDEF __PNUT_TS__
 #PRAGMA EXPORTDEF CFG_SINGLE_MOTOR
@@ -224,7 +232,7 @@ OBJ { Objects Used by this Object }
 
 Starting the motor object in Spin2 is also pretty simple. `start()` launches everything the motor needs, the driver and its front cog: 2 cogs.
 
-```script
+```spin2
 
 PUB main() | motorCog
 
@@ -240,7 +248,7 @@ PUB main() | motorCog
 
   ... and do your app stuff from here on ...
   
-    wheel.stop()   ' if you wish to shutdown COGs and release motor pins
+    wheel.stop()   ' if you wish to shutdown cogs and release motor pins
    
 ```
 
@@ -250,7 +258,7 @@ PUB main() | motorCog
 
 The motor objects work at any system clock from 130 MHz up to 300 MHz. Set your clock the usual way, with `_clkfreq` (or `_xtlfreq` and a PLL setting) in your top-level file; the demos use `_clkfreq = CLK_FREQ`.
 
-**Why 130 MHz.** The driver does a fixed amount of work in every PWM frame — read the current, compute the three phase levels, read the halls, apply the current limit — and the frame lasts a fixed time (44 kHz), so a slower clock leaves fewer clock cycles for the same work. At 130 MHz the driver's busiest frame uses three quarters of the frame, keeping a quarter in reserve; much slower and it would run out of time and miss frames, and the motor would run badly with nothing to say why. So below 130 MHz `start()` refuses and starts nothing: it returns `ERR_CLOCK_TOO_SLOW` (see `getError()`).
+**Why 130 MHz.** The driver does a fixed amount of work in every PWM frame (read the current, compute the three phase levels, read the halls, apply the current limit) and the frame lasts a fixed time (44 kHz), so a slower clock leaves fewer clock cycles for the same work. At 130 MHz the driver's busiest frame uses three quarters of the frame, keeping a quarter in reserve; much slower and it would run out of time and miss frames, and the motor would run badly with nothing to say why. So below 130 MHz `start()` refuses and starts nothing: it returns `ERR_CLOCK_TOO_SLOW` (see `getError()`).
 
 **Why 300 MHz.** The driver measures motor current with the P2's own pin converter, which runs from the system clock. Up to 300 MHz its reading of zero current at rest is steady to within a few millivolts. At 350 MHz, on the Rev A board, that reading wanders by tens of millivolts, which on that board is several amps of false current. The driver's start check catches it, but by then the clock is already the problem. So above 300 MHz `start()` refuses and starts nothing: it returns `ERR_CLOCK_TOO_FAST`.
 
@@ -263,7 +271,7 @@ Every timing the objects use is derived from the running clock: the PWM frame (4
 You are now at the `... and do your app stuff from here on ...` section of this page.
 From here on, just use any of the Public Methods found in the [Steering and Motor control](DRIVE-OBJECTS.md) interface description.  
 
-**Remember:** if you are two wheeled you are calling methods of the [**isp\_steering_2wheel.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-2-wheel-steering-object-public-interface) object `wheels.*` and if you are a single wheel then you are calling methods of the [**isp\_bldc_motor.spin2**](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#the-motor-object-public-interface) object `wheel.*`.
+**Remember:** if you are two wheeled you are calling methods of the [**isp_steering_2wheel.spin2**](DRIVE-OBJECTS.md#the-2-wheel-steering-object-public-interface) object `wheels.*` and if you are a single wheel then you are calling methods of the [**isp_bldc_motor.spin2**](DRIVE-OBJECTS.md#the-motor-object-public-interface) object `wheel.*`.
 
 **Your settings are kept.** `setMaxSpeed()`, `setMaxSpeedForDistance()`, `holdAtStop()`, `setAcceleration()`, `setDeceleration()` and (motor object) `setForwardIsReverse()` may be called before `start()`, and are kept across `stop()` and `start()`. The protective settings, `setFaultResponse()`, `setHoldLimits()` and `setCommandTimeout()`, need a running motor, and every `start()` restores their defaults, so set them after each `start()`. See [Settings start() keeps](DRIVE-OBJECTS.md#settings-start-keeps).
 
@@ -271,7 +279,7 @@ From here on, just use any of the Public Methods found in the [Steering and Moto
 
 `driveForDistance()` drives forward and brings the wheels to rest at the distance, counted from the call. To wait for it, poll `isMoveDone()` **with a bound**, then ask `getStopReason()` why it ended:
 
-```script
+```spin2
     eError := wheels.driveForDistance(24, 24, wheels.DDU_IN)
     if eError == wheels.NO_ERROR
         startMs := getms()
@@ -286,7 +294,7 @@ From here on, just use any of the Public Methods found in the [Steering and Moto
 
 **Backing up a distance.** `driveForDistance()` is forward only. To back up, drive in reverse and arm a distance limit:
 
-```script
+```spin2
     wheels.driveAtPower(-40, -40)                       ' drive in reverse...
     wheels.stopAfterDistance(24, wheels.DDU_IN)         ' ...and bring the platform to rest 24 in from here
 ```
@@ -299,7 +307,7 @@ These are **two calls, not one atomic move**: the platform is already reversing 
 
 The built-in ramp suits a light platform: it speeds up at 1,000 mm/s² (about 0.1 g) and slows and stops at 1,470 mm/s² (roughly 0.15 g). Every ramp is jerk-limited: its acceleration eases in from zero over 250 ms (`RAMP_TAU_MS`) and back out as the new speed arrives, so no start, speed change, reversal or stop begins or ends with a jolt, and a reversal passes through zero in one continuous ramp. The easing is fixed; the rates are yours. A speed raised while a wheel is still slowing dips briefly (about 0.3 s) before it climbs, because the ramp unwinds the slow-down first. A heavier or taller robot usually wants gentler rates, and you set the two ends apart, in mm/s² at the wheel rim: `setAcceleration(rate)` for speeding up and `setDeceleration(rate)` for slowing down and every stop. Both may be set before `start()` and are kept across it, and `getAcceleration()` and `getDeceleration()` read them back.
 
-```script
+```spin2
     wheels.setAcceleration(600)                         ' ease a heavy robot into motion
     wheels.setDeceleration(900)                         ' and stop it more gently than the built-in 1,470
 ```
@@ -312,7 +320,7 @@ Every command method returns `NO_ERROR` (0) or a negative `ERR_*` code, and you 
 
 **Check each call** where the answer changes what you do next:
 
-```script
+```spin2
     eError := wheels.driveForDistance(24, 24, wheels.DDU_IN)
     if eError <> wheels.NO_ERROR
         debug("driveForDistance refused: ", sdec_long(eError))
@@ -320,7 +328,7 @@ Every command method returns `NO_ERROR` (0) or a negative `ERR_*` code, and you 
 
 **Or check once, after a group of calls.** Each command also records its error for the calling cog, and `getError()` returns the first one since you last asked, then clears it:
 
-```script
+```spin2
     wheels.setMaxSpeed(50)
     wheels.setAcceleration(500)
     wheels.driveAtPower(40, 40)
@@ -331,9 +339,16 @@ Every command method returns `NO_ERROR` (0) or a negative `ERR_*` code, and you 
 
 The codes, and what each means, are listed in [Drive Objects: Errors](DRIVE-OBJECTS.md#errors). Two latched states refuse every drive until you clear them: an emergency stop (`clearEmergency()`) and a protective stop (`clearProtectiveStop()`).
 
-Have Fun!
+That's all there is to it! Enjoy!
 
+*Stephen*
 
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
 
 ---
 

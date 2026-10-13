@@ -1,17 +1,36 @@
-
 # P2-BLDC-Motor-Control - Serial Interface of Steering Object
 
-Serial interface for our steering object - P2 Spin2/Pasm2 for our 6.5" Hub Motors with Universal Motor Driver Boards
+Drive a two-wheel Parallax Propeller 2 (P2) robot platform from your host over a serial link, one line of text per command.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
-This document describes the serial interface of the steering object (**isp\_steering_2wheel.spin2**), which controls a dual motor robot platform. The serial top-level object, **isp\_steering\_serial.spin2**, receives these commands from your host (RPi, Arduino, etc.) and calls the steering object for you.
+**NOTE:** *Serial control has not been re-qualified on hardware for v6.2.0; it is planned for the next minor release.*
+
+## Table of Contents
+
+On this Page:
+
+- [Object: isp_steering_2wheel.spin2](#object-isp_steering_2wheelspin2) - the steering object's serial form
+- [Commands and replies](#commands-and-replies) - the line format and every form of ERROR reply
+- [How fast the P2 answers](#how-fast-the-p2-answers) - command latency
+- [How your host learns of a command timeout](#how-your-host-learns-of-a-command-timeout) - what to ask after a link loss
+- [Values sent as numbers](#values-sent-as-numbers) - number formats and the enum values
+- [The 2-Wheel Steering Object PUBLIC Interface](#the-2-wheel-steering-object-public-interface) - every command, with its reply
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [Serial Control](SERIAL-CONTROL.md) - Set up an RPi to drive the platform over serial
+- [Drive Objects](DRIVE-OBJECTS.md) - The objects' Spin2 public interfaces
+- [Adding a Motor](ADDING_MOTOR.md) - Add support for another motor
+
+This document describes the serial interface of the steering object (**isp_steering_2wheel.spin2**), which controls a dual motor robot platform. The serial top-level object, **isp_steering_serial.spin2**, receives these commands from your host (RPi, Arduino, etc.) and calls the steering object for you.
 
 How the drive objects fit together, and how many cogs they use, is described once in [Drive Objects: Objects and cogs](DRIVE-OBJECTS.md#objects-and-cogs). The serial top-level adds its own serial receiver on top of that.
 
-## Object: isp\_steering_2wheel.spin2
+## Object: isp_steering_2wheel.spin2
 
 What the steering object does, and how its turning works, is described in [Drive Objects: the 2-Wheel Steering Object](DRIVE-OBJECTS.md#object-isp_steering_2wheelspin2). This page gives its serial form.
 
@@ -19,16 +38,16 @@ What the steering object does, and how its turning works, is described in [Drive
 
 Each command is one line of text. With each public method below we've added its serial command and the reply. In this example:
 
-```
+```text
 SER drivedir {pwr} {dir}
 SER Returns: OK | ERROR {errormsg}
 ```
 
 ... the first line is the command sent from the connected device to the P2, and the second is what the P2 sends back.
 
-Generally speaking when driving a robot using these serial commands one expects to see:
+Generally speaking, when driving a robot using these serial commands you can expect to see:
 
-```
+```text
 commandA
 OK
 commandB
@@ -56,9 +75,9 @@ When no command is waiting, the serial top-level checks for a new one every 1 ms
 - `checkwiring` takes about 1.3 s: two legs of about 0.65 s each. It takes at most about 4 s, if a leg does not come to rest.
 - `setstartchecks 0` takes a full start.
 
-At 624,000 baud each character takes 16 µs on the wire, so sending a command and its reply adds well under 1 ms. The bit timing is exact at any system clock. A command line is at most 128 characters: a longer line is cut to its first 128 characters and handled as that, and the link keeps working for the next line. (Before 6.0 an idle P2 slept for up to 1 s between checks, so every command could wait that long.)
+At 624,000 baud each character takes 16 µs on the wire, so sending a command and its reply adds well under 1 ms. The bit timing is exact at any system clock. A command line is at most 128 characters: a longer line is cut to its first 128 characters and handled as that, and the link keeps working for the next line.
 
-The P2 sends nothing unasked. The only line it sends on its own is its `ident:` line at start. Every other line is a reply to a command. Each reply is exactly one line, ending with a single LF. (Before 6.0, `OK` and `ERROR` replies ended with the two characters `\n` and no LF, and a getter's reply was followed by a stray `\n`.)
+The P2 sends nothing unasked. The only line it sends on its own is its `ident:` line at start. Every other line is a reply to a command. Each reply is exactly one line, ending with a single LF.
 
 ### How your host learns of a command timeout
 
@@ -87,7 +106,7 @@ Units and status travel as the numbers of their enums:
 | event kind (`event` reply, `getevtotal {kind}`) | 60 EV\_NONE, 61 EV\_LOST, 62 EV\_STOP, 63 EV\_FAULT\_RESYNC, 64 EV\_FAULT, 65 EV\_HOLD\_SLIP, 66 EV\_HOLD\_LIMIT, 67 EV\_CURRENT\_LIMIT, 68 EV\_PATH\_LIMIT, 69 EV\_HALL\_MISSED, 70 EV\_HALL\_ILLEGAL, 71 EV\_WALK\_GUARD, 72 EV\_LATE\_PASS, 73 EV\_PACK, 74 EV\_CHECK\_RETRY, 75 EV\_FOLDBACK |
 | event wheel (`event` reply) | 50 EVW\_LEFT, 51 EVW\_RIGHT, 52 EVW\_PLATFORM (the platform's own: EV\_LATE\_PASS, EV\_PACK); 0 with EV\_NONE |
 | fault response {mode} | 0 FR\_SHIPPED, 1 FR\_GRADED |
-| health bits (`health` reply) | 1 HLT\_HALLS, 2 HLT\_SENSE\_ZERO, 4 HLT\_PHASE\_U, 8 HLT\_PHASE\_V, 16 HLT\_PHASE\_W, 32 HLT\_WIRING, 64 HLT\_PACK -- each number is the sum of its bits |
+| health bits (`health` reply) | 1 HLT\_HALLS, 2 HLT\_SENSE\_ZERO, 4 HLT\_PHASE\_U, 8 HLT\_PHASE\_V, 16 HLT\_PHASE\_W, 32 HLT\_WIRING, 64 HLT\_PACK; each number is the sum of its bits |
 | pack sensor status (`packvolt` reply) | 0 PACK\_NOT\_FITTED, 1 PACK\_ABSENT, 2 PACK\_PRESENT |
 | fault cause (`faultcause` reply) | 0 FC\_NONE, 1 FC\_LAG, 2 FC\_HALL |
 | hold state (`holdstatus` reply) | 0 HS\_OFF, 1 HS\_HOLDING, 2 HS\_SLIPPED, 3 HS\_LIMITED |
@@ -100,7 +119,7 @@ The stop reasons, event kinds and event wheels start at 40, 60 and 50, so none o
 - `geterror` reads `ERR_START_CHECK_FAILED (-1020)` for the platform and for each failing wheel.
 - `setstartchecks 0` starts the motors anyway.
 
-Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A start that failed for any other reason opens no host link. One such reason is `ERR_BAD_MOTOR_TABLE (-1022)`: a motor's hall delta table in the firmware holds a step other than -1, 0 or +1, so no motor starts until the table is corrected (see [Adding a Motor](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/ADDING_MOTOR.md#driver-startup-hall-order)).
+Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A start that failed for any other reason opens no host link. One such reason is `ERR_BAD_MOTOR_TABLE (-1022)`: a motor's hall delta table in the firmware holds a step other than -1, 0 or +1, so no motor starts until the table is corrected (see [Adding a Motor](ADDING_MOTOR.md#step-4---hall-order-and-the-motors-tables)).
 
 ### The 2-Wheel Steering Object PUBLIC Interface
 
@@ -123,11 +142,11 @@ Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A
 | PUB stop() <BR><PRE>SER N/A</PRE>| Stop cogs and release pins assigned to motor drivers
 | PUB setStartChecks(bRefuse)<BR><PRE>SER setstartchecks {true \| false}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Choose whether a start whose checks fail is refused. The serial top-level starts the motors at power-up, before your host is connected, so this is answered only **after its start checks refused the platform**. `setstartchecks 0` starts the motors anyway, and replies `OK` once they run: from then on every command is answered, and `gethealth` still says what failed. Nothing moves during the start, which takes about 1 s plus up to about 4 s for each wheel whose check still fails. If the start fails for another reason, the reply is `ERROR setstartchecks failed: {ERR_NAME} ({code})`. `setstartchecks -1` keeps the refusal. While the motors run the reply is `ERROR StartChecks apply only to a start its checks refused: the motors are running`.
 | PUB setAcceleration(rate)<BR><PRE>SER setaccel {rate}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Set how fast both wheels speed up, in mm/s² at the wheel rim [1 to 10,000]; 1,000 until set. Every ramp eases its acceleration in and out over 250 ms, so no start, speed change, reversal or stop begins or ends with a jolt. Slowing down and stopping are set apart, by `setdecel`. Kept until the P2 is reset.
-| PUB setDeceleration(rate)<BR><PRE>SER setdecel {rate}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Set how fast both wheels slow down and stop, in mm/s² at the wheel rim [250 to 10,000]; 1,470 until set. Every stop ramps down at it (`stopmotors`, the `settimeout` stop, a controlled fault stop), eased in and out over 250 ms, so it sets the stopping distance: about speed² ÷ (2 × rate) + speed × 0.125 s, where half the rate doubles the first part and the easing's part does not change (derived, not yet measured; see [How far the motor travels while stopping](https://github.com/ironsheep/P2-BLDC-Motor-Control/blob/main/DRIVE-OBJECTS.md#how-far-the-motor-travels-while-stopping)). `stopaftdist`, `stopaftrot`, `stopafttime` and `drivedist` still come to rest at their limit. `emercutoff` does not ramp. Kept until the P2 is reset. A value out of range is refused with `ERROR Decel Rate ({rate}) out of range [250, 10000] mm/s^2` and changes nothing.
-| PUB setMaxSpeed(speed)<BR><PRE>SER setspeed {speed}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Limit top-speed to {speed} where {speed} is  [1 to 100] - *DEFAULT is 75 and applies to both forward and reverse*
+| PUB setDeceleration(rate)<BR><PRE>SER setdecel {rate}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Set how fast both wheels slow down and stop, in mm/s² at the wheel rim [250 to 10,000]; 1,470 until set. Every stop ramps down at it (`stopmotors`, the `settimeout` stop, a controlled fault stop), eased in and out over 250 ms, so it sets the stopping distance: about speed² ÷ (2 × rate) + speed × 0.125 s, where half the rate doubles the first part and the easing's part does not change (see [How far the motor travels while stopping](DRIVE-OBJECTS.md#how-far-the-motor-travels-while-stopping)). `stopaftdist`, `stopaftrot`, `stopafttime` and `drivedist` still come to rest at their limit. `emercutoff` does not ramp. Kept until the P2 is reset. A value out of range is refused with `ERROR Decel Rate ({rate}) out of range [250, 10000] mm/s^2` and changes nothing.
+| PUB setMaxSpeed(speed)<BR><PRE>SER setspeed {speed}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Limit top-speed to {speed} where {speed} is [1 to 100] - *DEFAULT is 75 and applies to both forward and reverse*
 | PUB setMaxSpeedForDistance(speed)<BR><PRE>SER setspeedfordist {speed}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | Limit top-speed of driveForDistance() operations to {speed} where {speed} is [1 to 100] - *DEFAULT is 75 and applies to both forward and reverse*
 | PUB setCommandTimeout(nMs)<BR><PRE>SER settimeout {ms}<br>SER Returns: OK \| ERROR {errormsg}</PRE> | A link-loss guard, off by default. While it is on, a driven platform must be sent a drive command at least every {ms} [10 to 60,000], whatever started it (`drivedir`, `drivepwr` or `drivedist`, with or without a stop limit armed); when one does not arrive in time both motors stop. Re-sending `drivedist` starts its distance again. `settimeout 0` turns it off. It is the host's choice: the serial top-level never turns it on by itself.
-| PUB calibrate() <BR><PRE>SER N/A</PRE> | **NOT WORKING, YET** <BR>*(we may need this?)*
+| PUB calibrate() <BR><PRE>SER N/A</PRE> | **NOT IMPLEMENTED**: it does nothing, and returns ERR\_NOT\_IMPLEMENTED. It is kept so programs that call it still compile; no calibration is needed.
 | PUB holdAtStop(bEnable)<BR><PRE>SER hold {true \| false}<br>SER Returns: OK \| ERROR {errormsg}</PRE>| Once at rest, actively hold position (true) or coast (false)
 | PUB setFaultResponse(eMode, brakePct)<BR><PRE>SER setfaultresp {mode} {pct}<br>SER Returns: OK \| ERROR {errormsg}</PRE>| What both wheels do on a position fault (a wheel could not follow its field). {mode} 0 (FR\_SHIPPED): at once, coast (`hold false`) or short the phases (`hold true`). {mode} 1 (FR\_GRADED): with the hall sensors reading, re-sync and stop under control; otherwise coast (`hold false`), or brake with the phases shorted for {pct} [0 to 100] % of the time (`hold true`). The other wheel is stopped too. Restored to the default at start.
 | PUB getFaultResponse() : eMode, brakePct<BR><PRE>SER getfaultresp<br>SER Returns: faultresp {mode} {pct}</PRE>| Returns the fault response in effect, as `setfaultresp` set it
@@ -165,11 +184,16 @@ Every other command is answered `ERROR {cmd} failed: ERR_NOT_STARTED (-1007)`. A
 
 The pin groups and drive voltage are set in your user configuration, not over serial: see [DEVELOP.md](DEVELOP.md).
 
-### ...
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
 
 ---
 
-> If you like my work and/or this has helped you in some way then feel free to help me out for a couple of :coffee:'s or :pizza: slices!
+> If you find this kind of written explanation useful, helpful I would be honored by your helping me out for a couple of :coffee:'s or :pizza: slices -or- you can support my efforts by contributing at my Patreon site!
 >
 > [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
 
@@ -191,12 +215,5 @@ Follow these links for more information:
 
 [maintenance-shield]: https://img.shields.io/badge/maintainer-stephen%40ironsheep%2ebiz-blue.svg?style=for-the-badge
 
-[marketplace-version]: https://vsmarketplacebadge.apphb.com/version-short/ironsheepproductionsllc.spin2.svg
-
-[marketplace-installs]: https://vsmarketplacebadge.apphb.com/installs-short/ironsheepproductionsllc.spin2.svg
-
-[marketplace-rating]: https://vsmarketplacebadge.apphb.com/rating-short/ironsheepproductionsllc.spin2.svg
-
 [license-shield]: https://img.shields.io/badge/License-MIT-yellow.svg
-
 

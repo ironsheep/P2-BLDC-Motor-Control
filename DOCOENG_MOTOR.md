@@ -1,27 +1,40 @@
-# P2-BLDC-Motor-Control - Connecting the new motor
+# P2-BLDC-Motor-Control - Connecting the DocoEng Motor
 
-This page details which wires on the motor go to where on our control board. How the motor
-behaves on the driver — its hall sectors, timing, speed range and what we measured — is in its
-[technical manual](MOTOR-DOCO-TECHNICAL-MANUAL.md).
+Wire the DocoEng 4,000 RPM BLDC motor to the Parallax 64010 Universal Motor Driver P2 Add-on Board.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
-## Specs of the new Motor
+## Table of Contents
 
-The new Motor we've added:
+On this Page:
+
+- [Specs of the DocoEng Motor](#specs-of-the-docoeng-motor) - geometry, hall order and the maker's data sheet figures
+- [Cabling of the DocoEng Motor](#cabling-of-the-docoeng-motor) - which wire goes where
+- [How to Contribute](#how-to-contribute) - help improve this project
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [DocoEng Technical Manual](MOTOR-DOCO-TECHNICAL-MANUAL.md) - how the motor behaves on the driver: hall sectors, timing, speed range and what we measured
+- [Configuring the driver for your motor](MOTOR_CHOICE.md) - select the motor and drive voltage
+- [Adding support for a new motor](ADDING_MOTOR.md) - the same wiring table, as step 1 of adding a motor
+
+## Specs of the DocoEng Motor
+
+The DocoEng motor we support:
 
 | Category | Value | Description |
 | --- | --- | --- |
-| **-- docoEng.com 4k RPM 24v motor --** || the new Parallax small motor
-| Hall Tics per Revolution | 24 ticks | verified on our hardware (turned by hand, against a shaft encoder)
+| **DocoEng 4k RPM 24V motor** || the Parallax small motor
+| Hall ticks per revolution | 24 ticks | verified on our hardware (turned by hand, against a shaft encoder)
 | Degrees per hall tick | 15 degrees | on average; the six hall sectors are not equal: on our two motors they measure 13.4° to 16.9°, and each repeats every turn
 | Ticks per hall-cycle | 6 ticks | positive power (ticks rising): 1-5-4-6-2-3</br>negative power (ticks falling): 1-3-2-6-4-5</br>the falling order verified on our hardware
-| Hall-cycles per Revolution | 4 hall-cycles | verified on our hardware
-| Degrees per Hall-cycle | 90 degrees | verified on our hardware
+| Hall-cycles per revolution | 4 hall-cycles | verified on our hardware
+| Degrees per hall-cycle | 90 degrees | verified on our hardware
 | Magnets	| 8 poles | verified on our hardware (4 pole pairs)
-| **-- from the maker's data sheet --** || [DOCOMotor.pdf](./DOCs/DOCOMotor.pdf)
+| **From the maker's data sheet** || [DOCOMotor.pdf](./DOCs/DOCOMotor.pdf)
 | Nominal voltage | 24 V DC |
 | Phase-to-phase resistance | 1.8 Ω |
 | No-load speed | 6,800 RPM ±10% | at 24 V
@@ -36,9 +49,9 @@ The new Motor we've added:
 | Hall sensor supply | +5 to +20 V DC | three sensors, Hu Hv Hw, on the yellow, green and blue leads
 | Shaft | 5 mm, out of both ends |
 
-## Cabling of new Motor
+## Cabling of the DocoEng Motor
 
-We're adding the DocoEng.com BLDC motor - 4,000 RPM, 24V to the driver. The motor [specifications are here](./DOCs/DOCOMotor.pdf). These are the connections I used. I ended up cutting off the end of some female connector wires and soldering them to the motor wires to make a connector. While most of use would simply solder on connectors, I was on a road trip and this is what I had access to. ;-) 
+This page connects the DocoEng.com BLDC motor (4,000 RPM, 24V) to the driver. The motor [specifications are here](./DOCs/DOCOMotor.pdf). These are the connections I used. I ended up cutting off the end of some female connector wires and soldering them to the motor wires to make a connector. While most of us would simply solder on connectors, I was on a road trip and this is what I had access to. ;-)
 
 | Wire Color | Purpose | Adapter Wire Color | board Connector |
 | --- | --- | --- | --- |
@@ -53,20 +66,30 @@ We're adding the DocoEng.com BLDC motor - 4,000 RPM, 24V to the driver. The moto
 | Green | Phase V | -no adapter- | Motor out V
 | Blue | Phase W | -no adapter- | Motor out W
 
-**FIGURE 1**: *This is the cabling per the table above.*
+![A hand holding the motor's five hall wires, joined to colored adapter wires that plug into the Hall IN header of the Parallax 64010 board, with the three phase wires in the green Motor out terminals](images/new-motor-connect.jpg)
 
-![coffee](images/new-motor-connect.jpg)
+**Figure 1**: *This is the cabling per the table above.*
 
-**FIGURE 2**: *The new motor hooked up.*
+![The small black DocoEng motor on the bench with its hall and phase wires running to a Parallax 64010 board stacked on a P2 Edge breadboard, and a strip of black electrical tape on the motor shaft](images/motor-hooked-up.jpg)
 
-![coffee](images/motor-hooked-up.jpg)
+**Figure 2**: *The motor hooked up.*
 
-*NOTE: the electrical tape "flag" so i can tell relative position of shaft during movement.
+**NOTE:** *the electrical tape "flag" lets me tell the relative position of the shaft during movement.*
 
-Once this cabling of your new motor is completed, you are ready to [configure your driver](MOTOR_CHOICE.md) then run the code.
+Once the cabling of your motor is completed, you are ready to [configure your driver](MOTOR_CHOICE.md) then run the code.
 
 Enjoy!
--Stephen
+
+*Stephen*
+
+---
+
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
 
 ---
 
@@ -92,12 +115,4 @@ Follow these links for more information:
 
 [maintenance-shield]: https://img.shields.io/badge/maintainer-stephen%40ironsheep%2ebiz-blue.svg?style=for-the-badge
 
-[marketplace-version]: https://vsmarketplacebadge.apphb.com/version-short/ironsheepproductionsllc.spin2.svg
-
-[marketplace-installs]: https://vsmarketplacebadge.apphb.com/installs-short/ironsheepproductionsllc.spin2.svg
-
-[marketplace-rating]: https://vsmarketplacebadge.apphb.com/rating-short/ironsheepproductionsllc.spin2.svg
-
 [license-shield]: https://img.shields.io/badge/License-MIT-yellow.svg
-
-

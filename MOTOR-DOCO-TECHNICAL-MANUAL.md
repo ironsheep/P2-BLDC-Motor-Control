@@ -1,14 +1,39 @@
-# The DocoEng 4,000 rpm motor — a technical manual
+# P2-BLDC-Motor-Control - DocoEng Motor Technical Manual
 
-**What it is, how the 64010 board drives it, and where it wants to run.**
+What the DocoEng 4,000 rpm motor is, how the Parallax 64010 board drives it, and where it wants to run.
 
 ![Project Maintenance][maintenance-shield]
 
 [![License][license-shield]](LICENSE)
 
+## Table of Contents
+
+On this Page:
+
+- [1. How to read this manual](#1-how-to-read-this-manual) - the one idea to carry through, and where each number comes from
+- [2. The motor](#2-the-motor) - construction, geometry, hall health, windings and sectors
+- [3. How the 64010 board drives it](#3-how-the-64010-board-drives-it) - the power stage, the control loop, the two knobs that place the field
+- [4. Position and geometry: the hall zero Z](#4-position-and-geometry-the-hall-zero-z) - where the hall pattern's zero sits
+- [5. Field placement: the lead L](#5-field-placement-the-lead-l) - how far ahead of the rotor the field runs, and how that changes with speed
+- [6. The operating envelope](#6-the-operating-envelope) - speeds, walls, the duty ceiling, starting, stopping, smoothness
+- [7. Current and power](#7-current-and-power) - what is measured, protection limits, current in normal running
+- [8. Driving it well](#8-driving-it-well) - the practical rules
+- [9. What we do not know yet](#9-what-we-do-not-know-yet) - open questions and what would settle them
+- [10. About the measurements](#10-about-the-measurements) - the rig and the instruments
+
+Additional pages:
+
+- [Main Page](README.md) - Return to the top of this repo
+- [6.5″ Hub Motor Technical Manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) - the companion manual, section for section
+- [DocoEng Motor wiring](DOCOENG_MOTOR.md) - how to connect this motor
+- [Techniques](TECHNIQUES.md) - the methods behind the numbers
+- [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md) - how the driver works inside
+
+---
+
 This manual describes the DocoEng 24 V, 4,000 rpm BLDC motor (`MOTR_DOCO_4KRPM`) as we have
-actually measured it, and how to get good behaviour out of it with the Parallax 64010 Universal
-Motor Driver board.
+actually measured it, and how to get good behavior out of it with the Parallax 64010 Universal
+Motor Driver P2 Add-on Board on a Parallax Propeller 2 (P2).
 
 It is the companion of the [6.5″ hub motor's manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) and is built
 section for section on it, so §5 here can be read beside §5 there. Where the two motors behave
@@ -19,13 +44,13 @@ explained in [TECHNIQUES.md](TECHNIQUES.md).
 
 ---
 
-## 1 · How to read this manual
+## 1. How to read this manual
 
 ### 1.1 The one idea to carry through
 
 > **One electrical cycle is 90° of shaft.**
 
-The motor has 8 magnets — 4 pole pairs — so the electrical machine goes round 4 times for every
+The motor has 8 magnets (4 pole pairs), so the electrical machine goes round 4 times for every
 turn of the shaft. The three hall sensors divide each electrical cycle into six sectors of 60° on
 average, so:
 
@@ -47,27 +72,27 @@ electrical degree.** Most angles below were measured with it.
 
 | Basis | Means |
 |---|---|
-| **measured** | measured on our hardware — two units of this motor on a **Rev A** board, the shaft free with only the encoder on it — with its error where we have one |
+| **measured** | measured on our hardware (two units of this motor on a **Rev A** board, the shaft free with only the encoder on it), with its error where we have one |
 | **calculated** | worked out from measured values or from the driver's constants; the arithmetic is shown |
 | **vendor** | taken from the maker's data sheet ([DOCOMotor.pdf](DOCs/DOCOMotor.pdf)) or a Parallax manual, not checked on our hardware |
-| **driver** | a constant or behaviour of the driver in `src/isp_bldc_motor.spin2` |
+| **driver** | a constant or behavior of the driver in `src/isp_bldc_motor.spin2` |
 
-### 1.3 Motor, driver, instrument, rig — what this manual keeps apart
+### 1.3 Motor, driver, instrument, rig: what this manual keeps apart
 
 | Quantity | Belongs to |
 |---|---|
-| Pole count, hall geometry, the sector widths, the hall zero **Z**, the back-EMF constant | the **motor** — durable, transfers with any driver |
-| The lead **L**, the offsets, the speed limits, how it stops and holds | the **driver** — our choices, not the motor's properties |
-| Current readings in mV, what can and cannot be resolved | the **instrument** — on this motor, a Rev A board (§7.1) |
-| Vibration and shaking at some speeds | the **rig** — the motor and encoder sit unanchored on a rubber mat (§6.7) |
+| Pole count, hall geometry, the sector widths, the hall zero **Z**, the back-EMF constant | the **motor**: durable, transfers with any driver |
+| The lead **L**, the offsets, the speed limits, how it stops and holds | the **driver**: our choices, not the motor's properties |
+| Current readings in mV, what can and cannot be resolved | the **instrument**: on this motor, a Rev A board (§7.1) |
+| Vibration and shaking at some speeds | the **rig**: the motor and encoder sit unanchored on a rubber mat (§6.7) |
 
 ### 1.4 What is not settled
 
-Open questions are marked ⬚ where they arise and collected in §9.
+Open questions are marked **NOTE:** where they arise and collected in §9.
 
 ---
 
-## 2 · The motor
+## 2. The motor
 
 ### 2.1 Construction and geometry
 
@@ -87,7 +112,7 @@ Open questions are marked ⬚ where they arise and collected in §9.
 | Torque constant | 0.034 N·m/A | vendor |
 | No-load speed / current | 6,800 rpm ±10 % at 24 V / 0.4 A max | vendor |
 | Rated speed / torque / power | 4,000 rpm ±10 % / 0.0625 N·m (about 1.84 A) / 26 W | vendor |
-| Winding resistance, phase to phase | **1.8 Ω** | vendor — not measured on our hardware (§2.4) |
+| Winding resistance, phase to phase | **1.8 Ω** | vendor; not measured on our hardware (§2.4) |
 
 ### 2.2 How the 24 ticks were counted
 
@@ -145,7 +170,7 @@ first unit, 2.6–2.8° on the second, at every speed (measured). The zero does 
 
 ---
 
-## 3 · How the 64010 board drives it
+## 3. How the 64010 board drives it
 
 ### 3.1 The power stage
 
@@ -156,7 +181,7 @@ bus-voltage sense, a 250 ns minimum dead time.
 **Every measurement in this manual was taken on a Rev A board**, the reverse of the 6.5″ manual. Rev A
 reads current at **5 mV/A** against Rev B's 150 mV/A. On this board a single frame's reading scatters
 by 0.50–0.64 mV standard deviation (about 0.1 A) while driven, 4.8 mV peak to peak (measured, two
-supplies), so at the Doco's light-load currents — a few hundred milliamps — the current is only a few
+supplies), so at the Doco's light-load currents (a few hundred milliamps) the current is only a few
 counts above the noise. §7.1 says what that costs.
 
 ### 3.2 The control loop, in one pass
@@ -172,7 +197,7 @@ particular to this motor:
 | at 4,343 rpm, the fastest measured | **54.5°** a pass; under one hall tick a pass | calculated |
 | How the field moves inside a pass | a frame at a time: frame k of 23 drives the field at angle + (k − 11) × step ÷ 23, so it turns smoothly and its mean over the pass is the commanded angle | driver |
 | Duty feedforward line | **688 × 10⁶ increment at 18.5 V** for full duty, scaled by the supply (37.2 × 10⁶ a volt) | measured; the maker's Ke predicts 37.2 × 10⁶ a volt |
-| Rotor angle within a sector | the sector's entry edge, from **the measured sector widths** — the two units' mean (§2.4) | driver |
+| Rotor angle within a sector | the sector's entry edge, from **the measured sector widths**, the two units' mean (§2.4) | driver |
 | Commutation offsets | on a Rev A board, **a lead that follows speed** from a table (§5.4); on Rev B one fixed pair per supply voltage | driver |
 
 The frame-by-frame field is what lets this motor run smoothly above about 2,400 rpm. A field that jumped
@@ -181,17 +206,17 @@ the servo's fast-response threshold on every pass, and the drive spends duty no 
 
 ### 3.3 The two knobs that place the field
 
-As on the 6.5″ ([§3.3](MOTOR-6.5IN-TECHNICAL-MANUAL.md#33-the-two-knobs-that-place-the-field--and-they-add)):
+As on the 6.5″ ([§3.3](MOTOR-6.5IN-TECHNICAL-MANUAL.md#33-the-two-knobs-that-place-the-field-and-they-add)):
 the commutation offset and the servo's setpoint add. The lead is carried in the offset; the setpoint
 stays fixed.
 
 ---
 
-## 4 · Position and geometry: the hall zero **Z**
+## 4. Position and geometry: the hall zero **Z**
 
 ### 4.1 What Z is
 
-Z is where the hall pattern's zero sits against true electrical zero — a property of sensor placement,
+Z is where the hall pattern's zero sits against true electrical zero, a property of sensor placement,
 the same in both directions ([6.5″ §4.1](MOTOR-6.5IN-TECHNICAL-MANUAL.md#41-what-z-is)).
 
 ### 4.2 The measured values
@@ -207,10 +232,10 @@ Z is the midpoint of the two directions' current minima at the same speed:
 **Take Z ≈ −2.5° for this motor, known to a few degrees.** The pair the driver ships at each voltage
 (§5.1) has its midpoint at −2 to −4.5°.
 
-⬚ The cold method that measured the 6.5″'s Z to a tenth of a degree (the motor's own back-EMF with the
+**NOTE:** *The cold method that measured the 6.5″'s Z to a tenth of a degree (the motor's own back-EMF with the
 bridge off, [6.5″ §4.6](MOTOR-6.5IN-TECHNICAL-MANUAL.md#46-how-the-motors-own-voltage-locates-the-magnets))
 did not resolve on this motor: its legs disagreed by up to 36°. Why is not established (§9). The second
-unit's Z could not be read either: its current minima did not resolve (§4.7).
+unit's Z could not be read either: its current minima did not resolve (§4.7).*
 
 ### 4.4 The honest limit
 
@@ -223,25 +248,25 @@ Two units, measured on the same board at 14.8 V:
 
 | Property | First unit | Second unit | Unit-specific? |
 |---|---|---|---|
-| Sector widths (§2.4) | 53.6–67.8° | 56.4–65.9° | **Partly** — the same wide pair, one pair differs by up to 2.8° |
+| Sector widths (§2.4) | 53.6–67.8° | 56.4–65.9° | **Partly**: the same wide pair, one pair differs by up to 2.8° |
 | Hall hysteresis | 3.0–3.4° | 2.6–2.8° | Close |
-| Hall order, direction, ticks a turn | — | the same | No |
-| Duty at the same speed | — | within ~5 % | No — the same motor constant |
-| Current at the same speed | 220–280 mA at a quarter speed | **450–840 mA** | **Yes** — 2–3× the drag (a stiffer bearing, or a unit not yet run in) |
+| Hall order, direction, ticks a turn | n/a | the same | No |
+| Duty at the same speed | n/a | within ~5 % | No: the same motor constant |
+| Current at the same speed | 220–280 mA at a quarter speed | **450–840 mA** | **Yes**: 2–3× the drag (a stiffer bearing, or a unit not yet run in) |
 | Runs on the shipped offsets | yes | yes, losing hold only 15–20° away either side | No |
 
 Two units are not a population (§9).
 
-(§§4.3, 4.5 and 4.6 of the 6.5″ manual have no counterpart here: this motor's Z has no independent second
+(§§4.3, 4.5 and 4.6 of the [6.5″ manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) have no counterpart here: this motor's Z has no independent second
 method yet, and no hand-detent or cold back-EMF study was completed on it.)
 
 ---
 
-## 5 · Field placement: the lead **L**
+## 5. Field placement: the lead **L**
 
 ### 5.1 What L is, and the pair this motor ships
 
-L is where the field is put against the rotor — a drive parameter, combined with Z into the offset
+L is where the field is put against the rotor, a drive parameter, combined with Z into the offset
 pair ([6.5″ §5.1](MOTOR-6.5IN-TECHNICAL-MANUAL.md#51-what-l-is)). On this motor a larger reverse offset,
 or a smaller forward one, puts the field further ahead: here L **is** the real lead (on the 6.5″ it is
 written the other way round). Each direction carries its own measured value, the current minimum at half
@@ -266,7 +291,7 @@ hall placement.
 | 1,120 rpm | 11.1 V | 7° toward less lead forward, 9° toward more lead reverse; the current is a few counts above the noise here, so read both as ±5° | measured, weakly (§7.1) |
 | the top, 1,650–2,800 rpm | 11.1–24 V | 5–15° toward **more** lead, still falling at the edge of the sweep at 18.5 and 22.2 V | measured |
 
-And the duty — the voltage the drive must apply — is least at **more lead still**: about 18–20° beyond
+And the duty (the voltage the drive must apply) is least at **more lead still**: about 18–20° beyond
 the current minimum at a quarter and half speed, and beyond 10° more lead at every top step measured:
 
 | Supply | Speed | 10° more lead than shipped saves this much duty | Basis |
@@ -275,10 +300,11 @@ the current minimum at a quarter and half speed, and beyond 10° more lead at ev
 | 24 V | 2,800 rpm | nothing forward; reverse needs 5 % *more* | measured |
 | 24 V | 2,940–4,343 rpm | 3–26 % forward, 2–8 % reverse | measured |
 
-**The Doco therefore wants more lead high up** — as the 6.5″ does: its table's L falls with speed, which
-on that motor is the real lead rising (6.5″ §5.2). The measurements in this manual were taken on one
-fixed pair per voltage (the table in §5.1). The driver now gives this motor, on a Rev A board, a lead table
-against speed as it does the 6.5″, drawn from the curves in §5.4.
+**The Doco therefore wants more lead high up**, as the 6.5″ does: its table's L falls with speed, which
+on that motor is the real lead rising ([6.5″ §5.2](MOTOR-6.5IN-TECHNICAL-MANUAL.md#52-l-depends-strongly-on-speed)).
+The measurements in this manual were taken on one fixed pair per voltage (the table in §5.1). On a Rev A
+board the driver gives this motor a lead table against speed, as it does the 6.5″, drawn from the curves
+in §5.4.
 
 ### 5.3 The basin is shallow
 
@@ -291,15 +317,15 @@ speed, reverse, around its shipped 53°:
 | duty | 12,999 | 11,708 | 10,728 | 9,995 | **9,423** | 8,967 | 8,625 | 8,367 | 8,160 |
 
 The current is flat to within the board's resolution; the duty falls steadily toward more lead. **What
-it means for you:** on this motor at light load, timing shows up in the voltage the drive needs — its
-headroom — more than in its current. That is the reverse of the 6.5″, whose current basin is 12.7×
+it means for you:** on this motor at light load, timing shows up in the voltage the drive needs (its
+headroom) more than in its current. That is the reverse of the 6.5″, whose current basin is 12.7×
 deep over 30°.
 
 ### 5.4 The lead curves
 
-What a lead sweep measures — a current bowl and a duty bowl at each speed, whose bottoms trace the
-**efficiency** and **headroom** curves — and the four things a model of the windings predicts about them,
-are set out in the driver's [theory of operations](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves--where-the-offset-should-sit).
+What a lead sweep measures (a current bowl and a duty bowl at each speed, whose bottoms trace the
+**efficiency** and **headroom** curves) and the four things a model of the windings predicts about them,
+are set out in the driver's [theory of operations](DRIVER-THEORY-OF-OPERATIONS.md#the-lead-curves-where-the-offset-should-sit).
 This section says how this motor measures up; the [6.5″ manual §5.4](MOTOR-6.5IN-TECHNICAL-MANUAL.md#54-the-lead-curves)
 does the same for that one.
 "Lead" here is the field's real lead over the rotor: 360° less the forward offset, or the reverse offset.
@@ -316,7 +342,7 @@ The curves, as measured and calculated (the mean of the two directions; forward 
 
 | rpm | 600 | 1,300 | 1,800 | 2,500 | 2,800 | 4,000 |
 |---|---|---|---|---|---|---|
-| Efficiency curve (± 4°, Rev A) | 51° | 57° | 61° | 66° | 68° | — |
+| Efficiency curve (± 4°, Rev A) | 51° | 57° | 61° | 66° | 68° | not measured |
 | Headroom curve, the hold wall | 70° | 86° | 95° | 102° | 107° (calculated) | 117° (calculated) |
 | The fixed pair these measurements used | 57° | 57° | 57° | 57° | 57° | 57° |
 | **The driver's lead table** (Rev A) | 52° | 57° | 61° | 66° | 68° | 68° |
@@ -325,7 +351,9 @@ At the top the fixed pair sat 50–60° short of the headroom curve and about 10
 curve, which is why the top speed cost duty (§6.3). The lead table follows the efficiency curve, held at
 68° above 2,800 rpm, where that curve is not cleanly measured (the servo's working point shifts at 24 V,
 §6.3), and it stays 18–49° inside the hold wall. Its pair is the lead plus or minus a direction offset of
-4.0°, the two units' mean. ⬚ What it does to the top speed and the duty is to be measured (§9).
+4.0°, the two units' mean.
+
+**NOTE:** *What the lead table does to the top speed and the duty is not yet measured (§9).*
 
 ### 5.5 Unit-to-unit
 
@@ -336,7 +364,7 @@ as the first unit does. **The shipped pair serves both units.**
 
 ---
 
-## 6 · The operating envelope
+## 6. The operating envelope
 
 ### 6.1 Speeds
 
@@ -367,9 +395,10 @@ no-load speed (6,800 rpm at 24 V).
 | 7.4 V | **3.00 ticks/s, 7.5 rpm** both ways (2.00 stutters) | **1,931 rpm** | **2,212 rpm** | the duty ceiling | measured |
 | 24 V | **0.10 ticks/s, 0.25 rpm** both ways, the slowest tried | **4,343 rpm** | **≥ 3,782 rpm** | forward the duty ceiling; reverse the test program's own error, not the motor | measured |
 
-The table above was measured before the drive damped its own top-speed hunt. Before that change, the
-hunt ended every climb from 11.1 V up and faulted the drive near 4,900 rpm at 24 V. The floors are measured.
-The ceilings above 7.4 V are calculated, and above about 4,900 rpm no supply has yet been run that fast.
+These held-speed figures are from an earlier measurement and have not been re-measured. The floors are
+measured. The ceilings above 7.4 V are calculated, and above about 4,900 rpm no supply has yet been run
+that fast: in the earlier measurement a speed hunt faulted the drive near 4,900 rpm at 24 V, and the
+drive now damps it (§6.3).
 
 **Why low supply cannot crawl as slowly.** Every slowest step runs at the duty floor, 5.8 % of full
 duty: 0.43 V at 7.4 V, 1.39 V at 24 V (calculated). Below about 3 ticks/s at 7.4 V that is not enough
@@ -394,13 +423,14 @@ bottom moves to more lead as speed rises, so the wall recedes with speed.
 
 **Every top speed measured so far ended at the duty ceiling, not at a limit of the motor.** Up to about
 2,500 rpm the drive's duty follows the motor's back-EMF line within a few percent. Above it, it needs
-more:
+more. These figures were measured with the fixed pair (§5.1) and have not been re-measured with the lead
+table:
 
 | Speed | Supply | Duty over the back-EMF line | Basis |
 |---|---|---|---|
 | 2,475 rpm | 11.1 V | +5 % | measured |
 | 2,799 rpm | 22.2 and 24 V | **+55 to +67 %** | measured |
-| 2,799 rpm | 14.8 V | 99.6 % of full duty — no reserve | measured |
+| 2,799 rpm | 14.8 V | 99.6 % of full duty, no reserve | measured |
 
 Two things make that excess:
 
@@ -414,16 +444,16 @@ Two things make that excess:
   less far ahead than the pair asks, and the duty rises and falls with speed rather than climbing smoothly
   (19.4 × 10³ at 3,220 rpm, 25.3 × 10³ at 3,497, 22.0 × 10³ at 4,063). At 7.4 V's tops the error holds 48.
 
-Both are now addressed in the drive, and this table predates both changes. The lead now follows speed
-(§5.4). The servo's shift turned out to be a symptom: above about 2,500 rpm the rotor's angle behind the
-field oscillated on its own, at 40–70 Hz, because a field driven at a commanded speed does nothing to
-damp it once the windings' reactance exceeds their resistance. The fast response turned that
-oscillation into extra duty. The drive now damps the field's advance against the rotor's lag at each
-hall edge. In the model that removes the oscillation and the extra duty at every supply, to beyond
-7,000 rpm (calculated). Measuring it on the motor is still to be done.
+The drive addresses both. The lead follows speed (§5.4). The servo's shift is a symptom: above about
+2,500 rpm the rotor's angle behind the field oscillates on its own, at 40–70 Hz, because a field driven at
+a commanded speed does nothing to damp it once the windings' reactance exceeds their resistance. The fast
+response turns that oscillation into extra duty. The drive damps the field's advance against the rotor's
+lag at each hall edge. In the model that removes the oscillation and the extra duty at every supply, to
+beyond 7,000 rpm (calculated). Measuring it on the motor is still to be done.
 
-Up to 2,475 rpm at 11.1 V, the fastest that supply then shipped, the drive ran in one steady state: the error held its setpoint (mean
-47.8–48.3 counts against 48), and the duty within a 5 s window varied by a few hundred counts.
+Up to 2,475 rpm at 11.1 V, the fastest run measured at that supply, the drive ran in one steady state: the
+error held its setpoint (mean 47.8–48.3 counts against 48), and the duty within a 5 s window varied by a
+few hundred counts.
 
 **Direction.** The forward direction (negative increments) needs more duty than reverse at the same
 speed: +1 to +4 % at 11.1 V, +3 to +15 % at 7.4 V, rising with speed; at 7.4 V's top forward ran out
@@ -442,9 +472,10 @@ forward direction at every supply. **In reverse at 7.4 and 11.1 V, a stop from t
 ticks short** of its target (a quarter turn at 7.4 V). The cause is measured: as the shaft slows at low
 supply, the drive repeatedly pauses its field to let the rotor catch up (81–164 paused passes in
 reverse against 11–51 forward), and each pause is distance the stop does not make up. The rotor does not
-stall: it stops 5–20 ms after the field. The driver now holds its speed plan still on a paused pass while
-stopping, so a pause makes the stop a little longer instead of shorter. ⬚ That is to be checked on these
-stops (§9).
+stall: it stops 5–20 ms after the field. The driver holds its speed plan still on a paused pass while
+stopping, so a pause makes the stop a little longer instead of shorter.
+
+**NOTE:** *Whether that closes the gap on these stops is not yet checked (§9).*
 
 **Stops by time** rested within ±100 ms at every supply, with one exception: one slow forward crawl stop
 at 18.5 V came to rest 120 ms after its field stopped.
@@ -454,7 +485,9 @@ at 18.5 V came to rest 120 ms after its field stopped.
 
 **Under load by hand** at a 4 A and a 2 A current limit, the limit held the motor with no fault. The
 shaft could not be stopped by hand: at 4 A it makes 136 mN·m, about 20–45 N at the fingertips on a 5 mm
-shaft. ⬚ How the blocked-rotor stop behaves on this motor is not yet measured (§9).
+shaft.
+
+**NOTE:** *How the blocked-rotor stop behaves on this motor is not yet measured (§9).*
 
 **Stopping from 4,000 rpm returns energy to the supply.** A bench supply cannot take it back; ours rode
 through every stop from the top.
@@ -483,12 +516,13 @@ inside a turn (first unit, measured):
 **The sectors do not shake the shaft.** The once-per-turn wobble that peaks near 3,000 rpm and fades above
 4,000 rpm is a resonance of the test rig: the motor and the encoder (about the motor's own diameter)
 sit unanchored on a rubber mat, and at some speeds the pair shakes, shifts and slowly turns on the mat.
-⬚ How much of it is the motor's own is to be measured on a clamped rig (§9). The current sense on a Rev
-A board cannot see the vibration at all.
+The current sense on a Rev A board cannot see the vibration at all.
+
+**NOTE:** *How much of the wobble is the motor's own is not yet measured on a clamped rig (§9).*
 
 ---
 
-## 7 · Current and power
+## 7. Current and power
 
 ### 7.1 What is measured and what is not
 
@@ -496,14 +530,14 @@ A board cannot see the vibration at all.
 |---|---|
 | Total bridge current (DC link) | **measured**, Rev A 5 mV/A: one frame scatters about 0.1 A, so below about 1 A the reading is a handful of counts |
 | Per-phase voltages | **measured** |
-| Winding resistance | ⛔ **not measured by the driver on Rev A** (§2.4) |
-| Bus voltage | ⛔ not measured: our figures use the supply's setting |
-| Regeneration, a phase short's current | ⛔ not visible, as on the 6.5″ ([§7.1](MOTOR-6.5IN-TECHNICAL-MANUAL.md#71-what-is-measured-and-what-is-not)) |
+| Winding resistance | **WARNING:** **not measured by the driver on Rev A** (§2.4) |
+| Bus voltage | **WARNING:** not measured: our figures use the supply's setting |
+| Regeneration, a phase short's current | **WARNING:** not visible, as on the 6.5″ ([§7.1](MOTOR-6.5IN-TECHNICAL-MANUAL.md#71-what-is-measured-and-what-is-not)) |
 
 **What Rev A costs this motor's measurements.** The timing minimum is found where the current is least
 (§5.2). This motor draws 0.2–0.9 A unloaded, and a ±20° sweep moves that by about the board's noise, so
 many minima did not resolve: the second unit's at every speed, the first's at a quarter speed and at the
-top. The duty, which the driver knows exactly, resolves every time — but its minimum sits at the hold
+top. The duty, which the driver knows exactly, resolves every time, but its minimum sits at the hold
 wall's edge, not at the efficient lead (§5.3).
 
 ### 7.2 Protection limits
@@ -528,21 +562,21 @@ twice (384–500 against 182–264 mA).
 
 ---
 
-## 8 · Driving it well
+## 8. Driving it well
 
 **Alignment**
 
 1. **Let the lead table run** (§5.4). On a Rev A board the driver follows this motor's efficiency curve
-   with speed, 18–49° inside the hold wall; the fixed pair it replaces (§5.1) ran cleanly on both units
+   with speed, 18–49° inside the hold wall. The fixed pair of §5.1 also ran cleanly on both units
    measured, 15–25° from the hold wall at low speed (§5.5, §6.2).
 2. **Expect the timing to show in headroom, not in current.** At light load this motor's current hardly
    moves with timing; its duty does (§5.3).
-3. **Carry the lead in the offset; never move the servo setpoint** (6.5″ §3.3).
+3. **Carry the lead in the offset; never move the servo setpoint** ([6.5″ §3.3](MOTOR-6.5IN-TECHNICAL-MANUAL.md#33-the-two-knobs-that-place-the-field-and-they-add)).
 
 **Speed**
 
 4. **The shipped speed range is conservative.** The motor held 0.25 to 4,343 rpm at 24 V and 7.5 to
-   1,931–2,212 rpm at 7.4 V (§6.1). The ceilings will rise when the lead follows speed.
+   1,931–2,212 rpm at 7.4 V (§6.1). The ceilings may rise now that the lead follows speed.
 5. **The top speed costs duty.** Above about 2,500 rpm the drive needs more voltage than the back-EMF
    explains (§6.3). At 14.8 V the shipped top runs at 99.6 % of full duty, with no reserve for a load.
 6. **At 7.4–12 V the slowest steady speed is about 10 rpm** (§6.1); from 14.8 V up it is far lower.
@@ -561,14 +595,14 @@ twice (384–500 against 182–264 mA).
 
 ### 8.1 If your board is a Rev B
 
-Everything in this manual was measured on Rev A. The driver's Rev B values for this motor — its offsets,
-ceilings and floors — date from 2023 and **have not been re-checked** with this driver. Expect the
+Everything in this manual was measured on Rev A. The driver's Rev B values for this motor (its offsets,
+ceilings and floors) have not been checked on a Rev B board. Expect the
 current readings to resolve far better (150 mV/A) and the timing minima with them; the motor's own
 properties in §2 do not depend on the board.
 
 ---
 
-## 9 · What we do not know yet
+## 9. What we do not know yet
 
 | Question | Why it matters | What would settle it |
 |---|---|---|
@@ -576,8 +610,8 @@ properties in §2 do not depend on the board.
 | **How much the servo's shifted working point at 24 V costs** (§6.3). The error's mean sits 4–11° below its setpoint at the 24 V tops. | It is the other part of the top's excess duty. | A top-speed run once the lead follows speed, which recovers about as much lead as the shift takes. |
 | **Z by a cold method.** The back-EMF method did not resolve on this motor (§4.2). | Z is known only to a few degrees. | The cold method's legs examined for why they disagree. |
 | **The inductance and the resistance** on our hardware (§2.4). The model gives about 1.06 mH a phase, from the maker's resistance (§5.4). | It checks the model. | A meter and an LCR meter across the leads. |
-| **What the sector table and the lead table do.** Both are built from these measurements (§2.4, §5.4); their effect on the top speed, the duty and the smoothness is not yet measured. | They set the final speed range. | The speed range at each supply on the new tables. |
-| **Whether the reverse stop now lands** (§6.5). | Distance stops in reverse at 7.4–11.1 V. | The stop tests at 7.4 and 11.1 V on the changed stop. |
+| **What the sector table and the lead table do.** Both are built from these measurements (§2.4, §5.4); their effect on the top speed, the duty and the smoothness is not yet measured. | They set the final speed range. | The speed range at each supply on the current tables. |
+| **Whether the reverse stop lands** (§6.5). | Distance stops in reverse at 7.4–11.1 V. | The stop tests at 7.4 and 11.1 V. |
 | **Vibration on a clamped rig** (§6.7). | Separates the motor's own shaking from the rig's. | The speed range repeated with the motor clamped. |
 | **The blocked-rotor stop, and a load the hand can hold.** A bare 5 mm shaft cannot be held (§6.5). | It is how the drive answers a jam. | The hand-load runs with a grip about 25 mm in radius on the shaft. |
 | **Unit-to-unit variation.** Two units: the same constant and pattern, one sensor pair and the drag differ (§4.7). | Two is not a population. | More units. |
@@ -585,19 +619,26 @@ properties in §2 do not depend on the board.
 
 ---
 
-## 10 · About the measurements
+## 10. About the measurements
 
 Every measurement here was taken on two units of this motor (the second only for its hall map and
-timing), on a Rev A 64010 board, with the P2 at 270 MHz, during the driver work of October 2026: the
-shaft free with a 360-line encoder on its far end and nothing else on it, on a bench supply set to each
-voltage named, the motor and encoder resting unanchored on a rubber mat. The measurements were made with
-the driver's own sense channels and the encoder, read through `src/test_bench_single.spin2` and the
-motor-adoption tool `src/util_adopt_motor.spin2`; [TECHNIQUES.md](TECHNIQUES.md) explains the methods.
-The analyses behind each number are kept in this repository's `DOCs/analyses/` folder.
+timing), on a Rev A 64010 board, with the P2 at 270 MHz: the shaft free with a 360-line encoder on its
+far end and nothing else on it, on a bench supply set to each voltage named, the motor and encoder
+resting unanchored on a rubber mat. The measurements were made with the driver's own sense channels and
+the encoder. [TECHNIQUES.md](TECHNIQUES.md) explains the methods.
 
 ---
 
-> If you like my work and/or this has helped you in some way then feel free to help me out for a couple of :coffee:'s or :pizza: slices!
+## How to Contribute
+
+This is a project supporting our P2 Development Community. Please feel free to contribute to this project. You can contribute in the following ways:
+
+- File **Feature Requests** or **Issues** (describing things you are seeing while using our code) at the [Project Issue Tracking Page](https://github.com/ironsheep/P2-BLDC-Motor-Control/issues)
+- Fork this repo and then add your code to it. Finally, create a Pull Request to contribute your code back to this repository for inclusion with the projects code. See [CONTRIBUTING](CONTRIBUTING.md)
+
+---
+
+> If you find this kind of written explanation useful, helpful I would be honored by your helping me out for a couple of :coffee:'s or :pizza: slices -or- you can support my efforts by contributing at my Patreon site!
 >
 > [![coffee](https://www.buymeacoffee.com/assets/img/custom_images/black_img.png)](https://www.buymeacoffee.com/ironsheep) &nbsp;&nbsp; -OR- &nbsp;&nbsp; [![Patreon](./images/patreon.png)](https://www.patreon.com/IronSheep?fan_landing=true)[Patreon.com/IronSheep](https://www.patreon.com/IronSheep?fan_landing=true)
 
@@ -605,7 +646,7 @@ The analyses behind each number are kept in this repository's `DOCs/analyses/` f
 
 ## Disclaimer and Legal
 
-> _Parallax, Propeller Spin, and the Parallax and Propeller Hat logos_ are trademarks of Parallax Inc., dba Parallax Semiconductor
+> *Parallax, Propeller Spin, and the Parallax and Propeller Hat logos* are trademarks of Parallax Inc., dba Parallax Semiconductor
 
 ---
 
