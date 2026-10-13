@@ -2438,6 +2438,34 @@ was the harness: the reading that showed the latch also showed a tick stamped af
 released it), which replaced the stand's last tick; SRC_REV 21 uses the tick before when one is stamped after the latch.
 **To close:** D6's `single-handload-v24p0` (both steps latch 988-1,168 ms) and `single-handload-v11p1` as its guard.
 
+### PL-224 -- shipped source carries our project history in its comments
+
+> **Status (2026-10-13): OPEN, BEFORE RELEASE; not started by Stephen's instruction.** Stephen: *"None of that is
+> useful to a reader who's using our code as the best possible example for how to drive BLDC motors. This stuff cannot
+> be in shipping code."* Doctrine overlay P8 (*shipped source is a user-facing document*) now binds new code.
+
+**The defect:** every file a release archive set carries is read as the reference for driving a BLDC motor, and its
+comments tie back to our process: punch-list ids (`PL-N`), task ids, bench visit and cell ids, design-risk and
+finding labels, "STEPHEN <date>" rulings, and a per-revision driver history. A reader cannot follow any of them, and
+they bury the explanation of what the code does.
+
+**Scope (counted 2026-10-13, lines matching a PL id, a task id, a `«#N»`, a ruling, a `DRIVER_REV N` or a visit sheet):**
+the closure of the six release tops (`tools/release_closure.py` over `demo_single_motor`, the four `demo_dual_motor*`,
+`isp_steering_serial`), 22 files. `isp_bldc_motor.spin2` 804 lines (its DRIVER_REV history alone is about 370 lines, 7225-7595),
+`isp_steering_2wheel.spin2` 162, `isp_steering_serial.spin2` 19, `isp_queue_serial.spin2` 10, `isp_serial_singleton`
+and `isp_hdmi_debug` 2 each; the rest are their authorship headers, which stay. The count is a pattern match and a
+floor: labels such as finding letters, cell ids and "the D5 log" are not all caught by it.
+
+**The fix:** rewrite each such comment to say what the code does and why, in the motor's and the P2's terms, keeping
+every piece of reasoning a maintainer needs; remove the revision-by-revision history (git holds it) and keep
+`DRIVER_REV` as the number only. Authorship and licence headers stay. `test_*`, `util_*` and `tools/` are not shipped
+and are out of scope; so are `DOCs/`. Comment-only, so no binary changes: `tools/pasm_equiv` and an image compare
+prove it, then the build gate. Also the Python host demo (`pythonSrc/P2-BLDC-Motor-Control-Demo.py`): no match today,
+re-checked at the sweep.
+
+**To close:** a sweep of the 22 files with the pattern widened to every label class finds none, and each release
+top's binary is byte-identical before and after. Before «#3690» (release).
+
 ---
 
 ## Removed from this list
