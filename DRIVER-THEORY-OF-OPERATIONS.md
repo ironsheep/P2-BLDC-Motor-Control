@@ -52,27 +52,30 @@ What a public method does depends on its kind:
 Here's a quick diagram of the cogs and how they connect:
 
 ```text
-                    ┌─────────────────────────────────────────┐
-   your app cog ───▶│ isp_steering_2wheel  (optional layer)   │   ← Spin2 objects
-                    └───────────┬─────────────────┬───────────┘     (no cog of their own)
-                    ┌───────────▼──────┐ ┌────────▼─────────┐
-                    │ isp_bldc_motor   │ │ isp_bldc_motor   │
-                    │ (left instance)  │ │ (right instance) │
-                    └───────────┬──────┘ └────────┬─────────┘
-              ╔═════════════════▼═══╗ ╔═══════════▼═════════╗
-              ║ PASM2 driver cog    ║ ║ PASM2 driver cog    ║   ← 1 cog per motor
-              ║ 44 kHz frame loop   ║ ║ 44 kHz frame loop   ║
-              ║ 1,913 Hz drive pass ║ ║ 1,913 Hz drive pass ║
-              ╚═════════════════════╝ ╚═════════════════════╝
-              ╔═══════════════════════════════════════════════╗
-              ║ front cog (Spin2), 1 kHz                      ║   ← 1 cog, serving every
-              ║ requests · tracking · limits · protection     ║     motor it owns
-              ╚═══════════════════════════════════════════════╝
+  your app cog
+       │ command methods post a request; status methods read shared memory
+       ▼
+  ┌────────────────────────────────────────────┐
+  │ isp_steering_2wheel   (Spin2 object)       │   ← no cog of its own; it holds
+  │ with the left and right isp_bldc_motor     │     the request slots and both
+  └──────────────────────┬─────────────────────┘     motor instances
+                         │ request (hub)
+  ╔══════════════════════▼═════════════════════╗
+  ║ front cog (Spin2), 1 kHz                   ║   ← 1 cog: it runs both motor
+  ║ requests · tracking · limits · protection  ║     instances' front routines
+  ╚══════════╤═════════════════════╤═══════════╝
+             │ commands (hub)      │ commands (hub)
+  ╔══════════▼══════════╗ ╔════════▼════════════╗
+  ║ PASM2 driver cog    ║ ║ PASM2 driver cog    ║   ← 1 cog per motor
+  ║ left motor          ║ ║ right motor         ║
+  ║ 44 kHz frame loop   ║ ║ 44 kHz frame loop   ║
+  ║ 1,913 Hz drive pass ║ ║ 1,913 Hz drive pass ║
+  ╚═════════════════════╝ ╚═════════════════════╝
 ```
 
-**Figure 1**: *The cogs of a two-motor system: the Spin2 objects own no cog, each motor has one PASM2 driver cog, and one front cog serves every motor.*
+**Figure 1**: *The cogs of a two-motor system. Your cog posts each command to the steering object's request slot; the one front cog answers it and writes each driver's commands; each driver cog runs its motor. A single-motor system is the same chain with `isp_bldc_motor` in place of the steering object and one driver cog.*
 
-Basically, this image shows that your application talks to Spin2 objects, the objects post work to the front cog, and the front cog and the driver cogs share hub memory.
+Basically, your application never reaches a driver cog itself. Its commands go through the front cog, which is the only writer of the drivers' commands. Its status calls read the values the front cog and the drivers publish in shared hub memory.
 
 | Configuration | Cogs | Who starts what |
 |---|---|---|
