@@ -151,7 +151,7 @@ done
     echo "  Built by : .github/scripts/make-release.sh"
     echo
     echo "    P2-BLDC-Motor-Control-Demo.py   the demo: drives the platform over the serial link"
-    echo "    requirements.txt                its Python packages: sudo pip3 install -r requirements.txt"
+    echo "    requirements.txt                its Python packages (pyserial, colorama); install: SERIAL-CONTROL.md"
     echo
     echo "  The P2 side is ../p2Src (top-level file isp_steering_serial.spin2). Setup: SERIAL-CONTROL.md"
     echo

@@ -92,13 +92,26 @@ But, first, if you are configuring a bare new RPi then do: [Setting up your 1st 
 
 If you have a well set up RPi and just need to configure it for use in this context then do the following.
 
-First install extra packages the script needs:
+First install the two Python packages the script needs, `pyserial` and `colorama`.
 
 ### Packages for Ubuntu, Raspberry pi OS, and the like
 
 ```bash
-sudo apt-get install git python3 python3-pip python3-serial python3-tzlocal python3-sdnotify python3-colorama python3-unidecode python3-paho-mqtt python3-watchdog
+sudo apt-get install python3 python3-serial python3-colorama
 ```
+
+That is all the script needs; there is no `pip` step on these systems. (Current Raspberry Pi OS refuses a system-wide `sudo pip3 install`, so the packages come from `apt`.)
+
+### On any other system
+
+Install the packages into a Python virtual environment, from the folder you put the script in (next step). On a Debian-based system the `venv` module comes in its own package, `python3-venv`.
+
+```bash
+python3 -m venv .venv                    # make a private Python environment here
+.venv/bin/pip install -r requirements.txt   # pyserial and colorama
+```
+
+Then run the script with `.venv/bin/python3 P2-BLDC-Motor-Control-Demo.py` instead of `./P2-BLDC-Motor-Control-Demo.py`.
 
 ### Finish the project install on the RPi
 
@@ -114,12 +127,7 @@ mkdir -p ~/projects/platform-drive    # make new directory (inclu. ~/projects/ i
 cd ~/projects/platform-drive
 ```
 
-Head back to the folder where you unpacked the `serial-control-archive-set.zip` file. Copy the files from its `serial-control-archive-set/pythonSrc/` folder into this new directory on your RPi: the demo script `P2-BLDC-Motor-Control-Demo.py` and its `requirements.txt`. Finish up your system prep by ensuring the files needed for your drive script are installed with the following commands:
-
-```bash
-cd ~/projects/platform-drive            # make sure we are where the new files arrived
-sudo pip3 install -r requirements.txt   # install supporting files
-```
+Head back to the folder where you unpacked the `serial-control-archive-set.zip` file. Copy the files from its `serial-control-archive-set/pythonSrc/` folder into this new directory on your RPi: the demo script `P2-BLDC-Motor-Control-Demo.py` and its `requirements.txt`. If you installed the packages with `apt` above, your system prep is done. Otherwise, run the virtual-environment step above in this folder now.
 
 ## Wiring the Serial Connection
 

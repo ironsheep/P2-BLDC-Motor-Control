@@ -12,8 +12,6 @@ import os.path
 import json
 import argparse
 from collections import deque
-from pkg_resources import UnknownExtra
-from unidecode import unidecode
 from colorama import init as colorama_init
 from colorama import Fore, Back, Style
 import serial
@@ -21,13 +19,9 @@ from time import sleep
 from configparser import ConfigParser
 from email.mime.text import MIMEText
 from subprocess import Popen, PIPE
-import sendgrid
-from sendgrid.helpers.mail import Content, Email, Mail
 from enum import Enum, unique
 from signal import signal, SIGPIPE, SIG_DFL
 signal(SIGPIPE,SIG_DFL)
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 
 if False:
     # will be caught by python 2.7 to be illegal syntax
