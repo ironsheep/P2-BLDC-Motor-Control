@@ -241,6 +241,8 @@ The object **isp_bldc_motor.spin2** provides the following methods. Every method
 
 The NOTES under the steering object's table apply here too.
 
+The object also has public methods that the steering object uses to drive its two motors: `startEx()`, `driveAtPowerEx()`, `peekEvent()`, `getDriverState()`, `boardIdString()`, `hallTicInfoForMotor()`, `wheelGeometry()`, `ticksForDistance()` and `ticksForRotation()`. Your program does not need them.
+
 ## Notes on the longer calls
 
 The tables above keep each entry to what the call does, its range and its return. The rest of what each call does is here. Unless a note says otherwise, it describes the steering object; the motor object's call behaves the same for its one motor.
