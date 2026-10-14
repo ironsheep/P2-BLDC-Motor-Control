@@ -4560,8 +4560,7 @@ PRI init(eMotorBasePin, eMotorVoltage, eDetectionMode) | fwdDegrees, revDegrees,
     ' The 6.5in pair is re-derived by the front cog from the measured lead table from its first slot on;
     '  a motor with no lead table keeps its fixed pair, and so does the legacy control build, whose whole
     '  point is the old fixed pair
-    ' The Doco on Rev A too, from its own table; its Rev
-    '  B pair is not re-checked and stays fixed
+    ' The Doco's pair follows its own table the same way, on either board
     pLeadIncr, pLeadTenths, leadZeroTenths, leadSign := leadTableForMotor()
     bLeadWritePending := TRUE
 #ifdef HUB_OFFSETS_LEGACY
@@ -5330,12 +5329,12 @@ PRI leadTableForMotor() : pIncr, pTenths, zeroTenths, nSign
         pIncr, pTenths, zeroTenths, nSign := @docoLeadIncrTbl, @docoLeadTenthsTbl, DOCO_LEAD_ZERO_TENTHS, 1
 
 PRI bMotorHasLeadTable() : bHas
-' Return TRUE when this motor's pair follows a lead table: the 6.5in on either board, the Doco on a Rev A board (its
-' Rev B pair is not re-checked, so it stays fixed).
+' Return TRUE when this motor's pair follows a lead table: the 6.5in and the Doco, on either board. The commutation
+' depends on the motor and its halls, and the hall inputs are the same on both board revisions.
 '
 ' @returns bHas - T/F where T means the front cog may write the pair from the lead table
 
-    bHas := (user.MOTOR_TYPE == MOTR_6_5_INCH) or ((user.MOTOR_TYPE == MOTR_DOCO_4KRPM) and (eDetectedBoard == REV_A))
+    bHas := (user.MOTOR_TYPE == MOTR_6_5_INCH) or (user.MOTOR_TYPE == MOTR_DOCO_4KRPM)
 
 PRI leadTenthsForIncrement(absIncr) : leadTenths | idx, loTenths, hiTenths, spanIncr, leadStep
 ' Return the dynamic lead for a field speed, from this motor's lead table: flat outside its ends, interpolated between
@@ -5396,8 +5395,9 @@ PRI applyFixedOffsets(fwdDegrees, revDegrees)
     waitms(LEAD_WRITE_SETTLE_MS)
     writeOffsetsTenths(normalisedDegrees(fwdDegrees) * TENTHS_PER_DEGREE, normalisedDegrees(revDegrees) * TENTHS_PER_DEGREE)
 
-PRI offsetsForMotor(eMotorType, eMotorVoltage) : fwdDegrees, revDegrees | ofsDegr, index
-' Return the forward and reverse commutation offsets for a motor type (and, for the Doco motor, the board revision and drive voltage).
+PRI offsetsForMotor(eMotorType, eMotorVoltage) : fwdDegrees, revDegrees | index
+' Return the forward and reverse commutation offsets for a motor type (and, for the Doco motor, the drive voltage). They
+'  are the same on both board revisions: the hall inputs are identical, so the motor wants the same timing on either.
 '
 ' The Doco row is chosen by the voltage the motor was STARTED at, as the power limits are
 '  (confgurePowerLimits(eMotorVoltage)), never by the compile-time user.DRIVE_VOLTAGE, which a caller may override.
@@ -5408,34 +5408,23 @@ PRI offsetsForMotor(eMotorType, eMotorVoltage) : fwdDegrees, revDegrees | ofsDeg
 ' @returns revDegrees - commutation offset for positive increments, in degrees
 
 ' Local Variables:
-' @local ofsDegr - the chosen offset, in degrees (the Rev B pair's one value)
 ' @local index - the drive voltage's row in the Doco offset table
 
     case eMotorType
       MOTR_DOCO_4KRPM:
         index := lookdown(eMotorVoltage: PWR_7p4V..PWR_24p0V)
         ' rows: PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
-        ' The pair is in the 6.x frame, (360 - ofs, ofs) for one value ofs; the 2023 pair
-        '  (ofs, 360 - ofs) read the rotor's signed lag as true lag + 83 deg and the motor did not turn under drive.
-        if eDetectedBoard == REV_B
-          ' NOT RE-CHECKED: the 2023 Rev B values, in the 6.x frame; no Rev B Doco bench since
-          if (ofsDegr := lookup(index: 33, 33, 39, 40, 36, 37, 45)) == 0
-              ofsDegr := 45
-          fwdDegrees := 360 - ofsDegr
-          revDegrees := ofsDegr
-        else
-          ' Rev A: each direction its own measured value, the DC-link current minimum of a
-          '  timing scan at half speed:
-          '  NEG (fwd) 7.4 V -55.5, 11.1 V -61.1, 14.8 V -62.2, 18.5 V -58.3,
-          '  22.2 V -61.3; POS (rev) 7.4 V +54.9, 14.8 V +53.4, 22.2 V +55.6, 24.0 V +52.4.
-          '  DERIVED where no fit resolved: the resolved rows' mean, NEG -59.7 (300), POS +54.1 (54); 12.0 V is not tested.
-          '  The earlier pair was -53/+53: NEG sat ~6.5 deg short of its minimum, and needed 5-20 % more duty than POS at
-          '  the same speed, which this pair is expected to close.
-          fwdDegrees := lookup(index: 305, 299, 300, 298, 302, 299, 300)
-          revDegrees := lookup(index:  55,  54,  54,  53,  54,  56,  52)
-          if fwdDegrees == 0
-              fwdDegrees := 300
-              revDegrees := 54
+        ' Each direction its own measured value, the DC-link current minimum of a timing scan at half speed:
+        '  NEG (fwd) 7.4 V -55.5, 11.1 V -61.1, 14.8 V -62.2, 18.5 V -58.3,
+        '  22.2 V -61.3; POS (rev) 7.4 V +54.9, 14.8 V +53.4, 22.2 V +55.6, 24.0 V +52.4.
+        '  DERIVED where no fit resolved: the resolved rows' mean, NEG -59.7 (300), POS +54.1 (54); 12.0 V is not tested.
+        '  The earlier pair was -53/+53: NEG sat ~6.5 deg short of its minimum, and needed 5-20 % more duty than POS at
+        '  the same speed, which this pair is expected to close.
+        fwdDegrees := lookup(index: 305, 299, 300, 298, 302, 299, 300)
+        revDegrees := lookup(index:  55,  54,  54,  53,  54,  56,  52)
+        if fwdDegrees == 0
+            fwdDegrees := 300
+            revDegrees := 54
       other:
         ' 4 degrees per tic. The pair is built from the hall zero and the lead rather than
         '  from one number and its negation, so an asymmetric pair can be expressed at all.
@@ -5523,40 +5512,33 @@ PRI confgurePowerLimits(userVoltage) | index
 
     if user.MOTOR_TYPE == MOTR_DOCO_4KRPM
         ' rows: PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
-        if eDetectedBoard == REV_B
-            maxFwdIncreAtPwr := lookup(index: -385_000_000, -287_500_000, -485_000_000, -388_000_000, -449_500_000, -420_000_000, -460_000_000)
-            maxRevIncreAtPwr := lookup(index:  385_000_000,  287_500_000,  485_000_000,  388_000_000,  449_500_000,  420_000_000,  460_000_000)
-        else
-            ' The reserve ceiling (DOCO_CEIL_INCR_AT_NOMINAL gives the rule and the evidence),
-            '  rounded DOWN so no row promises more: 7.4 V 302.0e6, 11.1 V 453.5e6, 12.0 V 490.0e6, 14.8 V 604.5e6,
-            '  18.5 V 756.0e6, 22.2 V 907.0e6, 24.0 V 980.5e6, every row under the command's 2^30 range
-            '  (setTargetAccel()'s ZEROX 30).
-            '  The 2023 table (282e6, 545e6, 335e6, 376e6, 398e6, 470e6, 391e6) was each row's no-load top: a bench run
-            '  measured 11.1 V's 545e6 at 116 % of the motor's no-load speed (one FAULT)
-            maxFwdIncreAtPwr := muldiv64(DOCO_CEIL_INCR_AT_NOMINAL, nominalMilliVolts(userVoltage), HUB_FF_NOMINAL_MV)
-            maxFwdIncreAtPwr := 0 - (maxFwdIncreAtPwr / HUB_CEIL_ROUND * HUB_CEIL_ROUND)
-            maxRevIncreAtPwr := 0 - maxFwdIncreAtPwr
+        ' One table for both board revisions: top and slowest speeds are set by the supply, the motor's back-EMF and
+        '  the drive's duty, none of which differs between the boards.
+        ' The reserve ceiling (DOCO_CEIL_INCR_AT_NOMINAL gives the rule and the evidence),
+        '  rounded DOWN so no row promises more: 7.4 V 302.0e6, 11.1 V 453.5e6, 12.0 V 490.0e6, 14.8 V 604.5e6,
+        '  18.5 V 756.0e6, 22.2 V 907.0e6, 24.0 V 980.5e6, every row under the command's 2^30 range
+        '  (setTargetAccel()'s ZEROX 30).
+        '  The 2023 table (282e6, 545e6, 335e6, 376e6, 398e6, 470e6, 391e6) was each row's no-load top: a bench run
+        '  measured 11.1 V's 545e6 at 116 % of the motor's no-load speed (one FAULT)
+        maxFwdIncreAtPwr := muldiv64(DOCO_CEIL_INCR_AT_NOMINAL, nominalMilliVolts(userVoltage), HUB_FF_NOMINAL_MV)
+        maxFwdIncreAtPwr := 0 - (maxFwdIncreAtPwr / HUB_CEIL_ROUND * HUB_CEIL_ROUND)
+        maxRevIncreAtPwr := 0 - maxFwdIncreAtPwr
         ' The slowest steady increment each way. FORWARD is the negative increment (power +1 maps to
         '  minFwd, so it carries maxFwd's sign). MEASURED
         '  on Rev A by a min-increment leg (steady on the encoder): 7.4 V forward
         '  1.00 ticks/s (374_182; 0.75 not steady), reverse 4.00 (1_496_731; 3.00 not steady); 14.8,
         '  18.5, 22.2 and 24.0 V both ways 0.60 (224_509), the lowest rung tried. DERIVED: 11.1 V (its run ended before
-        '  the leg) and 12.0 V (not tested) take 7.4 V's, the values a lower supply already turned at. The Rev B rows
-        '  are not re-checked and keep the shipped 544_628 each way.
-        if eDetectedBoard == REV_B
-            minFwdIncreAtPwr := -544_628
-            minRevIncreAtPwr := 544_628
-        else
-            ' A later run with the per-direction pair measured 7.4 V the
-            '  other way round -- forward 4.00 (3.00 not), reverse 1.00 (0.75 not). One 2 s sample a rung at the duty
-            '  floor does not repeat to a rung, so 7.4 V (and 11.1 / 12.0 V, DERIVED from it) take the larger of both
-            '  runs each way: 4.00 ticks/s (1_496_731).
-            ' A run on unit 2 held 0.10 ticks/s (37_418) steady both ways at 11.1, 14.8, 18.5, 22.2
-            '  and 24.0 V, the lowest rung tried, and 24 V's 0.10 holds on both units. So 11.1 V up take
-            '  0.10; 12.0 V (not tested) is DERIVED from the rows either side of it. 7.4 V keeps 4.00, the larger of
-            '  both units' measurements (unit 1 3.00; unit 2 0.20 / 0.30)
-            minFwdIncreAtPwr := lookup(index: -1_496_731, -37_418, -37_418, -37_418, -37_418, -37_418, -37_418)
-            minRevIncreAtPwr := lookup(index: 1_496_731, 37_418, 37_418, 37_418, 37_418, 37_418, 37_418)
+        '  the leg) and 12.0 V (not tested) take 7.4 V's, the values a lower supply already turned at.
+        ' A later run with the per-direction pair measured 7.4 V the
+        '  other way round -- forward 4.00 (3.00 not), reverse 1.00 (0.75 not). One 2 s sample a rung at the duty
+        '  floor does not repeat to a rung, so 7.4 V (and 11.1 / 12.0 V, DERIVED from it) take the larger of both
+        '  runs each way: 4.00 ticks/s (1_496_731).
+        ' A run on unit 2 held 0.10 ticks/s (37_418) steady both ways at 11.1, 14.8, 18.5, 22.2
+        '  and 24.0 V, the lowest rung tried, and 24 V's 0.10 holds on both units. So 11.1 V up take
+        '  0.10; 12.0 V (not tested) is DERIVED from the rows either side of it. 7.4 V keeps 4.00, the larger of
+        '  both units' measurements (unit 1 3.00; unit 2 0.20 / 0.30)
+        minFwdIncreAtPwr := lookup(index: -1_496_731, -37_418, -37_418, -37_418, -37_418, -37_418, -37_418)
+        minRevIncreAtPwr := lookup(index: 1_496_731, 37_418, 37_418, 37_418, 37_418, 37_418, 37_418)
     else
         ' rows: PWR_6p0V, PWR_7p4V, PWR_11p1V, PWR_12p0V, PWR_14p8V, PWR_18p5V, PWR_22p2V, PWR_24p0V
         ' The earlier table was the earlier drive's fault edges. The present drive follows far past them unloaded -- to the
@@ -7199,7 +7181,7 @@ CON { driver internal Constants }
     '  ran, not only which harness. Hand-bumped whenever this file's behaviour changes -- the PASM, or any
     '  Spin2 the drive depends on -- and never for a comment.
     ' The history of these changes is in CHANGELOG.md.
-    DRIVER_REV                  = 62
+    DRIVER_REV                  = 63
 
     ' The duty ceiling init() derives
     SVM_GUARD_COUNTS            = 4         ' PWM counts kept clear of each rail for the CORDIC's rounding and the floored centring

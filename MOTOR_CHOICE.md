@@ -90,7 +90,7 @@ All figures are **unloaded**: wheels off the ground, no payload.
 
 **NOTE2:** *The slowest speed, `power` 1, is a crawl: on the 6.5" motor it is well under 1 RPM at any voltage.*
 
-**NOTE3:** *The DocoEng motor is sold as a 4,000 RPM motor at 24V; unloaded, on a Rev A board, it runs faster than that, as the table shows. On a Rev B board the DocoEng motor keeps lower top speeds, which we have not re-checked with this release: about 1,920 to 3,240 RPM depending on the voltage. Its [technical manual](MOTOR-DOCO-TECHNICAL-MANUAL.md) has the measurements.*
+**NOTE3:** *The DocoEng motor is sold as a 4,000 RPM motor at 24V; unloaded, it runs faster than that, as the table shows. The speeds are the same on a Rev A or a Rev B board: they are set by the supply and the motor, and the two boards drive it the same way. Its [technical manual](MOTOR-DOCO-TECHNICAL-MANUAL.md) has the measurements.*
 
 **How far the motor travels while stopping** grows with the square of the speed you stop from; see [Drive Objects](DRIVE-OBJECTS.md#how-far-the-motor-travels-while-stopping).
 

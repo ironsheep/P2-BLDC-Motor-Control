@@ -198,7 +198,7 @@ particular to this motor:
 | How the field moves inside a pass | a frame at a time: frame k of 23 drives the field at angle + (k − 11) × step ÷ 23, so it turns smoothly and its mean over the pass is the commanded angle | driver |
 | Duty feedforward line | **688 × 10⁶ increment at 18.5 V** for full duty, scaled by the supply (37.2 × 10⁶ a volt) | measured; the maker's Ke predicts 37.2 × 10⁶ a volt |
 | Rotor angle within a sector | the sector's entry edge, from **the measured sector widths**, the two units' mean (§2.4) | driver |
-| Commutation offsets | on a Rev A board, **a lead that follows speed** from a table (§5.4); on Rev B one fixed pair per supply voltage | driver |
+| Commutation offsets | **a lead that follows speed** from a table (§5.4), on either board revision | driver |
 
 The frame-by-frame field is what lets this motor run smoothly above about 2,400 rpm. A field that jumped
 a whole step once a pass would swing the error by half a step either way, which at these speeds reaches
@@ -302,9 +302,8 @@ the current minimum at a quarter and half speed, and beyond 10° more lead at ev
 
 **The Doco therefore wants more lead high up**, as the 6.5″ does: its table's L falls with speed, which
 on that motor is the real lead rising ([6.5″ §5.2](MOTOR-6.5IN-TECHNICAL-MANUAL.md#52-l-depends-strongly-on-speed)).
-The measurements in this manual were taken on one fixed pair per voltage (the table in §5.1). On a Rev A
-board the driver gives this motor a lead table against speed, as it does the 6.5″, drawn from the curves
-in §5.4.
+The measurements in this manual were taken on one fixed pair per voltage (the table in §5.1). The driver
+gives this motor a lead table against speed, as it does the 6.5″, drawn from the curves in §5.4.
 
 ### 5.3 The basin is shallow
 
@@ -595,10 +594,12 @@ twice (384–500 against 182–264 mA).
 
 ### 8.1 If your board is a Rev B
 
-Everything in this manual was measured on Rev A. The driver's Rev B values for this motor (its offsets,
-ceilings and floors) have not been checked on a Rev B board. Expect the
-current readings to resolve far better (150 mV/A) and the timing minima with them; the motor's own
-properties in §2 do not depend on the board.
+Everything in this manual was measured on Rev A, and the driver uses the same values for this motor on
+Rev B: its offsets, ceilings and floors. They are set by the motor and the supply, and the two boards
+differ only where it does not reach them: the hall inputs are identical, the MOSFETs and dead-time are the
+same, and Rev B's 3 mΩ shunt and 12 V gate drive lose no more voltage than Rev A's. What changes is the
+current reading, which resolves far better on Rev B (150 mV/A), and the timing minima with it; the
+motor's own properties in §2 do not depend on the board.
 
 ---
 
@@ -615,7 +616,6 @@ properties in §2 do not depend on the board.
 | **Vibration on a clamped rig** (§6.7). | Separates the motor's own shaking from the rig's. | The speed range repeated with the motor clamped. |
 | **The blocked-rotor stop, and a load the hand can hold.** A bare 5 mm shaft cannot be held (§6.5). | It is how the drive answers a jam. | The hand-load runs with a grip about 25 mm in radius on the shaft. |
 | **Unit-to-unit variation.** Two units: the same constant and pattern, one sensor pair and the drag differ (§4.7). | Two is not a population. | More units. |
-| **Rev B.** Not run with this driver (§8.1). | Its table values are untested. | The qualification on a Rev B board. |
 
 ---
 
