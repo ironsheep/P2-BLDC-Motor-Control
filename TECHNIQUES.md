@@ -153,9 +153,12 @@ just the minimum, and choose a table value inside it.
 196 and 393 ticks/s, 3–8°. The table holds 20.5°, 5°, 8° and 8°. Against a flat 18°, the table draws
 **24–78 % less current** from 107 to 374 ticks/s.
 
-**WARNING:** **The textbook model gives the wrong sign.** It says the lead should *grow* with speed, because
-current lags voltage more at higher frequency. On this motor it falls, then holds. Measure; don't design
-from the model.
+**WARNING:** **Know which way your driver's offset points before you read a sweep.** The textbook says the
+field's real lead should *grow* with speed, because current lags voltage more at higher frequency. This
+driver writes the offset as a lag: a larger L places the field *less* far ahead. So the table above, where
+L falls with speed and then holds, says the real lead rises with speed and then holds, the textbook's
+direction. Read a sweep against the sign convention of the driver that produced it, or you will take
+agreement for disagreement. Then measure; don't design from the model.
 
 **WARNING:** **The offset and the duty servo's setpoint add.** Both place the field. Carry the lead in the offset,
 which acts instantly, and leave the setpoint alone. Correcting both counts the same correction twice, in

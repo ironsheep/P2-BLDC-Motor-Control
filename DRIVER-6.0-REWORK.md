@@ -41,7 +41,7 @@ Tracing that report back through the 5.x driver found that most of the causes we
 
 ## What changed
 
-**The motor is driven where it wants to be driven.** The commutation for the 6.5″ motor is now built from the motor's measured hall zero and a lead that follows speed, both measured on the motor itself. The effect is large. Measured on the same driver with only the offsets changed, unloaded running current at low and middle speeds is 8 to 25 times lower than with v5.0.2's offsets, and the two directions draw the same current to within a few percent. The [6.5″ motor manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) says how each number was found.
+**The motor is driven where it wants to be driven.** The commutation for the 6.5″ motor is now built from the motor's measured hall zero and a lead that follows speed, both measured on the motor itself. The effect is large. Measured on the same driver with only the offsets changed, unloaded running current at low and middle speeds is 8 to 26 times lower than with v5.0.2's offsets, and the two directions draw the same current to within a few percent. The [6.5″ motor manual](MOTOR-6.5IN-TECHNICAL-MANUAL.md) says how each number was found.
 
 **A servo that doesn't hunt.** The duty now comes from a feedforward, the duty a speed needs, plus a small trim whose gain scales with duty. The start-up surge is gone: peak current at a start is 1.2–1.5 times the settled value, against 1.9–3.0 with v5.0.2's duty servo (the same starts, on the same motors).
 

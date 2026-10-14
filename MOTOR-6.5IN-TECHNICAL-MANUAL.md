@@ -904,8 +904,10 @@ current channel:
 - **Winding resistance will not come from the driver on Rev A.** At 5 mV/A a 0.1 A probe current is
   half a millivolt, so the winding check deliberately drives nothing on a Rev A board. Use a meter
   across each lead pair of the unpowered motor.
-- **The start check's rest-zero band** for Rev A (−17…+17 mV) is calculated from component data and
-  has not yet been checked against a Rev A board.
+- **The start check's rest-zero band** for Rev A (−17…+17 mV) is calculated from component data. Rev A
+  boards start with the check passing: the rest zero read 12–13 mV on the two boards of a Rev A
+  platform and 1.5–4.2 mV on a DocoEng's board (measured). The zero of the first reads within 4 mV of
+  the band's upper edge.
 
 Notice the pattern: **the quantity that belongs to the motor can be measured on any board; the
 quantity that belongs to the driver depends on which board it is.** That is §1.3's attribution showing

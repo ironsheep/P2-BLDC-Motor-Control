@@ -353,8 +353,10 @@ within a degree or two of it (`from_start_x10` in `MA-FIT`). The ceiling it repo
 pair: that is the number step 6 asks for. Repeat at each supply voltage you will use.
 
 **Worked example.** Z = −4° on the 6.5″ motor: −3.8° and −4.0° by the minima, −3.31° and −3.25° cold. Its
-best lead **falls** with speed, from about 20° at a crawl to 5–8° from a quarter of top speed upward. That is
-the opposite of the textbook model, so measure it.
+table's L **falls** with speed, from about 20° at a crawl to 5–8° from a quarter of top speed upward. The
+driver writes L as a lag, so that is the field's real lead rising with speed, the textbook's direction.
+Read your own sweep against your driver's sign convention
+([TECHNIQUES §1.5](TECHNIQUES.md#15-measure-the-lead-at-several-speeds-it-is-not-a-constant)), and measure it.
 
 **A second, independent way to find Z: cold, from back-EMF.** Coast the bridge and turn the shaft by hand in
 both directions. The phase voltages are the motor's own waves, fixed to the magnets. This needs no current

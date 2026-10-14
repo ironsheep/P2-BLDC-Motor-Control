@@ -194,7 +194,7 @@ particular to this motor:
 | | Value | Basis |
 |---|---|---|
 | Field advance per drive pass at 2,400 rpm | **30° electrical** (1,913 passes/s) | calculated |
-| at 4,343 rpm, the fastest measured | **54.5°** a pass; under one hall tick a pass | calculated |
+| at 6,762 rpm, the fastest held | **84.8°** a pass; more than one hall tick (60° electrical) a pass | calculated |
 | How the field moves inside a pass | a frame at a time: frame k of 23 drives the field at angle + (k − 11) × step ÷ 23, so it turns smoothly and its mean over the pass is the commanded angle | driver |
 | Duty feedforward line | **688 × 10⁶ increment at 18.5 V** for full duty, scaled by the supply (37.2 × 10⁶ a volt) | measured; the maker's Ke predicts 37.2 × 10⁶ a volt |
 | Rotor angle within a sector | the sector's entry edge, from **the measured sector widths**, the two units' mean (§2.4) | driver |
@@ -352,7 +352,11 @@ curve, which is why the top speed cost duty (§6.3). The lead table follows the 
 §6.3), and it stays 18–49° inside the hold wall. Its pair is the lead plus or minus a direction offset of
 4.0°, the two units' mean.
 
-**NOTE:** *What the lead table does to the top speed and the duty is not yet measured (§9).*
+What the lead table does to the top speed and the duty was measured on the second unit at all six
+supplies, with the damping of §6.3 running as well (measured). At the shipped tops the duty stands at
+71–91 % of full, against 99.6 % at 2,799 rpm and 14.8 V with the fixed pair, and the highest speeds held
+rose well past the fixed pair's (§6.1). The two changes were made together, so their shares are not
+separated.
 
 ### 5.5 Unit-to-unit
 
@@ -372,37 +376,59 @@ motor (calculated). `power` 100 commands the ceiling and `power` 1 the floor.
 
 | Supply | Floor (shipped) | Ceiling (shipped) | Basis |
 |---|---|---|---|
-| 7.4 V | 4.00 ticks/s, **10 rpm** | 302 × 10⁶, **2,018 rpm** | driver, from measurement |
-| 11.1 V | 0.10 ticks/s, **0.25 rpm** | 453.5 × 10⁶, **3,030 rpm** | floor measured; ceiling calculated |
-| 12.0 V | 0.25 rpm | 490 × 10⁶, **3,274 rpm** | driver, calculated (not tested) |
-| 14.8 V | 0.25 rpm | 604.5 × 10⁶, **4,039 rpm** | floor measured; ceiling calculated |
-| 18.5 V | 0.25 rpm | 756 × 10⁶, **5,051 rpm** | floor measured; ceiling calculated |
-| 22.2 V | 0.25 rpm | 907 × 10⁶, **6,060 rpm** | floor measured; ceiling calculated |
-| 24 V | 0.25 rpm | 980.5 × 10⁶, **6,551 rpm** | floor measured; ceiling calculated |
+| 7.4 V | 4.00 ticks/s, **10 rpm** | 302 × 10⁶, **2,018 rpm** | floor and ceiling measured |
+| 11.1 V | 0.10 ticks/s, **0.25 rpm** | 453.5 × 10⁶, **3,030 rpm** | floor and ceiling measured |
+| 12.0 V | 0.25 rpm | 490 × 10⁶, **3,274 rpm** | driver, between the 11.1 and 14.8 V rows (not tested) |
+| 14.8 V | 0.25 rpm | 604.5 × 10⁶, **4,039 rpm** | floor and ceiling measured |
+| 18.5 V | 0.25 rpm | 756 × 10⁶, **5,051 rpm** | floor and ceiling measured |
+| 22.2 V | 0.25 rpm | 907 × 10⁶, **6,060 rpm** | floor and ceiling measured |
+| 24 V | 0.25 rpm | 980.5 × 10⁶, **6,551 rpm** | floor and ceiling measured |
 
 **How the ceiling is chosen.** The fastest speed the drive holds accurately on the motor's own
 back-EMF, with 7.5 % of the duty still unused, unloaded. This is the 6.5″'s rule. The drive never gets
 there by weakening the field, so the speed holds and the distance counted from the halls stays exact.
 At 7.4 V the drive ran out of duty at 2,021 rpm, 96 % of the motor's own no-load speed at that supply
 (measured). The other rows are that point scaled by the supply, and every one sits inside the sheet's
-no-load speed (6,800 rpm at 24 V).
+no-load speed (6,800 rpm at 24 V). Every row's ceiling was then held on the bench (below).
 
-**What the motor actually holds** (first unit, the speed held steadily for 5 s in each direction):
+**What the motor actually holds** (second unit, with the lead table and the damping: each speed in
+turn, in both directions, climbing past the shipped top until the duty or the test's step bound ended
+the climb):
+
+| Supply | Shipped top | Highest held, forward | Highest held, reverse | What ended the climb | Slowest steady | Basis |
+|---|---|---|---|---|---|---|
+| 7.4 V | 2,018 rpm | **2,439 rpm** | **2,298 rpm** | the duty ceiling | 0.75 ticks/s | measured |
+| 11.1 V | 3,030 rpm | **4,153 rpm** | **3,872 rpm** | the duty ceiling | 0.10 ticks/s | measured |
+| 14.8 V | 4,039 rpm | **5,723 rpm** | **5,162 rpm** | the duty ceiling | 0.10 ticks/s | measured |
+| 18.5 V | 5,051 rpm | **6,735 rpm** | **6,455 rpm** | forward the test's step bound; reverse the duty ceiling | 0.10 ticks/s | measured |
+| 22.2 V | 6,060 rpm | **6,762 rpm** | **6,762 rpm** | the test's step bound | 0.10 ticks/s | measured |
+| 24 V | 6,551 rpm | **6,691 rpm** | **6,692 rpm** | the test's step bound | 0.10 ticks/s | measured |
+
+At every supply, in both directions, every step up to and past the shipped top followed its command at
+999–1,000 ‰ with no fault, no held pass and no re-sync. The shipped tops are the ceilings of the table above;
+the climbs past them show only how much room the top has. At 24 V the adoption tool's own climb ran
+clean in both directions to 6,720 rpm, the last rung of its ladder. A first run at 24 V read a slowest
+steady speed of 1.5–2 ticks/s and one at 11.1 V read 0.15; a repeat of each held 0.10, so those misses
+were the spread from run to run. At 7.4 V this unit's slowest steady speed read 0.20 and 0.30 ticks/s
+in one session and 0.75 in another; the shipped floor there is 4, the largest reading of any session on
+either unit.
+
+The first unit, measured earlier with the fixed pair and before the damping (each speed held steadily for
+5 s in each direction):
 
 | Supply | Slowest steady | Fastest held, forward | Fastest held, reverse | What ended it | Basis |
 |---|---|---|---|---|---|
 | 7.4 V | **3.00 ticks/s, 7.5 rpm** both ways (2.00 stutters) | **1,931 rpm** | **2,212 rpm** | the duty ceiling | measured |
 | 24 V | **0.10 ticks/s, 0.25 rpm** both ways, the slowest tried | **4,343 rpm** | **≥ 3,782 rpm** | forward the duty ceiling; reverse the test program's own error, not the motor | measured |
 
-These held-speed figures are from an earlier measurement and have not been re-measured. The floors are
-measured. The ceilings above 7.4 V are calculated, and above about 4,900 rpm no supply has yet been run
-that fast: in the earlier measurement a speed hunt faulted the drive near 4,900 rpm at 24 V, and the
-drive now damps it (§6.3).
+Before the damping, on the second unit, a speed hunt faulted the drive near 4,900 rpm at 24 V. The drive
+now damps it (§6.3), and the climb above ran past that speed to 6,692 rpm without a fault.
 
 **Why low supply cannot crawl as slowly.** Every slowest step runs at the duty floor, 5.8 % of full
-duty: 0.43 V at 7.4 V, 1.39 V at 24 V (calculated). Below about 3 ticks/s at 7.4 V that is not enough
-to pull the rotor smoothly past each magnet, and the shaft stutters. The slowest steady speed at 7.4 V
-moved between 1 and 4 ticks/s from one session to the next, which is why the floor there is 4.
+duty: 0.43 V at 7.4 V, 1.39 V at 24 V (calculated). On the first unit, below about 3 ticks/s at 7.4 V
+that is not enough to pull the rotor smoothly past each magnet, and the shaft stutters. The slowest
+steady speed at 7.4 V moved between 0.2 and 4 ticks/s from one session or unit to the next, which is why
+the floor there is 4.
 
 Every speed figure here is unloaded.
 
@@ -420,10 +446,10 @@ bottom moves to more lead as speed rises, so the wall recedes with speed.
 
 ### 6.3 The duty ceiling
 
-**Every top speed measured so far ended at the duty ceiling, not at a limit of the motor.** Up to about
-2,500 rpm the drive's duty follows the motor's back-EMF line within a few percent. Above it, it needs
-more. These figures were measured with the fixed pair (§5.1) and have not been re-measured with the lead
-table:
+**Every top speed measured ended at the duty ceiling or at the test's own step bound, not at a limit of
+the motor.** Up to about 2,500 rpm the drive's duty follows the motor's back-EMF line within a few
+percent. With the fixed pair (§5.1) it needed more above that. These figures were measured with the
+fixed pair, before the lead table and the damping:
 
 | Speed | Supply | Duty over the back-EMF line | Basis |
 |---|---|---|---|
@@ -437,18 +463,24 @@ Two things make that excess:
   the voltage a load needs grows faster than the back-EMF, and the fixed pair sits 50–60° short of the duty
   bowl's bottom (§5.4). 10° more lead lowers the duty at the top by up to 26 %, measured, as the model
   predicts.
-- **The servo's working point shifting, at 24 V.** Above 2,800 rpm at 24 V the field-to-rotor error peaks
-  at 86–104 counts on every step, past the 80 at which the servo's fast response engages. That response
-  only ever adds duty, so the error's mean settles at 40–45 counts instead of 48: the field sits 4–11°
-  less far ahead than the pair asks, and the duty rises and falls with speed rather than climbing smoothly
-  (19.4 × 10³ at 3,220 rpm, 25.3 × 10³ at 3,497, 22.0 × 10³ at 4,063). At 7.4 V's tops the error holds 48.
+- **The servo's working point shifting, at 24 V.** Above 2,800 rpm at 24 V the field-to-rotor error
+  peaked at 86–104 counts on every step, past the 80 at which the servo's fast response engages. That
+  response only ever adds duty, so the error's mean settled at 40–45 counts instead of 48: the field sat
+  4–11° less far ahead than the pair asked, and the duty rose and fell with speed rather than climbing
+  smoothly (19.4 × 10³ at 3,220 rpm, 25.3 × 10³ at 3,497, 22.0 × 10³ at 4,063). At 7.4 V's tops the error
+  held 48.
 
 The drive addresses both. The lead follows speed (§5.4). The servo's shift is a symptom: above about
 2,500 rpm the rotor's angle behind the field oscillates on its own, at 40–70 Hz, because a field driven at
 a commanded speed does nothing to damp it once the windings' reactance exceeds their resistance. The fast
 response turns that oscillation into extra duty. The drive damps the field's advance against the rotor's
-lag at each hall edge. In the model that removes the oscillation and the extra duty at every supply, to
-beyond 7,000 rpm (calculated). Measuring it on the motor is still to be done.
+lag at each hall edge, in every running state above about 1,340 rpm, slowing down included. In the model that
+removes the oscillation and the extra duty at every supply, to beyond 7,000 rpm (calculated).
+
+Measured on the second unit, the damping holds. At every supply's shipped top, in both directions, the
+error's mean held 47.8–48.3 counts against 48, its peaks stayed at 73–75 (under the 80), and the duty
+stood at 71–91 % of full. At 24 V the same held at 6,551 and at 6,692 rpm. A reversal at full speed through zero and back, and a stop, from each shipped top, ran with no
+fault and no re-sync, at all six supplies (measured).
 
 Up to 2,475 rpm at 11.1 V, the fastest run measured at that supply, the drive ran in one steady state: the
 error held its setpoint (mean 47.8–48.3 counts against 48), and the duty within a 5 s window varied by a
@@ -466,18 +498,22 @@ measured on this motor.
 
 ### 6.5 Stopping and holding
 
-**Stops by distance** came to rest within their band at every supply from 14.8 V up, and in the
-forward direction at every supply. **In reverse at 7.4 and 11.1 V, a stop from the top speed rests 4–6
-ticks short** of its target (a quarter turn at 7.4 V). The cause is measured: as the shaft slows at low
-supply, the drive repeatedly pauses its field to let the rotor catch up (81–164 paused passes in
-reverse against 11–51 forward), and each pause is distance the stop does not make up. The rotor does not
-stall: it stops 5–20 ms after the field. The driver holds its speed plan still on a paused pass while
-stopping, so a pause makes the stop a little longer instead of shorter.
+**Stops by distance** come to rest within their band (−240 to +180 counts, 60 counts to a hall tick) at
+every supply and in both directions. Before the driver changed, **a reverse stop from the top speed at
+7.4 and 11.1 V rested 4–6 ticks short** of its target (a quarter turn at 7.4 V). The cause is measured:
+as the shaft slows at low supply, the drive repeatedly pauses its field to let the rotor catch up
+(81–164 paused passes in reverse against 11–51 forward), and each pause was distance the stop did not
+make up. The rotor does not stall: it stops 5–20 ms after the field. The driver now holds its speed plan
+still on a paused pass while stopping, so a pause makes the stop a little longer instead of shorter. That
+closed the gap (measured): the same reverse top-speed stops rest **+58 and +46 counts** past their target
+at 7.4 V and **+61 and +80** at 11.1 V, against −355 and −310, and −286 and −255, before.
 
-**NOTE:** *Whether that closes the gap on these stops is not yet checked (§9).*
+All six supplies were stopped from the top and from a crawl, in both directions, on the shipped driver;
+every stop rested inside the band. The widest scatter is at the two highest supplies, at full speed:
+−66 to +129 counts at 22.2 and 24 V.
 
-**Stops by time** rested within ±100 ms at every supply, with one exception: one slow forward crawl stop
-at 18.5 V came to rest 120 ms after its field stopped.
+**Stops by time** rest within ±100 ms at every supply: −60 to +15 ms across the six (measured). One slow
+forward crawl stop at 18.5 V once came to rest 120 ms after its field stopped; it has not recurred.
 
 **The hold** (`holdAtStop(TRUE)`) behaves as on the 6.5″: at 11.1 V its duty rose to its ceiling in
 249–250 ms, and a push made it give way after 2 ticks.
@@ -486,7 +522,11 @@ at 18.5 V came to rest 120 ms after its field stopped.
 shaft could not be stopped by hand: at 4 A it makes 136 mN·m, about 20–45 N at the fingertips on a 5 mm
 shaft.
 
-**NOTE:** *How the blocked-rotor stop behaves on this motor is not yet measured (§9).*
+**Blocked rotor.** With a grip on the shaft the hand could stand it, and the blocked-rotor stop latched
+(measured). At 11.1 V it latched 1,054 ms after the shaft stood at a 4 A limit, 1,006 ms at 2 A and
+1,007 ms at the default limit. At 24 V it latched at 999 ms at both 4 A and 2 A. Each latch came inside
+the 988–1,168 ms band, with no fault and no re-sync, and at 4 A and 2 A the limit held while the shaft
+stood.
 
 **Stopping from 4,000 rpm returns energy to the supply.** A bench supply cannot take it back; ours rode
 through every stop from the top.
@@ -511,6 +551,10 @@ inside a turn (first unit, measured):
 | Speed ripple from sector to sector | 0.2–1.5 % | 0–0.3 % |
 | Speed ripple once per turn | 0.9–2 % forward (reverse not read) | **up to 13 %** near 3,000 rpm forward and 10 % near 3,360 reverse, falling to under 1 % above 4,000 rpm |
 | Current ripple by hall code | under one sense count | under one sense count |
+
+With the sector table and the lead table in place (second unit, 14.8 V, from the shipped top of 4,039 rpm
+up to the highest speed held) the ripple from sector to sector read 0.5–1.5 % and the ripple once per turn 2.3–2.8 %
+(measured).
 
 **The sectors do not shake the shaft.** The once-per-turn wobble that peaks near 3,000 rpm and fades above
 4,000 rpm is a resonance of the test rig: the motor and the encoder (about the motor's own diameter)
@@ -574,16 +618,18 @@ twice (384–500 against 182–264 mA).
 
 **Speed**
 
-4. **The shipped speed range is conservative.** The motor held 0.25 to 4,343 rpm at 24 V and 7.5 to
-   1,931–2,212 rpm at 7.4 V (§6.1). The ceilings may rise now that the lead follows speed.
-5. **The top speed costs duty.** Above about 2,500 rpm the drive needs more voltage than the back-EMF
-   explains (§6.3). At 14.8 V the shipped top runs at 99.6 % of full duty, with no reserve for a load.
+4. **The shipped speed range sits inside what the motor holds.** The second unit held 0.25 rpm and a
+   speed 2–42 % above the shipped top at every supply (§6.1).
+5. **The top speed costs duty, and leaves a reserve.** At the shipped tops the duty stands at 71–91 % of
+   full (§6.3). With the fixed pair, 14.8 V reached 99.6 % at only 2,799 rpm, with no reserve for a load.
+   The shipped tops were measured unloaded.
 6. **At 7.4–12 V the slowest steady speed is about 10 rpm** (§6.1); from 14.8 V up it is far lower.
 
 **Stopping**
 
-7. **A reverse stop by distance from top speed at 7.4–11.1 V rests a few ticks short** (§6.5). Stop by
-   time, or approach the target more slowly, where a tick matters.
+7. **A stop by distance rests within its band of the target** (§6.5), reverse stops at 7.4–11.1 V
+   included. The scatter is widest at 22.2 and 24 V from full speed: −66 to +129 counts, about one tick
+   short to two past.
 8. **Size the supply for regeneration** when stopping from 4,000 rpm (§6.5).
 
 **Measurement**
@@ -607,22 +653,19 @@ motor's own properties in §2 do not depend on the board.
 
 | Question | Why it matters | What would settle it |
 |---|---|---|
-| **The efficiency curve above 2,800 rpm** (§5.4). The model draws the headroom curve there; the current minimum is not cleanly measured. | It sets the lead at the very top. | The speed range repeated on a lead that follows speed. |
-| **How much the servo's shifted working point at 24 V costs** (§6.3). The error's mean sits 4–11° below its setpoint at the 24 V tops. | It is the other part of the top's excess duty. | A top-speed run once the lead follows speed, which recovers about as much lead as the shift takes. |
+| **The efficiency curve above 2,800 rpm** (§5.4). The model draws the headroom curve there; the current minimum is not cleanly measured. | It sets the lead at the very top. | A timing sweep at those speeds that resolves the current minimum. |
 | **Z by a cold method.** The back-EMF method did not resolve on this motor (§4.2). | Z is known only to a few degrees. | The cold method's legs examined for why they disagree. |
 | **The inductance and the resistance** on our hardware (§2.4). The model gives about 1.06 mH a phase, from the maker's resistance (§5.4). | It checks the model. | A meter and an LCR meter across the leads. |
-| **What the sector table and the lead table do.** Both are built from these measurements (§2.4, §5.4); their effect on the top speed, the duty and the smoothness is not yet measured. | They set the final speed range. | The speed range at each supply on the current tables. |
-| **Whether the reverse stop lands** (§6.5). | Distance stops in reverse at 7.4–11.1 V. | The stop tests at 7.4 and 11.1 V. |
 | **Vibration on a clamped rig** (§6.7). | Separates the motor's own shaking from the rig's. | The speed range repeated with the motor clamped. |
-| **The blocked-rotor stop, and a load the hand can hold.** A bare 5 mm shaft cannot be held (§6.5). | It is how the drive answers a jam. | The hand-load runs with a grip about 25 mm in radius on the shaft. |
+| **Anything under load.** Every speed, stop and slow-down here ran with nothing on the shaft but the encoder; only the hand-load runs put a load on it (§6.5). | A gantry's load changes the duty, and the stops with it. | The speed range and the stops repeated with a load on the shaft. |
 | **Unit-to-unit variation.** Two units: the same constant and pattern, one sensor pair and the drag differ (§4.7). | Two is not a population. | More units. |
 
 ---
 
 ## 10. About the measurements
 
-Every measurement here was taken on two units of this motor (the second only for its hall map and
-timing), on a Rev A 64010 board, with the P2 at 270 MHz: the shaft free with a 360-line encoder on its
+Every measurement here was taken on two units of this motor (the second for its hall map and timing and
+for the speed, stop and hand-load runs of §6.1, §6.3 and §6.5), on a Rev A 64010 board, with the P2 at 270 MHz: the shaft free with a 360-line encoder on its
 far end and nothing else on it, on a bench supply set to each voltage named, the motor and encoder
 resting unanchored on a rubber mat. The measurements were made with the driver's own sense channels and
 the encoder. [TECHNIQUES.md](TECHNIQUES.md) explains the methods.
