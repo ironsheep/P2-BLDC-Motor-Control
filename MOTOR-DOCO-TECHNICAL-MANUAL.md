@@ -230,7 +230,7 @@ Z is the midpoint of the two directions' current minima at the same speed:
 | 22.2 V | half speed | **−2.8°** | measured |
 
 **Take Z ≈ −2.5° for this motor, known to a few degrees.** The pair the driver ships at each voltage
-(§5.1) has its midpoint at −2 to −4.5°.
+(§5.1) has its midpoint between 0° (at 7.4 V) and −4.5°. The lead table builds its pair on −4.0° (§5.4).
 
 **NOTE:** *The cold method that measured the 6.5″'s Z to a tenth of a degree (the motor's own back-EMF with the
 bridge off, [6.5″ §4.6](MOTOR-6.5IN-TECHNICAL-MANUAL.md#46-how-the-motors-own-voltage-locates-the-magnets))

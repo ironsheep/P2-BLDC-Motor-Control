@@ -317,7 +317,7 @@ declaration order *is* the interface, and nothing in the compiler checks it. So 
 run time, before the cog launches.
 
 **How.** `isAbiLayoutValid()` compares the addresses of the first and last long of each shared run
-against the count constants, `DRVR_STATUS_LONGS_COUNT` (24) and `DRVR_PARAMS_LONGS_COUNT` (27), and checks
+against the count constants, `DRVR_STATUS_LONGS_COUNT` (24) and `DRVR_PARAMS_LONGS_COUNT` (28), and checks
 that named longs sit at their index constants. A mismatch refuses `start()` with `ERR_ABI_MISMATCH` instead
 of running a driver that reads the wrong longs.
 

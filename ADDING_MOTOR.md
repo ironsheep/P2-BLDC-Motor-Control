@@ -47,7 +47,7 @@ property this page asks you to measure is measured there, with the numbers we go
 | Magnets                    | 30 poles                         | 8 poles                                 |
 | Delta table                | `deltas65`: position rises through 1-5-4-6-2-3 | `deltas4k`: the same steps          |
 | Forward power drives       | positive increments              | negative increments                     |
-| Commutation                | hall zero plus a lead that follows speed | one fixed offset each way, by voltage and board |
+| Commutation                | hall zero plus a lead that follows speed | hall zero plus a lead that follows speed |
 
 The top speed at each voltage, and the commutation each motor uses, are in the
 [Motor Reference tables](MOTOR_CHOICE.md#motor-reference-top-speed-at-each-drive-voltage).
@@ -339,9 +339,9 @@ using the L of the speed you will run at most:
 ```
 
 Add a case for your motor to **`offsetsForMotor()`**, returning `fwdDegrees` and `revDegrees`. The DocoEng
-case shows how to vary the pair by supply voltage and board revision; note that its pair is symmetric about
-zero, which is only right if the motor's Z is 0. Build the pair from Z and L, as the 6.5″ case does, so an
-asymmetric pair can be expressed.
+case shows how to vary the pair by supply voltage; each direction has its own measured value, so the two are
+not mirror images. Build the pair from Z and L, as the 6.5″ case does, so an asymmetric pair can be
+expressed.
 
 If the lead changes a lot between the two speeds (compare the two `lead_x10` values in `MA-PAIR`), that is the
 case for the second model: note it when you share your results.
@@ -387,7 +387,7 @@ which measurements at other voltages follow to within 2.5 %.
 - **`powerTableIndex()`** lists the voltages your motor has a row for; `start()` refuses any other.
 - **`confgurePowerLimits()`** sets `maxFwdIncreAtPwr` / `maxRevIncreAtPwr` (the ceiling) and
   `minFwdIncreAtPwr` / `minRevIncreAtPwr` (the floor) for each voltage. The DocoEng case shows a table per
-  voltage (and per board revision); the 6.5″ case shows one measured ceiling scaled by voltage. **The sign of
+  voltage, the same on both boards; the 6.5″ case shows one measured ceiling scaled by voltage. **The sign of
   `maxFwdIncreAtPwr` sets which increment sign is "forward"**: the DocoEng motor's is negative.
 - The increment must stay below 2³⁰ (1,073,741,823) in magnitude, or it reads back as negative and the motor
   runs the wrong way.

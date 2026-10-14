@@ -399,7 +399,7 @@ Every code is below -1,000, so none can be mistaken for a cog id, a power, a dis
 | ERR\_NO\_WHEEL\_DIA | -1011 | a distance request when `WHEEL_DIA_IN_INCH` is 0 |
 | ERR\_LIMIT\_UNRESOLVABLE | -1012 | a stop limit shorter than one hall tick |
 | ERR\_SYNC\_TIMEOUT | -1013 | a synchronized start the driver did not take in time; the motors are stopped |
-| ERR\_BUSY | -1014 | test use only |
+| ERR\_BUSY | -1014 | reserved: no method returns it |
 | ERR\_FAULT\_NOT\_CLEARED | -1015 | test use only |
 | ERR\_EMERGENCY\_STOPPED | -1016 | a drive refused while emergency-stopped; call clearEmergency() |
 | ERR\_NO\_RESPONSE | -1017 | the drive did not answer within its bound |

@@ -157,7 +157,7 @@ The driver writes them in one burst (`setq #DRVR_STATUS_LONGS_COUNT-1` / `wrlong
 | 5 | `ff_ceiling` | the motor's back-EMF line the feedforward scales by (not a speed ceiling) |
 | 6 | `dead_gap` | the dead gap between a half-bridge's two sides |
 | 7 | `accel_dn` | the slow-down acceleration limit |
-| 8 | `cfg_ctcks` | the drive pass's 500 µs deadline, clock ticks |
+| 8 | `cfg_ctcks` | the drive pass's deadline, 22.5 frames, clock ticks |
 | 9 | `stop_mode` | `SM_FLOAT` or `SM_BRAKE` |
 | 10 | `e_stop` | `ES_OFF`, or the kind of emergency stop latched |
 | 11 | `accel_up` | the speed-up acceleration limit |
@@ -215,12 +215,15 @@ start(basePin, voltage, detectMode)                   (steering: startOwned() pe
   ├─ refuse an undetected board under BRD_AUTO_DET    → ERR_BOARD_NOT_DETECTED
   ├─ coginit(NEWCOG, @driver, @pinbase)               → ERR_NO_FREE_COG
   ├─ start the front cog, wait for its first pass     → ERR_NO_RESPONSE
-  └─ capture the current-sense rest zero (~1 s)       ← nothing has driven the motor yet
+  ├─ capture the current-sense rest zero (~1 s)       ← nothing has driven the motor yet
+  └─ run the start checks (nothing moves)             → ERR_START_CHECK_FAILED, unless setStartChecks(FALSE)
 ```
+
+The start checks test the halls, the current sense and each motor lead with nothing driven, and `getHealth()` reports what they found. A check that fails is retried; one still failing after its retries refuses the start unless you called `setStartChecks(FALSE)`.
 
 Inside the driver cog: load the start sequence into LUT RAM and run it there, configure the six PWM smart pins (low sides inverted), calibrate the four ADC channels against GIO and VIO, compute per-channel scaling with the CORDIC, then, if `sync_required`, `waitatn` until released. The start sequence's last act is `loadOverlay`, which loads the LUT run image over the now-spent start image (§4) and enters the drive loop.
 
-**Two wheels start in lockstep.** The steering object starts both drivers parked, reverses the right wheel (`forwardIsReverse()`, since the motors face opposite ways), and releases both with one `cogatn(cogmask)` from the caller's cog, before its front cog exists, so no second caller of `cogatn` can exist yet. It then samples both wheels' rest zero together and starts its front cog.
+**Two wheels start in lockstep.** The steering object starts both drivers parked, reverses the right wheel (`forwardIsReverse()`, since the motors face opposite ways), and releases both with one `cogatn(cogmask)` from the caller's cog, before its front cog exists, so no second caller of `cogatn` can exist yet. It then samples both wheels' rest zero together, runs both wheels' start checks, and starts its front cog.
 
 **Board revision detection** on the Parallax 64010 Universal Motor Driver P2 Add-on Board charges a capacitor on `pinbase+4`, floats the pin, and counts how many of the reads it makes in a fixed **371 µs window** still read high (the window is a time, paced by `getct()`, so it is the same at every clock; faster clocks simply fit more reads in it):
 
@@ -366,11 +369,20 @@ Triangle PWM at **44 kHz** (`PWM_RATE_IN_HZ`), one ADC sample per frame. The thr
 |---|---|---|
 | `BR_DRIVE` | PWM | running; and at rest with `holdAtStop(true)` (held at `duty_min`) |
 | `BR_COAST` | all off | at rest with `holdAtStop(false)`; on a fault with `holdAtStop(false)` |
-| `BR_SHORT` | low sides on | emergency stop, always; on a fault with `holdAtStop(true)` |
+| `BR_SHORT` | low sides on | emergency stop, always; on a fault with `holdAtStop(true)` under `FR_SHIPPED` |
+| `BR_BRAKE` | low sides on for the first {brakePct} % of each 10 ms brake period, all off for the rest | on a fault with `holdAtStop(true)` under `FR_GRADED`, once the re-sync below cannot be used |
+| `BR_PROBE` | one phase switching at 50 %, the other two all off | at rest only, during `start()`'s check of each motor lead; no current path exists, so nothing moves |
+
+`BR_BRAKE` is a graded short: its average braking is {brakePct} % of a full short's at every speed. It limits the average, not the peak current, which is still a full short's.
 
 ### Fault handling
 
-A fault is declared when the rotor lags the commanded angle by 125/256 of a cycle (175.8°): commutation has lost the rotor. The bridge takes the stop mode's fault state (above), `DCS_FAULTED` is latched, and `fault` is written. The fault test is skipped while the bridge is not driven, so turning an idle wheel by hand cannot fault it. A new command clears the fault.
+A fault is declared when the rotor lags the commanded angle by 125/256 of a cycle (175.8°): commutation has lost the rotor. Every fault writes `fault`. What follows is chosen by `setFaultResponse()`:
+
+- **`FR_GRADED`, the default.** If the halls read a legal code, the driver re-seeds the field from them, in the direction the field was moving, and the commands read as 0 until the front cog's stop arrives, so the motor ramps down under control (`getStopReason()` reports `SR_FAULT_CONTROLLED`). If the halls read `%000` or `%111`, or the motor faults again on that ramp, control is gone: `DCS_FAULTED` is latched and the bridge takes `BR_BRAKE` with `holdAtStop(true)`, or `BR_COAST` with `holdAtStop(false)` (`SR_FAULT_LOST`).
+- **`FR_SHIPPED`.** `DCS_FAULTED` is latched at once and the bridge takes `BR_SHORT` with `holdAtStop(true)`, or `BR_COAST` with `holdAtStop(false)`.
+
+The fault test is skipped while the bridge is not driven, so turning an idle wheel by hand cannot fault it. A new command clears the fault.
 
 ---
 

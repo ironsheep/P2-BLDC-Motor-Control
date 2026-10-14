@@ -77,7 +77,7 @@ When no command is waiting, the serial top-level checks for a new one every 1 ms
 
 At 624,000 baud each character takes 16 µs on the wire, so sending a command and its reply adds well under 1 ms. The bit timing is exact at any system clock. A command line is at most 128 characters: a longer line is cut to its first 128 characters and handled as that, and the link keeps working for the next line.
 
-The P2 sends nothing unasked. The only line it sends on its own is its `ident:` line at start. Every other line is a reply to a command. Each reply is exactly one line, ending with a single LF.
+The P2 sends nothing unasked. The only line it sends on its own is its `ident:` line at start, and it then waits for your host to send any line back before it reads commands. The demo replies `fident:status=True`; a host of your own must send a line of its own before its first command. Every other line is a reply to a command. Each reply is exactly one line, ending with a single LF.
 
 ### How your host learns of a command timeout
 

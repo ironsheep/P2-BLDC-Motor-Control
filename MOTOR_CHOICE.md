@@ -101,7 +101,7 @@ The driver needs to know where each motor's hall sensors sit relative to its mag
 | Motor | Hall zero | Lead |
 | --- | --- | --- |
 | `MOTR_6_5_INCH` | −4° electrical, the same on every unit we have measured | follows speed: about 20° electrical at a crawl, falling to 5–8° from a quarter of top speed upward |
-| `MOTR_DOCO_4KRPM` | one offset, the same each way, chosen by supply voltage and board revision from its characterization | (included in the offset) |
+| `MOTR_DOCO_4KRPM` | about −2.5° electrical, known to a few degrees, the same on a Rev A and a Rev B board | follows speed: about 52° electrical at low speed, rising to 68° toward the top |
 
 Getting these right matters: on the 6.5" motor, placing the field 25° away from the best position draws 15 to 25 times the current for the same speed. How to find them for a new motor is in [ADDING_MOTOR.md](ADDING_MOTOR.md).
 

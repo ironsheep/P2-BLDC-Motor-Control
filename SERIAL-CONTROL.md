@@ -97,7 +97,7 @@ First install extra packages the script needs:
 ### Packages for Ubuntu, Raspberry pi OS, and the like
 
 ```bash
-sudo apt-get install git python3 python3-pip python3-tzlocal python3-sdnotify python3-colorama python3-unidecode python3-paho-mqtt python3-watchdog
+sudo apt-get install git python3 python3-pip python3-serial python3-tzlocal python3-sdnotify python3-colorama python3-unidecode python3-paho-mqtt python3-watchdog
 ```
 
 ### Finish the project install on the RPi
@@ -149,7 +149,7 @@ There, `isp_steering_serial.spin2` is the top-level file. Compile it and downloa
 
 This should be all you need to test your new installation. The demo file will drive the motors as if the platform is driving in a square (drive straight, turn right, drive straight, turn right, etc.)
 
-You can test by running the following command on your RPi:
+You can test by running the following command on your RPi. Start the script first, then reset or power up the P2, so the script sees the P2's `ident:` line:
 
 ```bash
 cd ~/projects/platform-drive            # make sure we are where your project files are

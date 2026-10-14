@@ -70,7 +70,7 @@ Each motor gets its own driver board. Connect the three power cables to the boar
 
 ## Checking your wiring
 
-You don't have to trust the colors. When the driver starts it checks each motor before driving it: it finds an unplugged hall cable, a dead motor lead and a driver bridge that will not drive, and refuses to start that motor, telling you why. The demos also run an optional wiring check that turns the wheel about 4 cm one way and back, proving the hall and phase wiring agree. Put the wheel up off the bench for your first run.
+You don't have to trust the colors. When the driver starts it checks each motor before driving it: it finds an unplugged hall cable, a dead motor lead and a driver bridge that will not drive, and refuses to start that motor, telling you why. The demos also run an optional wiring check that turns the wheel about 3.5 cm one way and back, proving the hall and phase wiring agree. Put the wheel up off the bench for your first run.
 
 [Start your own drive project](DEVELOP.md#checking-for-errors) explains what each check reports.
 
