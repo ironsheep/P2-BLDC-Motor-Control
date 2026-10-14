@@ -200,6 +200,7 @@ Read every frame by `setq #DRVR_PARAMS_LONGS_COUNT-1` / `rdlong params_ptr_+1, p
 
 ```text
 start(basePin, voltage, detectMode)                   (steering: startOwned() per wheel)
+  ├─ check the system clock, 130 to 300 MHz           → ERR_CLOCK_TOO_SLOW / ERR_CLOCK_TOO_FAST
   ├─ validate pin group, voltage, detect mode         → ERR_BAD_* on failure
   ├─ isAbiLayoutValid()                               → ERR_ABI_MISMATCH
   ├─ bHallDeltaTablesValid(): every motor's steps     → ERR_BAD_MOTOR_TABLE
@@ -385,7 +386,7 @@ One pass per millisecond, on an absolute `getct()` schedule. The schedule is a g
    passes - no front pass waits on a driver
 2. tracking: latch a new fault's cause; accumulate hall ticks since the last pass
    every 8th pass (125 Hz): advance the 1-second rpm window, update the following
-   reading, and re-derive the lead (6.5″ only)
+   reading, and re-derive the lead from the motor's lead table
 3. limits: a time or distance limit fires early by the stopping time or distance the
    driver has published (drv_stop_passes / drv_stop_fp), so the motor comes to rest at
    the limit

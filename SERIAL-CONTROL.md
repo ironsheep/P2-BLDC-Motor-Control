@@ -48,11 +48,33 @@ What changed in each release, serial control included, is in the project's [CHAN
 
 The following diagram shows the top-level serial object which hands off commands to the drive subsystem as they are received. It also shows the nested motor control and sense subsystem comprised of the two objects: steering and motor control.
 
-![Diagram of the serial top-level object handing commands to the steering and motor objects](./images/serial-bldc-system.png)
+```text
+  Raspberry Pi: P2-BLDC-Motor-Control-Demo.py
+                         │ commands, serial at 624,000 baud
+  ╔══════════════════════▼═════════════════════╗
+  ║ receive cog (Spin2): isp_queue_serial      ║   ← 1 cog: queues each line
+  ║ holds each line the host sends             ║     the host sends
+  ╚══════════════════════╤═════════════════════╝
+                         │ queued lines (hub)
+  ╔══════════════════════▼═════════════════════╗
+  ║ isp_steering_serial: the top-level cog     ║   ← 1 cog: reads each command,
+  ║ parses commands and sends the replies      ║     calls the steering object,
+  ╚══════════════════════╤═════════════════════╝     and answers the host
+                         │ request (hub)
+  ╔══════════════════════▼═════════════════════╗
+  ║ front cog (Spin2), 1 kHz                   ║   ← 1 cog, run by isp_steering_2wheel
+  ║ requests · tracking · limits · protection  ║
+  ╚══════════╤═════════════════════╤═══════════╝
+             │ commands (hub)      │ commands (hub)
+  ╔══════════▼══════════╗ ╔════════▼════════════╗
+  ║ PASM2 driver cog    ║ ║ PASM2 driver cog    ║   ← 1 cog per motor
+  ║ left motor          ║ ║ right motor         ║
+  ╚═════════════════════╝ ╚═════════════════════╝
+```
 
-**Figure 1**: *The serial control system: the serial top-level object, the steering object and the motor objects*
+**Figure 1**: *The serial control system: five cogs. The receive cog queues what the host sends; the top-level cog reads each command, calls the steering object and sends the reply back to the host; the steering object's front cog runs both motors' driver cogs.*
 
-In this diagram there are five **rectangular objects** depicting files (yellow background) of code. There are three methods within the motor files (white and green backgrounds) that are run in separate cogs and there is one method (white background) within the serial files that runs in a separate cog. The **arrows** attempt to show which objects interact with each other and also show with which object your application can interact. The gear icon indicates which are running in their own cog. You can see that your top-level control application runs in its own cog as well.
+The objects themselves (`isp_steering_serial`, `isp_host_serial`, `isp_queue_serial`, `isp_steering_2wheel` and `isp_bldc_motor`) run no cog of their own beyond the ones shown: their methods run in whichever cog calls them.
 
 Video of author running the system: [Control our 2-wheel BLDC robot platform from an RPi](https://youtu.be/QF4qI9yVwWc) @ youtube
 

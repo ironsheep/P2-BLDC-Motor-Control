@@ -134,11 +134,29 @@ The drive uses 2 cogs for a single motor and 3 for a two-wheel platform; how the
 
 Here's a quick diagram of how the objects and their cogs fit together:
 
-![Motor Control System Diagram](./images/objects-cogs.png)
+```text
+  your app cog
+       │ command methods post a request; status methods read shared memory
+       ▼
+  ┌────────────────────────────────────────────┐
+  │ isp_steering_2wheel   (Spin2 object)       │   ← no cog of its own; it holds
+  │ with the left and right isp_bldc_motor     │     the request slots and both
+  └──────────────────────┬─────────────────────┘     motor instances
+                         │ request (hub)
+  ╔══════════════════════▼═════════════════════╗
+  ║ front cog (Spin2), 1 kHz                   ║   ← 1 cog: it runs both motor
+  ║ requests · tracking · limits · protection  ║     instances' front routines
+  ╚══════════╤═════════════════════╤═══════════╝
+             │ commands (hub)      │ commands (hub)
+  ╔══════════▼══════════╗ ╔════════▼════════════╗
+  ║ PASM2 driver cog    ║ ║ PASM2 driver cog    ║   ← 1 cog per motor
+  ║ left motor          ║ ║ right motor         ║
+  ╚═════════════════════╝ ╚═════════════════════╝
+```
 
-**Figure 2**: *The steering and motor objects and the cogs they run.*
+**Figure 2**: *The steering and motor objects and the cogs they run, on a two-motor platform. A single motor is the same chain with `isp_bldc_motor` in place of the steering object and one driver cog.*
 
-Basically, this image shows three files of code (yellow background) and the methods within them that run in their own cogs (white and green backgrounds, marked with a gear). The arrows show which objects interact with each other, and which object your application calls. Your top-level application runs in its own cog as well.
+Basically, your application calls the objects; the objects run no cog of their own. Each command your application makes is handed to the one front cog, which writes the commands each motor's driver cog runs. Your top-level application runs in its own cog as well.
 
 ## DEMOs
 
