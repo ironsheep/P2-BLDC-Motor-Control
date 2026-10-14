@@ -59,6 +59,7 @@ Additional pages:
 - [Driver Theory of Operations](DRIVER-THEORY-OF-OPERATIONS.md) - How the driver works inside: its cogs, the Spin2/PASM2 contract, commutation, ramps, stops and protection
 - [Adding support for a new motor](ADDING_MOTOR.md) - Characterize your motor and add it to the driver
 - [Techniques](TECHNIQUES.md) - How we measured the motors and built the driver, written so you can reuse the methods
+- [Testing the motors](TESTING-THE-MOTORS.md) - How the motors were studied and the v6 driver built: what we asked, how we measured, what we got wrong, and what changed
 
 **Background:**
 
