@@ -19,8 +19,8 @@
 #
 # Each archive holds one folder named after it, flat like a Propeller Tool archive, with a _README_ per
 # top-level program drawing its object tree (and one in pythonSrc/ naming its two files), and, at the top of
-# that folder, the repository's LICENSE and CHANGELOG.md as committed at the packaged ref (Stephen, 2026-10-03:
-# a zip passed on without the repository still carries its terms and its version history). A top's files are
+# that folder, the repository's LICENSE and CHANGELOG.md as committed at the packaged ref, so
+# a zip passed on without the repository still carries its terms and its version history. A top's files are
 # found from its OBJ blocks by release_closure.py, beside this script. The release gates compile every top before the
 # tag; when pnut-ts is on the PATH here as well, every top is also compiled from inside its staged folder,
 # and its _README_ says so.
