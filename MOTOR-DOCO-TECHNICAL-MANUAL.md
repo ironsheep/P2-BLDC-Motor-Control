@@ -406,7 +406,9 @@ the climb):
 
 At every supply, in both directions, every step up to and past the shipped top followed its command at
 999–1,000 ‰ with no fault, no held pass and no re-sync. The shipped tops are the ceilings of the table above;
-the climbs past them show only how much room the top has. At 24 V the adoption tool's own climb ran
+the climbs past them show only how much room the top has. At every supply below 24 V the highest speed
+held is past the sheet's no-load speed scaled to that supply (5,723 rpm at 14.8 V, against about 4,190);
+why is not yet explained (§9). Every shipped top sits inside it. At 24 V the adoption tool's own climb ran
 clean in both directions to 6,720 rpm, the last rung of its ladder. A first run at 24 V read a slowest
 steady speed of 1.5–2 ticks/s and one at 11.1 V read 0.15; a repeat of each held 0.10, so those misses
 were the spread from run to run. At 7.4 V this unit's slowest steady speed read 0.20 and 0.30 ticks/s
@@ -654,6 +656,7 @@ motor's own properties in §2 do not depend on the board.
 | Question | Why it matters | What would settle it |
 |---|---|---|
 | **The efficiency curve above 2,800 rpm** (§5.4). The model draws the headroom curve there; the current minimum is not cleanly measured. | It sets the lead at the very top. | A timing sweep at those speeds that resolves the current minimum. |
+| **Why the motor holds speeds past its no-load speed** (§6.1). Below 24 V the second unit held speeds past the sheet's no-load speed scaled to the supply. | It decides whether the range could rise, and whether the sheet's back-EMF constant fits this motor. | The motor's own back-EMF constant, measured by spinning the unpowered shaft at a known speed. |
 | **Z by a cold method.** The back-EMF method did not resolve on this motor (§4.2). | Z is known only to a few degrees. | The cold method's legs examined for why they disagree. |
 | **The inductance and the resistance** on our hardware (§2.4). The model gives about 1.06 mH a phase, from the maker's resistance (§5.4). | It checks the model. | A meter and an LCR meter across the leads. |
 | **Vibration on a clamped rig** (§6.7). | Separates the motor's own shaking from the rig's. | The speed range repeated with the motor clamped. |
