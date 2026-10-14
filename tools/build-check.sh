@@ -82,9 +82,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Every compile sees both folders, by absolute path (pnut-ts resolves a relative -I against the
-# top file's folder). pnut-ts also writes -o relative to the top file's folder, so each image
-# gets a name of this script's own beside its source and is removed straight after.
+# Every compile sees both folders, by absolute path: pnut-ts works from the top file's own folder,
+# so a relative -I holds only when run from there. It writes its image to that folder too (-o is
+# relative to it), so each image gets a name of this script's own beside its source and is removed
+# straight after.
 compile() {   # compile [flags...] <name>: a file in src/ or test/, by name
     local name="${!#}" path out rc
     path="$SRC_DIR/$name.spin2"

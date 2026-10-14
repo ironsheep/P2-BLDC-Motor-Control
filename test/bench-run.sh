@@ -1029,9 +1029,9 @@ echo "bench-run.sh: cd $BENCH_DIR"
 cd "$BENCH_DIR" || exit 2
 echo "bench-run.sh: pwd is now $(pwd)"
 
-# The tier's top is a bench file here in test/, or a demo or tool in src/. Every compile sees both folders, by
-# absolute path (pnut-ts resolves a relative -I against the top file's folder), and writes its image here, in
-# test/. pnut-ts takes -o relative to the top file's folder, so a top in src/ names its image ../test/<name>.
+# The tier's top is a bench file here in test/, or a demo or tool in src/. pnut-ts works from the top file's own
+# folder: a relative -I holds only when run from there, and -o is relative to it. So every compile names both
+# folders by absolute path, and writes its image here, in test/: a top in src/ names its image ../test/<name>.
 if [ -z "$PREBUILT" ]; then
     if [ -f "$BENCH_DIR/$BENCH_FILE" ]; then
         BENCH_PATH="$BENCH_DIR/$BENCH_FILE"; OUT_REL=""
