@@ -74,10 +74,10 @@ each one is compiled in:
 
 **Two commutation models, and which one to start with.** The driver places the field in one of two ways:
 
-- **A fixed pair**: one offset for each direction, chosen per supply voltage (and per board revision).
+- **A fixed pair**: one offset for each direction, chosen per supply voltage.
   **Start here.** It needs no code beyond table entries, and step 5 tells you how to find a good pair.
-- **A zero plus a lead that follows speed**: how both the 6.5″ and the DocoEng motor (on a Rev A board)
-  are driven. The 6.5″ draws 24–78 % less current across its speed range than its best fixed pair, and the
+- **A zero plus a lead that follows speed**: how both the 6.5″ and the DocoEng motor are driven,
+  on either board. The 6.5″ draws 24–78 % less current across its speed range than its best fixed pair, and the
   DocoEng motor needs more lead at the top than any one pair gives. Each motor has a lead table against
   speed, a zero and a sign (`leadTableForMotor()`: the 6.5″'s `leadIncrTbl` / `leadTenthsTbl`, the
   DocoEng's `docoLeadIncrTbl` / `docoLeadTenthsTbl`), and `bMotorHasLeadTable()` says which motors use it.

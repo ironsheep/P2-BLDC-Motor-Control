@@ -311,7 +311,7 @@ The hall code also indexes `hall_angles` for the rotor's angle within the hall c
 | 6.5″ hub (`MOTR_6_5_INCH`) | 90 | 4° | `hltbAngles` | `deltas65` |
 | DocoEng 4 kRPM (`MOTR_DOCO_4KRPM`) | 24 | 15° | `hltbAngl4k` | `deltas4k` |
 
-The error is `err_ = field − (hall_angle + offset)`, where `field` is the frame's field angle (above), in 256ths of an electrical cycle, with `offset_fwd` applied to negative increments and `offset_rev` to positive ones. **The front cog rewrites the offset pair as speed changes** (§5): a zero plus or minus a lead taken from a four-point table against the increment, each motor its own table, zero and sign (`leadTableForMotor()`). The 6.5″ uses its table on either board; the DocoEng motor on a Rev A board (on Rev B it keeps its fixed pair, which has not been re-checked).
+The error is `err_ = field − (hall_angle + offset)`, where `field` is the frame's field angle (above), in 256ths of an electrical cycle, with `offset_fwd` applied to negative increments and `offset_rev` to positive ones. **The front cog rewrites the offset pair as speed changes** (§5): a zero plus or minus a lead taken from a four-point table against the increment, each motor its own table, zero and sign (`leadTableForMotor()`). Both motors use their tables on either board: the hall inputs are the same on both board revisions, so a motor wants the same timing on either.
 
 **Sector widths.** The 6.5″'s angle table takes its six sectors as 60° each. The DocoEng motor's carries its measured sector widths (55–67°, the mean of two units), each code's entry edge going up in the forward half and going down in the reverse half: its sectors are unequal enough that 60° steps would misplace the field by up to 6° inside one.
 

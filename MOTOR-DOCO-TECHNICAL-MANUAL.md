@@ -565,7 +565,7 @@ twice (384–500 against 182–264 mA).
 
 **Alignment**
 
-1. **Let the lead table run** (§5.4). On a Rev A board the driver follows this motor's efficiency curve
+1. **Let the lead table run** (§5.4). On either board the driver follows this motor's efficiency curve
    with speed, 18–49° inside the hold wall. The fixed pair of §5.1 also ran cleanly on both units
    measured, 15–25° from the hold wall at low speed (§5.5, §6.2).
 2. **Expect the timing to show in headroom, not in current.** At light load this motor's current hardly
