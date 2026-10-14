@@ -3,6 +3,54 @@
 Changes to the P2-BLDC-Motor-Control objects, newest first. Each release's entry is also its
 GitHub release page.
 
+## v6.2.0 (2026-10-14)
+
+The DocoEng motor runs across its full speed range, and the drive behaves the same at any system clock from 130 to 300 MHz.
+
+### New Features
+
+- `util_adopt_motor.spin2` finds a new motor's commutation offsets and speed ceiling from its halls and supply
+  current, with no encoder ([ADDING_MOTOR.md](ADDING_MOTOR.md))
+- `start()` refuses a clock under 130 MHz with `ERR_CLOCK_TOO_SLOW` (-1023), or over 300 MHz with
+  `ERR_CLOCK_TOO_FAST` (-1024), touching no pin
+
+### Improvements
+
+- `MOTR_DOCO_4KRPM` reaches 2,018 to 6,551 RPM from 7.4 to 24 V, on either board revision
+- Motors drive, stop and end their timed and distance limits the same at any system clock from 130 to 300 MHz
+- A motor near its top speed holds that speed, and slows down from it, without hunting
+- Rev A boards: a motor run under a low current limit no longer slows or holds on its own
+- Serial control works at any system clock from 130 to 300 MHz
+- The README reads in order, from what you need to your first run
+- [MOTOR-6.5IN-CONNECTING.md](MOTOR-6.5IN-CONNECTING.md): which 6.5″ motor wire goes where on the driver board
+
+### Bug Fixes
+
+- `MOTR_DOCO_4KRPM`: the motor turns and holds speed; in v6.0.0 and v6.1.0 it moved a few hall ticks and stopped.
+  6.5″ motors were unaffected
+- `MOTR_DOCO_4KRPM` runs correctly when `start()` is given a voltage other than the configured `DRIVE_VOLTAGE`
+- A distance limit at low supply voltage stops at the limit rather than short of it
+- `demo_single_motor`'s closing 20-second hold lasts 20 seconds; at 270 MHz it ended at once
+- Serial control: an empty line from the host no longer damages the next queued command
+
+### Breaking Changes
+
+- **BREAKING**: `moveShaftToAngle()` is removed. It has had no effect since v6.0.0, so deleting a call to it
+  changes nothing; a program that still calls it will not compile
+
+### Known Issues
+
+- The drive does not use the pack sensor's voltage yet: `getCurrent()`'s watts and the speed table assume
+  the configured `DRIVE_VOLTAGE`
+- `getCurrent()` does not show regenerative current
+- Braking by shorted phases (`emergencyCutoff()`, `holdAtStop(true)`) is not current-limited; ramp down
+  before stopping where you can, as `stopMotor()` and the stop limits do
+- `setHoldLimits()`'s defaults were sized with the wheels unloaded
+- `calibrate()` is not implemented
+- Raising the speed while a wheel is still slowing pauses it briefly before it speeds up
+- The serial control path (`isp_steering_serial.spin2`, the Python host demo) is not validated on hardware
+  for v6.2.0
+
 ## v6.1.0 (2026-10-03)
 
 The drive holds its commanded speed under load, giving way only at its current limit.
